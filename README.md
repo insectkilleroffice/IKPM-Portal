@@ -278,4 +278,5 @@ api/*                             Vercel serverless functions (WhatsApp Cloud AP
 ```
 Routes are lazy-loaded (main bundle ~1.5 MB → ~315 KB).
 #   I K P M  
+ #   I K P M - P o r t a l  
  
