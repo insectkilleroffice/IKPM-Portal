@@ -1,0 +1,16 @@
+{
+  "appId": "pk.insectkiller.portal",
+  "appName": "IKPM Portal",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "android": {
+    "buildOptions": {
+      "keystorePath": "release-key.keystore",
+      "keystoreAlias": "ikpm_alias"
+    }
+  }
+}
