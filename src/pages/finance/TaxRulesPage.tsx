@@ -14,8 +14,10 @@ import { formatDate } from '../../lib/formatters';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { TaxRuleConfig, TaxJurisdiction } from '../../types/finance';
+import { useDataStore } from '../../hooks/useDataStore';
 
 export const TaxRulesPage: React.FC = () => {
+  useDataStore(); // re-render when Firestore data arrives
   const { success } = useNotification();
   const { userProfile, effectiveRole } = useAuth();
 

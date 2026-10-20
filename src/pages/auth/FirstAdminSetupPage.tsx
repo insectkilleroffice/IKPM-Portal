@@ -1,212 +1,98 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ShieldAlert, KeyRound, CheckCircle, ArrowRight, Lock } from 'lucide-react';
+import { Link, Navigate, useNavigate } from 'react-router-dom';
+import { KeyRound, Lock, Mail, User } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 
+/**
+ * One-time bootstrap: makes the owner the super admin. Works for a brand-new email or for a login
+ * that already exists in Firebase Authentication. Locked by firestore.rules once initialized.
+ */
 export const FirstAdminSetupPage: React.FC = () => {
   const { setupFirstAdmin, isInitialized } = useAuth();
-  const { success, error } = useNotification();
+  const { success } = useNotification();
   const navigate = useNavigate();
 
-  const [displayName, setDisplayName] = useState('Salman (CEO & Founder)');
-  const [email, setEmail] = useState('salman@insectkiller.pk');
+  const [displayName, setDisplayName] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [setupKey, setSetupKey] = useState('IKPM-2026-PAKISTAN-SECURE');
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [setupKey, setSetupKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState('');
+
+  if (isInitialized) return <Navigate to="/login" replace />;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password !== confirmPassword) {
-      error('Passwords Do Not Match', 'Please confirm your administrator password.');
-      return;
-    }
+    setProblem('');
     if (password.length < 6) {
-      error('Password Too Short', 'Password must be at least 6 characters.');
+      setProblem('Password must be at least 6 characters.');
       return;
     }
-
-    setIsSubmitting(true);
+    setBusy(true);
     try {
       await setupFirstAdmin(email, password, displayName, setupKey);
-      success('First Administrator Initialized!', 'Welcome Salman. The portal is now securely initialized.');
-      navigate('/');
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Setup failed';
-      error('Setup Failed', msg);
+      success('Portal initialized', 'You are now the super admin. Add your staff under Team & Access.');
+      navigate('/admin/team', { replace: true });
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      setProblem(
+        code === 'auth/invalid-credential' || code === 'auth/wrong-password'
+          ? 'This email already has a login, and that password is wrong. Use its current password.'
+          : err instanceof Error ? err.message : 'Setup failed'
+      );
     } finally {
-      setIsSubmitting(false);
+      setBusy(false);
     }
   };
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: 'var(--ikpm-navy-900)',
-        padding: '1.5rem',
-        backgroundImage: 'radial-gradient(circle at 50% 20%, rgba(16, 185, 129, 0.15) 0%, transparent 60%)',
-      }}
-    >
-      <div
-        className="card animate-fade-in"
-        style={{
-          width: '100%',
-          maxWidth: '520px',
-          padding: '2.5rem',
-          backgroundColor: '#FFFFFF',
-          borderRadius: 'var(--radius-xl)',
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.4)',
-        }}
-      >
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <div
-            style={{
-              width: '54px',
-              height: '54px',
-              borderRadius: 'var(--radius-lg)',
-              backgroundColor: 'var(--ikpm-navy-800)',
-              color: 'var(--ikpm-emerald-400)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: 'var(--shadow-glow-emerald)',
-              marginBottom: '1rem',
-            }}
-          >
-            <ShieldAlert size={30} />
-          </div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', letterSpacing: '-0.02em' }}>
-            First-Administrator Setup
-          </h1>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-            Secure one-time bootstrap wizard for Insect Killer Pest Management (IKPM)
-          </p>
-        </div>
+    <div className="center-screen">
+      <form className="auth-card animate-fade-in" onSubmit={handleSubmit} style={{ maxWidth: 480 }}>
+        <img src="/ik_logo.svg" alt="Insect Killer Pest Management" className="auth-logo" />
+        <h1 className="auth-title">Set up the owner account</h1>
+        <p className="auth-subtitle">
+          This one-time step makes you the super admin. If you already created a login, enter that same email and password.
+        </p>
 
-        <div
-          style={{
-            padding: '0.85rem 1rem',
-            backgroundColor: 'var(--ikpm-emerald-50)',
-            border: '1px solid var(--ikpm-emerald-100)',
-            borderRadius: 'var(--radius-md)',
-            fontSize: '0.8rem',
-            color: '#065F46',
-            marginBottom: '1.5rem',
-            display: 'flex',
-            gap: '0.65rem',
-            alignItems: 'flex-start',
-          }}
-        >
-          <CheckCircle size={18} color="var(--ikpm-emerald-600)" style={{ flexShrink: 0, marginTop: '2px' }} />
-          <div>
-            <strong>Least-Privilege Security Notice:</strong> Public user registration does not grant administrative privileges.
-            This wizard creates the master Super Administrator account and permanently seals self-privilege elevation.
+        <div className="form-group">
+          <label className="form-label">Your name</label>
+          <div className="input-with-icon">
+            <User size={16} />
+            <input className="form-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="e.g. Salman Ahmed" required autoFocus />
           </div>
         </div>
-
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label className="form-label">
-              Administrator Full Name <span className="required">*</span>
-            </label>
-            <input
-              type="text"
-              required
-              className="form-input"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="e.g. Salman (CEO)"
-            />
+        <div className="form-group">
+          <label className="form-label">Work email</label>
+          <div className="input-with-icon">
+            <Mail size={16} />
+            <input type="email" className="form-input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="owner@insectkiller.pk" autoComplete="username" required />
           </div>
-
-          <div className="form-group">
-            <label className="form-label">
-              Official Email Address <span className="required">*</span>
-            </label>
-            <input
-              type="email"
-              required
-              className="form-input"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="salman@insectkiller.pk"
-            />
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">
-                Master Password <span className="required">*</span>
-              </label>
-              <input
-                type="password"
-                required
-                className="form-input"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-              />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">
-                Confirm Password <span className="required">*</span>
-              </label>
-              <input
-                type="password"
-                required
-                className="form-input"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="••••••••"
-              />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">
-              Initialization Bootstrap Key <span className="required">*</span>
-            </label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type="text"
-                required
-                className="form-input"
-                value={setupKey}
-                onChange={(e) => setSetupKey(e.target.value)}
-                placeholder="IKPM-2026-PAKISTAN-SECURE"
-                style={{ paddingLeft: '2.4rem' }}
-              />
-              <KeyRound size={16} style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-            </div>
-            <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-              Provided in master setup instructions. Protects against unauthorized bootstrap.
-            </p>
-          </div>
-
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={isSubmitting}
-            style={{ width: '100%', padding: '0.75rem', marginTop: '0.5rem' }}
-          >
+        </div>
+        <div className="form-group">
+          <label className="form-label">Password</label>
+          <div className="input-with-icon">
             <Lock size={16} />
-            <span>{isSubmitting ? 'Initializing Super Admin...' : 'Claim Super Admin & Initialize'}</span>
-            <ArrowRight size={16} />
-          </button>
-        </form>
-
-        <div style={{ textAlign: 'center', marginTop: '1.5rem', fontSize: '0.825rem' }}>
-          <a href="/login" style={{ color: 'var(--text-muted)', textDecoration: 'none' }}>
-            Already set up? Go to Sign In
-          </a>
+            <input type="password" className="form-input" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
+          </div>
         </div>
-      </div>
+        <div className="form-group">
+          <label className="form-label">Initialization key</label>
+          <div className="input-with-icon">
+            <KeyRound size={16} />
+            <input className="form-input font-mono" value={setupKey} onChange={(e) => setSetupKey(e.target.value)} placeholder="Provided with your installation" required />
+          </div>
+        </div>
+
+        {problem && <div className="error-hint" style={{ marginBottom: '1rem' }}>{problem}</div>}
+
+        <button type="submit" className="btn btn-primary" style={{ width: '100%', height: 42 }} disabled={busy}>
+          {busy ? 'Setting up…' : 'Become super admin'}
+        </button>
+        <div style={{ textAlign: 'center', marginTop: '0.85rem', fontSize: '0.8rem' }}>
+          <Link to="/login">Back to sign in</Link>
+        </div>
+      </form>
     </div>
   );
 };

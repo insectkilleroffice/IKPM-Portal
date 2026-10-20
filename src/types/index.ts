@@ -25,11 +25,37 @@ export interface UserProfile {
   branchId?: string;
   branchName?: string;
   area?: string;
+  /** Team this user belongs to (managed by the super admin). Drives "team" data scope. */
+  teamId?: string;
+  teamName?: string;
+  /** Address client emails are sent from. Defaults to the login email. */
+  businessEmail?: string;
   isActive: boolean;
   avatarUrl?: string;
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  department?: string;
+  description?: string;
+  leadUid?: string;
+  leadName?: string;
+  color?: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Stamped on every business record when it's first created; firestore.rules uses it to scope access. */
+export interface RecordOwnership {
+  ownerUid?: string;
+  ownerName?: string;
+  ownerEmail?: string;
+  teamId?: string;
 }
 
 export interface Department {

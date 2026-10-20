@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { NotificationProvider } from './contexts/NotificationContext';
@@ -7,6 +7,10 @@ import { SyncProvider } from './contexts/SyncContext';
 import { AppLayout } from './components/layout/AppLayout';
 import { ProtectedRoute } from './components/layout/ProtectedRoute';
 import { LoadingSpinner } from './components/common/LoadingSpinner';
+import type { ModuleKey } from './lib/permissions';
+
+/** Route element restricted to the roles allowed to use a module (see src/lib/permissions.ts). */
+const guard = (module: ModuleKey, element: React.ReactNode) => <ProtectedRoute module={module}>{element}</ProtectedRoute>;
 
 // Pages are code-split per route so the first load stays small
 const LoginPage = lazy(() => import('./pages/auth/LoginPage').then((m) => ({ default: m.LoginPage })));
@@ -26,6 +30,8 @@ const TaxRulesPage = lazy(() => import('./pages/finance/TaxRulesPage').then((m) 
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const PcoMobilePage = lazy(() => import('./pages/pco/PcoMobilePage').then((m) => ({ default: m.PcoMobilePage })));
 const DocumentLibraryPage = lazy(() => import('./features/documents/DocumentLibraryPage').then((m) => ({ default: m.DocumentLibraryPage })));
+const TeamAccessPage = lazy(() => import('./pages/admin/TeamAccessPage').then((m) => ({ default: m.TeamAccessPage })));
+const ClientFilesPage = lazy(() => import('./features/documents/ClientFilesPage').then((m) => ({ default: m.ClientFilesPage })));
 
 function App() {
   return (
@@ -47,45 +53,33 @@ function App() {
                   </ProtectedRoute>
                 }
               >
-                <Route path="/" element={<DashboardPage />} />
+                <Route path="/" element={guard('dashboard', <DashboardPage />)} />
 
-                {/* Structured Customer Accounts (Highest Priority) */}
-                <Route path="/customers" element={<CustomerListPage />} />
-                <Route path="/customers/company/:id" element={<CompanyDetailPage />} />
-                <Route path="/customers/branch/:id" element={<BranchDetailPage />} />
-                <Route path="/customers/individual/:id" element={<IndividualDetailPage />} />
+                {/* Customers & sales pipeline */}
+                <Route path="/customers" element={guard('customers', <CustomerListPage />)} />
+                <Route path="/customers/company/:id" element={guard('customers', <CompanyDetailPage />)} />
+                <Route path="/customers/branch/:id" element={guard('customers', <BranchDetailPage />)} />
+                <Route path="/customers/individual/:id" element={guard('customers', <IndividualDetailPage />)} />
+                <Route path="/crm" element={guard('crm', <LeadsListPage />)} />
+                <Route path="/proposals" element={guard('proposals', <ProposalsListPage />)} />
+                <Route path="/contracts" element={guard('contracts', <ContractsListPage />)} />
 
-                {/* CRM & Proposals */}
-                <Route path="/crm" element={<LeadsListPage />} />
-                <Route path="/proposals" element={<ProposalsListPage />} />
-                <Route path="/contracts" element={<ContractsListPage />} />
-                <Route path="/documents" element={<DocumentLibraryPage />} />
+                {/* Drive-style files */}
+                <Route path="/files" element={guard('files', <ClientFilesPage />)} />
+                <Route path="/documents" element={guard('documents', <DocumentLibraryPage />)} />
 
-                {/* Field Operations & PCO */}
-                <Route path="/operations/jobs" element={<JobsListPage />} />
-                <Route path="/operations/calendar" element={<DispatchCalendarPage />} />
-                <Route path="/pco-field" element={<PcoMobilePage />} />
+                {/* Field operations & PCO */}
+                <Route path="/operations/jobs" element={guard('jobs', <JobsListPage />)} />
+                <Route path="/operations/calendar" element={guard('calendar', <DispatchCalendarPage />)} />
+                <Route path="/pco-field" element={guard('pco', <PcoMobilePage />)} />
 
-                {/* Finance, Invoicing & Tax */}
-                <Route
-                  path="/finance/invoices"
-                  element={
-                    <ProtectedRoute allowedRoles={['super_admin', 'management', 'finance']}>
-                      <InvoicesListPage />
-                    </ProtectedRoute>
-                  }
-                />
-                <Route
-                  path="/finance/tax-rules"
-                  element={
-                    <ProtectedRoute allowedRoles={['super_admin', 'management', 'finance']}>
-                      <TaxRulesPage />
-                    </ProtectedRoute>
-                  }
-                />
+                {/* Finance, invoicing & tax */}
+                <Route path="/finance/invoices" element={guard('invoices', <InvoicesListPage />)} />
+                <Route path="/finance/tax-rules" element={guard('tax', <TaxRulesPage />)} />
 
-                {/* Settings & System Governance */}
-                <Route path="/settings" element={<SettingsPage />} />
+                {/* Administration */}
+                <Route path="/admin/team" element={guard('team', <TeamAccessPage />)} />
+                <Route path="/settings" element={guard('settings', <SettingsPage />)} />
               </Route>
 
               {/* Fallback */}

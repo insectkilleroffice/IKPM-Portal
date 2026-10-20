@@ -8,7 +8,19 @@ import { useDataStore } from '../../hooks/useDataStore';
 import { integrations } from '../../config/env';
 import { uploadFile } from '../../lib/cloudinary';
 import { pdfGenerator } from '../../lib/pdfGenerator';
-import { buildPitchMessage, isValidEmail, sendOutreach, toWhatsAppNumber, type Attachment, type OutreachResult } from '../../services/outreachService';
+import {
+  buildPitchMessage,
+  EMAIL_VIA_LABELS,
+  emailOpensWindow,
+  getPreferredEmailVia,
+  isValidEmail,
+  sendOutreach,
+  setPreferredEmailVia,
+  toWhatsAppNumber,
+  type Attachment,
+  type EmailVia,
+  type OutreachResult,
+} from '../../services/outreachService';
 import { COMPANY_DOC_CATEGORIES, type OutreachChannel, type OutreachLog } from '../../types/document';
 import type { Proposal } from '../../types/proposal';
 import { expiryState, isShareable } from '../documents/documentUtils';
@@ -40,6 +52,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
   const library = store.getLibraryDocuments();
   const packs = store.getDocumentPacks();
   const senderName = userProfile?.displayName || 'IKPM Sales Team';
+  const senderEmail = userProfile?.businessEmail || userProfile?.email || '';
 
   const [name, setName] = useState(recipient.name);
   const [phone, setPhone] = useState(recipient.phone || '');
@@ -51,6 +64,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [emailVia, setEmailVia] = useState<EmailVia>(getPreferredEmailVia);
 
   // Re-initialise every time the modal opens for a (possibly different) recipient
   useEffect(() => {
@@ -66,6 +80,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     const draft = buildPitchMessage({
       recipientName: recipient.name,
       senderName,
+      senderEmail,
       purpose: proposal ? 'proposal' : 'documents',
       proposalRef: proposal ? `${proposal.id} R${proposal.revisionNumber}` : undefined,
     });
@@ -125,8 +140,10 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     if (problems.length > 0) return;
     setSending(true);
 
-    // Open the WhatsApp tab synchronously so the browser doesn't block it after async work
+    // Open link tabs synchronously so the browser doesn't block them after async work
     const linkWindow = channels.has('whatsapp') && !integrations.outreachApi ? window.open('', '_blank') : null;
+    const emailWindow = channels.has('email') && emailOpensWindow(emailVia) ? window.open('', '_blank') : null;
+    setPreferredEmailVia(emailVia);
 
     try {
       const extra: Attachment[] = [];
@@ -164,8 +181,10 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
         documents: selectedDocs,
         extraAttachments: extra,
         related,
-        sender: { email: userProfile?.email || 'admin', name: senderName },
+        sender: { email: userProfile?.email || 'admin', name: senderName, businessEmail: senderEmail },
+        emailVia,
         linkWindow,
+        emailWindow,
       });
 
       const failed = results.filter((r) => !r.ok);
@@ -173,13 +192,14 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
       const viaLink = results.filter((r) => r.ok && r.mode === 'link').map((r) => r.channel);
       if (viaApi.length) success('Sent', `Delivered via ${viaApi.join(' & ')} to ${name}.`);
       if (viaLink.length) success('Ready to send', `${viaLink.join(' & ')} opened with the message and document links — press Send there.`);
-      results.filter((r) => r.note).forEach((r) => warning('WhatsApp', r.note!));
+      results.filter((r) => r.note).forEach((r) => warning(r.channel === 'email' ? 'Email' : 'WhatsApp', r.note!));
       if (failed.length) error('Some messages failed', failed.map((f) => `${f.channel}: ${f.error}`).join(' | '));
 
       onSent?.(results);
       if (failed.length === 0) onClose();
     } catch (err) {
       linkWindow?.close();
+      emailWindow?.close();
       error('Could not send', err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
@@ -198,8 +218,8 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
       footer={
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', gap: '0.75rem', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-            {integrations.outreachApi ? (
-              <><Zap size={13} color="var(--ikpm-emerald-600)" /> Sends automatically</>
+            {integrations.outreachApi && (!channels.has('email') || emailVia === 'api') ? (
+              <><Zap size={13} color="var(--ikpm-emerald-600)" /> Sends automatically as {senderEmail}</>
             ) : (
               <><ExternalLink size={13} /> Opens WhatsApp / email with everything pre-filled</>
             )}
@@ -309,6 +329,29 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
       {/* 3. Message */}
       <section className="flow-step" style={{ borderBottom: 'none' }}>
         <div className="flow-step-title"><span className="flow-step-num">3</span> Message</div>
+        {channels.has('email') && (
+          <div className="form-grid-2">
+            <div className="form-group">
+              <label className="form-label">From</label>
+              <input className="form-input" readOnly value={`${senderName} <${senderEmail}>`} title="Set by the super admin under Team & Access" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Send email using</label>
+              <select className="form-select" value={emailVia} onChange={(e) => setEmailVia(e.target.value as EmailVia)}>
+                {(Object.keys(EMAIL_VIA_LABELS) as EmailVia[])
+                  .filter((v) => v !== 'api' || integrations.outreachApi)
+                  .map((v) => <option key={v} value={v}>{EMAIL_VIA_LABELS[v]}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
+        {channels.has('email') && emailVia !== 'api' && (
+          <div className="info-hint" style={{ marginBottom: '0.75rem' }}>
+            {emailVia === 'gmail' && <>A Gmail draft opens in <strong>{senderEmail}</strong>. Make sure you are signed in to that Google account, then press Send.</>}
+            {emailVia === 'outlook' && <>An Outlook draft opens in your Microsoft 365 mailbox (<strong>{senderEmail}</strong>). Press Send there.</>}
+            {emailVia === 'mailto' && <>Your computer's mail app opens a draft. Make sure its account is <strong>{senderEmail}</strong>.</>}
+          </div>
+        )}
         {channels.has('email') && (
           <div className="form-group">
             <label className="form-label">Email subject</label>

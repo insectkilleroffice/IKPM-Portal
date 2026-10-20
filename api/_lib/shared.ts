@@ -35,6 +35,40 @@ export async function requirePortalUser(req: Req): Promise<{ uid: string; email:
   return { uid: user.localId, email: user.email };
 }
 
+export interface PortalProfile {
+  displayName: string;
+  businessEmail: string;
+  role: string;
+  isActive: boolean;
+}
+
+/**
+ * Reads the caller's staff profile from Firestore using their own ID token, so the security rules
+ * decide what is visible and nobody can claim someone else's sender address.
+ */
+export async function getPortalProfile(req: Req, uid: string, loginEmail: string): Promise<PortalProfile> {
+  const header = String(req.headers.authorization || '');
+  const projectId = env('FIREBASE_PROJECT_ID') || env('VITE_FIREBASE_PROJECT_ID');
+  if (!projectId) throw new HttpError(500, 'FIREBASE_PROJECT_ID is not configured on the server.');
+
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${encodeURIComponent(uid)}`,
+    { headers: { Authorization: header } }
+  );
+  if (res.status === 404) throw new HttpError(403, 'Your staff profile was not found. Ask the super admin to add you.');
+  if (!res.ok) throw new HttpError(403, `Could not read your staff profile (HTTP ${res.status}).`);
+  const data = (await res.json()) as { fields?: Record<string, { stringValue?: string; booleanValue?: boolean }> };
+  const f = data.fields || {};
+  const profile: PortalProfile = {
+    displayName: f.displayName?.stringValue || loginEmail,
+    businessEmail: (f.businessEmail?.stringValue || loginEmail).toLowerCase(),
+    role: f.role?.stringValue || '',
+    isActive: f.isActive?.booleanValue === true,
+  };
+  if (!profile.isActive) throw new HttpError(403, 'Your portal access is paused.');
+  return profile;
+}
+
 /** Only allow attachments hosted in our own Cloudinary account, so the API can't be used to relay arbitrary links. */
 export function assertOwnCloudinaryUrl(url: string) {
   const cloud = env('CLOUDINARY_CLOUD_NAME') || env('VITE_CLOUDINARY_CLOUD_NAME');

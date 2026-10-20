@@ -1,5 +1,5 @@
-import React from 'react';
-import { NavLink } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Users2,
@@ -11,163 +11,169 @@ import {
   Receipt,
   FileCheck2,
   Settings,
-  ShieldAlert,
   Smartphone,
   FolderLock,
+  FolderOpen,
+  UsersRound,
+  Plus,
+  UserPlus,
+  type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { canAccessModule, ROLE_LABELS, type ModuleKey } from '../../lib/permissions';
 
-export const Sidebar: React.FC = () => {
-  const { effectiveRole, hasRole } = useAuth();
+interface NavEntry {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+  module: ModuleKey;
+  end?: boolean;
+  badge?: string;
+}
 
-  const isTechOnly = effectiveRole === 'technician';
+const SECTIONS: { title?: string; items: NavEntry[] }[] = [
+  {
+    items: [
+      { to: '/', label: 'Dashboard', icon: LayoutDashboard, module: 'dashboard', end: true },
+      { to: '/pco-field', label: 'My Field Jobs', icon: Smartphone, module: 'pco', badge: 'PCO' },
+    ],
+  },
+  {
+    title: 'Sales & customers',
+    items: [
+      { to: '/customers', label: 'Customer Accounts', icon: Building2, module: 'customers' },
+      { to: '/crm', label: 'Leads', icon: Users2, module: 'crm' },
+      { to: '/proposals', label: 'Proposals', icon: FileSpreadsheet, module: 'proposals' },
+      { to: '/contracts', label: 'Contracts & AMCs', icon: FileSignature, module: 'contracts' },
+    ],
+  },
+  {
+    title: 'Files',
+    items: [
+      { to: '/files', label: 'Client Files', icon: FolderOpen, module: 'files' },
+      { to: '/documents', label: 'Company Documents', icon: FolderLock, module: 'documents' },
+    ],
+  },
+  {
+    title: 'Field operations',
+    items: [
+      { to: '/operations/calendar', label: 'Dispatch Calendar', icon: CalendarDays, module: 'calendar' },
+      { to: '/operations/jobs', label: 'Service Jobs', icon: Truck, module: 'jobs' },
+    ],
+  },
+  {
+    title: 'Accounts',
+    items: [
+      { to: '/finance/invoices', label: 'Invoices & Receipts', icon: Receipt, module: 'invoices' },
+      { to: '/finance/tax-rules', label: 'Tax Rules & WHT', icon: FileCheck2, module: 'tax' },
+    ],
+  },
+  {
+    title: 'Administration',
+    items: [
+      { to: '/admin/team', label: 'Team & Access', icon: UsersRound, module: 'team' },
+      { to: '/settings', label: 'Settings & Audit', icon: Settings, module: 'settings' },
+    ],
+  },
+];
+
+const QUICK_CREATE: { label: string; to: string; module: ModuleKey; icon: LucideIcon }[] = [
+  { label: 'New lead', to: '/crm?action=new_lead', module: 'crm', icon: Users2 },
+  { label: 'New company account', to: '/customers?action=new_company', module: 'customers', icon: Building2 },
+  { label: 'New individual client', to: '/customers?action=new_individual', module: 'customers', icon: UsersRound },
+  { label: 'New proposal', to: '/proposals?action=new_proposal', module: 'proposals', icon: FileSpreadsheet },
+  { label: 'Upload client file', to: '/files', module: 'files', icon: FolderOpen },
+  { label: 'Schedule service job', to: '/operations/jobs?action=new_job', module: 'jobs', icon: Truck },
+  { label: 'Add staff member', to: '/admin/team?action=new_user', module: 'team', icon: UserPlus },
+];
+
+interface SidebarProps {
+  mobileOpen: boolean;
+  onNavigate: () => void;
+}
+
+export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onNavigate }) => {
+  const { effectiveRole } = useAuth();
+  const navigate = useNavigate();
+  const [showNew, setShowNew] = useState(false);
+  const newRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showNew) return;
+    const close = (e: MouseEvent) => {
+      if (newRef.current && !newRef.current.contains(e.target as Node)) setShowNew(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [showNew]);
+
+  const can = (m: ModuleKey) => canAccessModule(effectiveRole, m);
+  const quick = QUICK_CREATE.filter((q) => can(q.module));
 
   return (
-    <aside className="sidebar">
-      {/* Brand Header */}
+    <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`} aria-label="Main navigation">
       <div className="sidebar-header">
-        <NavLink to="/" className="brand-logo-wrap">
-          <div className="brand-icon-badge">
-            <ShieldAlert size={22} />
-          </div>
-          <div>
-            <div className="brand-title">IKPM PORTAL</div>
-            <div className="brand-subtitle">Pest Management</div>
-          </div>
+        <NavLink to="/" className="brand-logo-wrap" onClick={onNavigate}>
+          <img src="/ik_logo.svg" alt="Insect Killer Pest Management" />
         </NavLink>
       </div>
 
-      {/* Navigation Links in SRS Specified Order */}
+      {quick.length > 0 && (
+        <div ref={newRef} style={{ position: 'relative' }}>
+          <button type="button" className="sidebar-new-btn" onClick={() => setShowNew((v) => !v)} aria-expanded={showNew}>
+            <Plus size={22} strokeWidth={2.2} color="var(--ikpm-emerald-600)" />
+            <span>New</span>
+          </button>
+          {showNew && (
+            <div className="dropdown-panel animate-fade-in" style={{ left: '1rem', right: 'auto', top: '58px' }}>
+              {quick.map((q) => (
+                <button
+                  key={q.label}
+                  type="button"
+                  className="dropdown-item"
+                  onClick={() => {
+                    setShowNew(false);
+                    onNavigate();
+                    navigate(q.to);
+                  }}
+                >
+                  <q.icon size={16} color="var(--text-secondary)" />
+                  {q.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <nav className="sidebar-nav">
-        {/* Core Workspace */}
-        <div className="nav-section-title">Core Operations</div>
-
-        {!isTechOnly && (
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-          >
-            <LayoutDashboard size={18} />
-            <span>Dashboard</span>
-          </NavLink>
-        )}
-
-        {/* PCO Mobile View for Field Technicians */}
-        <NavLink
-          to="/pco-field"
-          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-        >
-          <Smartphone size={18} />
-          <span>PCO Mobile View</span>
-          <span className="badge">Field</span>
-        </NavLink>
-
-        {/* CRM & Customer Profiles (Highest Priority) */}
-        {!isTechOnly && (
-          <>
-            <div className="nav-section-title">Customer & Pipeline</div>
-
-            <NavLink
-              to="/customers"
-              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            >
-              <Building2 size={18} />
-              <span>Customer Accounts</span>
-            </NavLink>
-
-            <NavLink
-              to="/crm"
-              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            >
-              <Users2 size={18} />
-              <span>CRM & Leads</span>
-            </NavLink>
-
-            <NavLink
-              to="/proposals"
-              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            >
-              <FileSpreadsheet size={18} />
-              <span>Proposals & Revisions</span>
-            </NavLink>
-
-            <NavLink
-              to="/contracts"
-              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            >
-              <FileSignature size={18} />
-              <span>Contracts & AMCs</span>
-            </NavLink>
-
-            <NavLink
-              to="/documents"
-              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            >
-              <FolderLock size={18} />
-              <span>Document Library</span>
-            </NavLink>
-
-            {/* Operations */}
-            <div className="nav-section-title">Field & Dispatch</div>
-
-            <NavLink
-              to="/operations/calendar"
-              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            >
-              <CalendarDays size={18} />
-              <span>Dispatch Calendar</span>
-            </NavLink>
-
-            <NavLink
-              to="/operations/jobs"
-              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            >
-              <Truck size={18} />
-              <span>Service Jobs</span>
-            </NavLink>
-
-            {/* Finance & Accounts */}
-            {hasRole(['super_admin', 'management', 'finance']) && (
-              <>
-                <div className="nav-section-title">Accounts & Tax</div>
-
+        {SECTIONS.map((section, i) => {
+          const items = section.items.filter((it) => can(it.module));
+          if (items.length === 0) return null;
+          return (
+            <React.Fragment key={section.title ?? i}>
+              {section.title && <div className="nav-section-title">{section.title}</div>}
+              {items.map((it) => (
                 <NavLink
-                  to="/finance/invoices"
+                  key={it.to}
+                  to={it.to}
+                  end={it.end}
+                  onClick={onNavigate}
                   className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
                 >
-                  <Receipt size={18} />
-                  <span>Invoices & Receivables</span>
+                  <it.icon size={18} />
+                  <span>{it.label}</span>
+                  {it.badge && <span className="badge">{it.badge}</span>}
                 </NavLink>
-
-                <NavLink
-                  to="/finance/tax-rules"
-                  className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-                >
-                  <FileCheck2 size={18} />
-                  <span>Tax Rules & WHT</span>
-                </NavLink>
-              </>
-            )}
-
-            {/* System Settings & Org Structure */}
-            <div className="nav-section-title">Administration</div>
-
-            <NavLink
-              to="/settings"
-              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            >
-              <Settings size={18} />
-              <span>Settings & Audit</span>
-            </NavLink>
-          </>
-        )}
+              ))}
+            </React.Fragment>
+          );
+        })}
       </nav>
 
-      {/* Footer Info */}
-      <div style={{ padding: '0.85rem 1.25rem', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '0.72rem', color: '#64748B' }}>
-        <div>IKPM Pakistan • v1.0 Production</div>
-        <div style={{ color: 'var(--ikpm-emerald-400)', marginTop: '2px' }}>PWA Offline-Ready</div>
+      <div className="sidebar-footer">
+        <span>Signed in as {effectiveRole ? ROLE_LABELS[effectiveRole] : '—'}</span>
+        <span>IKPM Portal · v1.1</span>
       </div>
     </aside>
   );

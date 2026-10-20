@@ -7,6 +7,7 @@ import { dataService } from '../../services/dataService';
 import { uploadFile, validateFile, ACCEPT_ATTR, formatBytes } from '../../lib/cloudinary';
 import { integrations } from '../../config/env';
 import { COMPANY_DOC_CATEGORIES, type CompanyDocCategory, type DocumentOwner } from '../../types/document';
+import { useDataStore } from '../../hooks/useDataStore';
 
 interface Props {
   isOpen: boolean;
@@ -26,6 +27,7 @@ const titleFromFile = (name: string) =>
   name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
 
 export const DocumentUploadModal: React.FC<Props> = ({ isOpen, onClose, owner, defaultCategory = 'other' }) => {
+  useDataStore(); // re-render when Firestore data arrives
   const { success, error } = useNotification();
   const { userProfile } = useAuth();
   const inputRef = useRef<HTMLInputElement>(null);

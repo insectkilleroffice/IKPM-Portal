@@ -15,8 +15,10 @@ import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { formatDate } from '../../lib/formatters';
+import { useDataStore } from '../../hooks/useDataStore';
 
 export const DispatchCalendarPage: React.FC = () => {
+  useDataStore(); // re-render when Firestore data arrives
   const navigate = useNavigate();
   const jobs = dataService.getJobs();
 
@@ -77,10 +79,10 @@ export const DispatchCalendarPage: React.FC = () => {
               value={selectedTechnician}
               onChange={(e) => setSelectedTechnician(e.target.value)}
             >
-              <option value="all">All Field Technicians</option>
-              <option value="Kamran Abbasi">Kamran Abbasi (PCO)</option>
-              <option value="Irfan Jameel">Irfan Jameel (Technician)</option>
-              <option value="Muhammad Asif">Muhammad Asif (Supervisor)</option>
+              <option value="all">All field technicians</option>
+              {dataService.getStaff(['technician']).map((t) => (
+                <option key={t.uid} value={t.displayName}>{t.displayName}</option>
+              ))}
             </select>
           </div>
         </div>

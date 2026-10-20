@@ -1,12 +1,16 @@
 import React, { useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Shield,
   History,
   RefreshCw,
-  Building2,
   CheckCircle2,
   HardDrive,
   Eye,
+  Cloud,
+  CloudUpload,
+  AlertTriangle,
+  UsersRound,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -15,22 +19,44 @@ import { formatDateTime } from '../../lib/formatters';
 import { useSync } from '../../contexts/SyncContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
+import { useDataStore } from '../../hooks/useDataStore';
 
 export const SettingsPage: React.FC = () => {
+  useDataStore(); // re-render when Firestore data arrives
   const { isOnline, pendingCount, syncQueue, triggerSync } = useSync();
   const { isSuperAdmin, setSimulatedRole } = useAuth();
-  const { success } = useNotification();
+  const { success, error } = useNotification();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [activeTab, setActiveTab] = useState<'org' | 'roles' | 'audit' | 'sync'>('org');
+  type SettingsTab = 'cloud' | 'roles' | 'audit' | 'sync';
+  const [activeTab, setActiveTabState] = useState<SettingsTab>((searchParams.get('tab') as SettingsTab) || 'cloud');
+  const setActiveTab = (t: SettingsTab) => {
+    setActiveTabState(t);
+    setSearchParams({ tab: t }, { replace: true });
+  };
   const auditLogs = dataService.getAuditLogs();
+  const cloud = dataService.getCloudState();
+  const [includeSamples, setIncludeSamples] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const localGroups = dataService.getLocalOnlyRecords(includeSamples);
+  const localTotal = localGroups.reduce((n, g) => n + g.count, 0);
+  const teams = dataService.getTeams();
+  const staff = dataService.getUsers().filter((u) => u.isActive);
 
-  const seedDepartments = [
-    { name: 'Executive Management', head: 'Salman (CEO)', staffCount: 1 },
-    { name: 'Sales & Customer Relationship', head: 'TBD', staffCount: 4 },
-    { name: 'Operations & Dispatch', head: 'Muhammad Asif (Ops Mgr)', staffCount: 12 },
-    { name: 'Accounts & Finance', head: 'Farooq (Accounts Head)', staffCount: 3 },
-    { name: 'Quality Control & Audit', head: 'Internal Compliance Lead', staffCount: 2 },
-  ];
+  const uploadLocal = async () => {
+    setUploading(true);
+    try {
+      const n = await dataService.uploadLocalRecords(includeSamples);
+      success('Uploaded to Firestore', `${n} record(s) from this browser are now saved in the cloud.`);
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      error('Upload failed', code === 'permission-denied'
+        ? 'Firestore refused the upload. Deploy the security rules first (see the steps above), then try again.'
+        : err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const rolesMatrix = [
     { role: 'super_admin', title: 'Super Admin (CEO / Owner)', leads: 'All', proposals: 'All + Full Approvals', jobs: 'All', finance: 'Full Access' },
@@ -57,35 +83,98 @@ export const SettingsPage: React.FC = () => {
 
       {/* Settings Navigation Tabs */}
       <div className="tab-bar">
-        <button className={`tab-btn ${activeTab === 'org' ? 'active' : ''}`} onClick={() => setActiveTab('org')}>
-          <Building2 size={14} /> Organizational Structure
+        <button className={`tab-btn ${activeTab === 'cloud' ? 'active' : ''}`} onClick={() => setActiveTab('cloud')}>
+          <Cloud size={16} /> Cloud database
+          {cloud.status === 'error' && <AlertTriangle size={14} color="var(--ikpm-rose-500)" />}
         </button>
         <button className={`tab-btn ${activeTab === 'roles' ? 'active' : ''}`} onClick={() => setActiveTab('roles')}>
-          <Shield size={14} /> Roles & Authorization Matrix
+          <Shield size={16} /> Preview as role
         </button>
         <button className={`tab-btn ${activeTab === 'audit' ? 'active' : ''}`} onClick={() => setActiveTab('audit')}>
-          <History size={14} /> System Audit Trail ({auditLogs.length})
+          <History size={16} /> Audit trail <span className="tab-count">{auditLogs.length}</span>
         </button>
         <button className={`tab-btn ${activeTab === 'sync' ? 'active' : ''}`} onClick={() => setActiveTab('sync')}>
-          <HardDrive size={14} /> Offline Sync Queue ({pendingCount})
+          <HardDrive size={16} /> Offline queue <span className="tab-count">{pendingCount}</span>
         </button>
       </div>
 
-      {/* Tab: Org Structure */}
-      {activeTab === 'org' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.25rem' }}>
-          {seedDepartments.map((dept) => (
-            <div key={dept.name} className="card" style={{ borderTop: '3px solid var(--ikpm-navy-700)' }}>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--ikpm-navy-900)' }}>{dept.name}</h3>
-              <div style={{ fontSize: '0.825rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-                Department Head: <strong>{dept.head}</strong>
+      {/* Tab: Cloud database */}
+      {activeTab === 'cloud' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+              {cloud.status === 'error' ? <AlertTriangle size={22} color="var(--ikpm-rose-500)" /> : <Cloud size={22} color="var(--ikpm-emerald-600)" />}
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div className="card-title">
+                  {cloud.status === 'error' ? 'Cloud Firestore is refusing access' : cloud.status === 'live' ? 'Connected to Cloud Firestore' : 'Connecting to Cloud Firestore…'}
+                </div>
+                <div className="cell-sub">
+                  {cloud.status === 'error'
+                    ? cloud.lastError?.message
+                    : `Every change is saved to Firestore${cloud.pendingWrites ? `. ${cloud.pendingWrites} change(s) still saving` : '. Nothing pending'}. Offline edits sync automatically when you reconnect.`}
+                </div>
               </div>
-              <div style={{ marginTop: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span className="badge-status badge-navy">{dept.staffCount} Designated Staff</span>
-                <span className="badge-status badge-emerald">Operational</span>
-              </div>
+              <span className={`sync-pill ${cloud.status === 'error' ? 'error' : cloud.pendingWrites ? 'pending' : 'live'}`}>
+                <span className="dot" /> {cloud.status === 'error' ? 'Blocked' : cloud.pendingWrites ? 'Saving' : 'Live'}
+              </span>
             </div>
-          ))}
+            {cloud.blocked.length > 0 && (
+              <div className="error-hint" style={{ marginTop: '1rem' }}>
+                <strong>Blocked collections:</strong> {cloud.blocked.join(', ')}
+                <ol className="steps-list">
+                  <li>In a terminal in the project folder run <code>npx firebase-tools login</code> (use the Google account that owns the Firebase project).</li>
+                  <li>Run <code>npx firebase-tools deploy --only firestore</code>. This publishes <code>firestore.rules</code> and the indexes.</li>
+                  <li>Reload the portal.</li>
+                </ol>
+              </div>
+            )}
+          </div>
+
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <CloudUpload size={22} color="var(--ikpm-blue-600)" />
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div className="card-title">Data saved only in this browser</div>
+                <div className="cell-sub">
+                  Before the database was connected, records were kept in this browser only. Upload them once so the whole team can see them.
+                </div>
+              </div>
+              {isSuperAdmin && (
+                <button className="btn btn-primary" disabled={uploading || localTotal === 0} onClick={uploadLocal}>
+                  <CloudUpload size={16} /> {uploading ? 'Uploading…' : `Upload ${localTotal} record(s)`}
+                </button>
+              )}
+            </div>
+            {localTotal === 0 ? (
+              <div className="cell-sub" style={{ marginTop: '0.75rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <CheckCircle2 size={15} color="var(--ikpm-emerald-600)" /> Nothing left to upload from this browser.
+              </div>
+            ) : (
+              <>
+                <div className="chip-row" style={{ marginTop: '0.85rem', marginBottom: '0.5rem' }}>
+                  {localGroups.map((g) => (
+                    <span key={g.collection} className="status-pill">{g.collection.replace(/_/g, ' ')} <strong>{g.count}</strong></span>
+                  ))}
+                </div>
+                <label className="doc-check" style={{ display: 'inline-flex' }}>
+                  <input type="checkbox" checked={includeSamples} onChange={(e) => setIncludeSamples(e.target.checked)} />
+                  Also upload the built-in demo records
+                </label>
+                {!isSuperAdmin && <div className="form-hint">Only the super admin can upload these records.</div>}
+              </>
+            )}
+          </div>
+
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <UsersRound size={22} color="var(--ikpm-navy-700)" />
+              <div style={{ flex: 1 }}>
+                <div className="card-title">Organisation</div>
+                <div className="cell-sub">{staff.length} active staff in {teams.length} team(s)</div>
+              </div>
+              {isSuperAdmin && <Link to="/admin/team" className="btn btn-secondary">Manage team & access</Link>}
+            </div>
+          </div>
         </div>
       )}
 

@@ -152,7 +152,15 @@ export const IndividualDetailPage: React.FC = () => {
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '1rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => navigate(`/operations/jobs?action=new_job&customerId=${client.id}&customerType=individual`)}
+              title="Schedule new pest control service with this client pre-selected"
+            >
+              <Truck size={15} />
+              <span>+ New Service</span>
+            </button>
             <div style={{ padding: '0.75rem 1.25rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)', textAlign: 'right' }}>
               <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Outstanding Balance</div>
               <div style={{ fontSize: '1.35rem', fontWeight: 800, color: client.balance > 0 ? 'var(--ikpm-rose-500)' : 'var(--ikpm-emerald-600)' }}>

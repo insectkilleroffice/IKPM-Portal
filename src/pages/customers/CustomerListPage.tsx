@@ -21,8 +21,10 @@ import { Modal } from '../../components/common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { CompanyMaster, IndividualClient } from '../../types/customer';
+import { useDataStore } from '../../hooks/useDataStore';
 
 export const CustomerListPage: React.FC = () => {
+  useDataStore(); // re-render when Firestore data arrives
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { success, warning } = useNotification();

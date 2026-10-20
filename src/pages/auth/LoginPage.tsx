@@ -1,186 +1,141 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
-import { ShieldAlert, ArrowRight, Lock, Mail, ShieldCheck } from 'lucide-react';
+import { ArrowRight, Lock, Mail, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 
+const authError = (err: unknown) => {
+  const code = (err as { code?: string }).code || '';
+  if (['auth/invalid-credential', 'auth/wrong-password', 'auth/user-not-found', 'auth/invalid-login-credentials'].includes(code)) {
+    return 'Email or password is incorrect.';
+  }
+  if (code === 'auth/too-many-requests') return 'Too many attempts. Wait a few minutes or reset your password.';
+  if (code === 'auth/network-request-failed') return 'No internet connection.';
+  if (code === 'auth/invalid-email') return 'Enter a valid email address.';
+  return err instanceof Error ? err.message : 'Sign-in failed';
+};
+
 export const LoginPage: React.FC = () => {
-  const { login, isInitialized } = useAuth();
+  const { login, resetPassword, isInitialized, currentUser, isLoading: authLoading } = useAuth();
   const { success, error } = useNotification();
   const navigate = useNavigate();
   const location = useLocation();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<'signin' | 'reset'>('signin');
+  const [problem, setProblem] = useState('');
 
-  const from = location.state?.from?.pathname || '/';
+  const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname || '/';
 
-  const handleLogin = async (e: React.FormEvent) => {
+  // Already signed in (e.g. after reload): go straight to the portal
+  useEffect(() => {
+    if (!authLoading && currentUser) navigate(from, { replace: true });
+  }, [authLoading, currentUser, from, navigate]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsLoading(true);
+    setProblem('');
+    setBusy(true);
     try {
-      await login(email, password);
-      success('Authentication Successful', 'Welcome to IKPM Portal.');
-      navigate(from, { replace: true });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Invalid credentials';
-      error('Authentication Failed', msg);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Quick Demo Login helper for testing different roles
-  const handleQuickDemo = async (demoRole: 'ceo' | 'sales' | 'pco' | 'finance') => {
-    setIsLoading(true);
-    try {
-      let demoEmail = 'salman@insectkiller.pk';
-      if (demoRole === 'sales') demoEmail = 'sales.manager@insectkiller.pk';
-      if (demoRole === 'pco') demoEmail = 'pco.kamran@insectkiller.pk';
-      if (demoRole === 'finance') demoEmail = 'accounts@insectkiller.pk';
-
-      setEmail(demoEmail);
-      setPassword('ikpm123456');
-
-      // Attempt login or fallback to authenticated demo session
-      try {
-        await login(demoEmail, 'ikpm123456');
-      } catch {
-        // If not created yet in Firebase Auth, prompt user
-        error(
-          'Account Not Yet in Firebase',
-          `Use the First-Admin Setup wizard to initialize Salman/CEO, or register this demo email in Firebase console.`
-        );
+      if (mode === 'reset') {
+        await resetPassword(email);
+        success('Check your inbox', `If ${email} has a portal account, a password-reset link is on its way.`);
+        setMode('signin');
+      } else {
+        await login(email, password);
+        navigate(from, { replace: true });
       }
-      navigate(from, { replace: true });
+    } catch (err) {
+      const msg = authError(err);
+      setProblem(msg);
+      if (mode === 'reset') error('Could not send reset email', msg);
     } finally {
-      setIsLoading(false);
+      setBusy(false);
     }
   };
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: 'var(--ikpm-navy-900)',
-        padding: '1.5rem',
-        backgroundImage: 'radial-gradient(circle at 50% 15%, rgba(16, 185, 129, 0.12) 0%, transparent 65%)',
-      }}
-    >
-      <div
-        className="card animate-fade-in"
-        style={{
-          width: '100%',
-          maxWidth: '460px',
-          padding: '2.5rem',
-          backgroundColor: '#FFFFFF',
-          borderRadius: 'var(--radius-xl)',
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.4)',
-        }}
-      >
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <div
-            style={{
-              width: '56px',
-              height: '56px',
-              borderRadius: 'var(--radius-lg)',
-              backgroundColor: 'var(--ikpm-navy-800)',
-              color: 'var(--ikpm-emerald-400)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: 'var(--shadow-glow-emerald)',
-              marginBottom: '1rem',
-            }}
-          >
-            <ShieldAlert size={30} />
-          </div>
-          <h1 style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', letterSpacing: '-0.02em' }}>
-            IKPM Portal
-          </h1>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-            Insect Killer Pest Management, Pakistan
+    <div className="center-screen">
+      <div style={{ width: '100%', maxWidth: 440 }}>
+        <form className="auth-card animate-fade-in" onSubmit={handleSubmit}>
+          <img src="/ik_logo.svg" alt="Insect Killer Pest Management" className="auth-logo" />
+          <h1 className="auth-title">{mode === 'reset' ? 'Reset your password' : 'Sign in'}</h1>
+          <p className="auth-subtitle">
+            {mode === 'reset' ? 'We’ll email you a link to choose a new password.' : 'IKPM Business Portal: use your work email'}
           </p>
-        </div>
 
-        {!isInitialized && (
-          <div
-            style={{
-              padding: '0.85rem 1rem',
-              backgroundColor: 'var(--ikpm-amber-100)',
-              border: '1px solid #FCD34D',
-              borderRadius: 'var(--radius-md)',
-              fontSize: '0.8rem',
-              color: '#92400E',
-              marginBottom: '1.5rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <span>First-time setup detected. Claim initial Super Admin account:</span>
-            <Link to="/setup-first-admin" className="btn btn-primary" style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem' }}>
-              Setup Now
-            </Link>
-          </div>
-        )}
+          {!isInitialized && mode === 'signin' && (
+            <div className="info-hint" style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
+              <span>No administrator yet. Set up the owner account first.</span>
+              <Link to="/setup-first-admin" className="btn btn-sm btn-primary">Set up</Link>
+            </div>
+          )}
 
-        <form onSubmit={handleLogin}>
           <div className="form-group">
-            <label className="form-label">Email Address</label>
-            <div style={{ position: 'relative' }}>
+            <label className="form-label" htmlFor="login-email">Work email</label>
+            <div className="input-with-icon">
+              <Mail size={16} />
               <input
+                id="login-email"
                 type="email"
-                required
                 className="form-input"
+                placeholder="name@insectkiller.pk"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@insectkiller.pk"
-                style={{ paddingLeft: '2.4rem' }}
-              />
-              <Mail size={16} style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Password</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type="password"
+                autoComplete="username"
                 required
-                className="form-input"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                style={{ paddingLeft: '2.4rem' }}
+                autoFocus
               />
-              <Lock size={16} style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
             </div>
           </div>
 
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={isLoading}
-            style={{ width: '100%', padding: '0.75rem', marginTop: '0.5rem' }}
-          >
-            <span>{isLoading ? 'Verifying Credentials...' : 'Sign In to Portal'}</span>
-            <ArrowRight size={16} />
+          {mode === 'signin' && (
+            <div className="form-group">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <label className="form-label" htmlFor="login-password">Password</label>
+                <button
+                  type="button"
+                  onClick={() => { setMode('reset'); setProblem(''); }}
+                  style={{ background: 'none', border: 'none', color: 'var(--ikpm-blue-600)', fontSize: '0.78rem', fontWeight: 500, cursor: 'pointer' }}
+                >
+                  Forgot password?
+                </button>
+              </div>
+              <div className="input-with-icon">
+                <Lock size={16} />
+                <input
+                  id="login-password"
+                  type="password"
+                  className="form-input"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+              </div>
+            </div>
+          )}
+
+          {problem && <div className="error-hint" style={{ marginBottom: '1rem' }}>{problem}</div>}
+
+          <button type="submit" className="btn btn-primary" style={{ width: '100%', height: 42 }} disabled={busy}>
+            {busy ? 'Please wait…' : mode === 'reset' ? 'Send reset link' : 'Sign in'}
+            {!busy && <ArrowRight size={16} />}
           </button>
+
+          {mode === 'reset' && (
+            <button type="button" className="btn btn-ghost" style={{ width: '100%', marginTop: '0.5rem' }} onClick={() => setMode('signin')}>
+              Back to sign in
+            </button>
+          )}
         </form>
 
-        <div style={{ marginTop: '1.75rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-subtle)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8rem' }}>
-            <Link to="/setup-first-admin" style={{ color: 'var(--ikpm-emerald-600)', fontWeight: 600, textDecoration: 'none' }}>
-              First-Admin Bootstrap Wizard
-            </Link>
-            <span style={{ color: 'var(--text-muted)' }}>Secure Least-Privilege</span>
-          </div>
-        </div>
+        <p style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: '1rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          <ShieldCheck size={14} /> Accounts are created by your super admin. Access depends on your role and team.
+        </p>
       </div>
     </div>
   );

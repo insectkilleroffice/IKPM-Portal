@@ -1,5 +1,5 @@
-import React from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import React, { useState } from 'react';
+import { useNavigate, Link, Navigate } from 'react-router-dom';
 import {
   Users2,
   Building2,
@@ -13,15 +13,42 @@ import {
   CheckCircle2,
   AlertTriangle,
   Eye,
+  ArrowRight,
+  Phone,
+  Send,
+  ShieldCheck,
+  Calendar,
+  DollarSign,
+  Briefcase,
+  Layers,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { formatPKR, formatDate } from '../../lib/formatters';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
+import { useDataStore } from '../../hooks/useDataStore';
+import { getLeadNextAction, getJobNextAction } from '../../lib/workflow';
+
+type RoleQueueTab = 'sales' | 'operations' | 'finance' | 'technician';
 
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const { userProfile, effectiveRole, isSuperAdmin, setSimulatedRole } = useAuth();
+  useDataStore();
+
+  // If user is a technician, skip full portal and open PCO field workstation directly
+  if (effectiveRole === 'technician') {
+    return <Navigate to="/pco-field" replace />;
+  }
+
+  // Determine default queue tab based on active role
+  const getDefaultTab = (): RoleQueueTab => {
+    if (effectiveRole === 'finance') return 'finance';
+    if (effectiveRole === 'sales') return 'sales';
+    return 'operations';
+  };
+
+  const [activeQueueTab, setActiveQueueTab] = useState<RoleQueueTab>(getDefaultTab());
 
   // Metrics queried from active database records
   const companies = dataService.getCompanies();
@@ -47,6 +74,42 @@ export const DashboardPage: React.FC = () => {
 
   const pendingApprovals = proposals.filter((p) => p.status === 'pending_approval');
 
+  // Dates for queue evaluation
+  const todayStr = new Date().toISOString().split('T')[0];
+  const tomorrowDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const tomorrowStr = tomorrowDate.toISOString().split('T')[0];
+
+  // 1. SALES QUEUE
+  const salesLeadsToCall = leads.filter((l) => ['new', 'contacted'].includes(l.stage));
+  const salesProposalsAwaitingReply = proposals.filter((p) => ['sent_to_client', 'negotiation'].includes(p.status));
+  const salesProposalsNeedApproval = proposals.filter((p) => p.status === 'pending_approval');
+
+  // 2. OPERATIONS QUEUE
+  const opsJobsTodayAndTomorrow = jobs.filter((j) => [todayStr, tomorrowStr].includes(j.scheduledDate) || j.status === 'in_progress');
+  const opsUnassignedJobs = jobs.filter((j) => !j.assignedTechnicianNames?.length || j.assignedTechnicianNames.includes('Unassigned'));
+  const opsReportsWaitingVerification = jobs.filter((j) => j.status === 'completed' && !j.supervisorVerification?.isVerified);
+
+  // 3. FINANCE QUEUE
+  const financeVerifiedReportsNotYetInvoiced = jobs.filter((j) => {
+    if (!j.supervisorVerification?.isVerified) return false;
+    const inv = dataService.getInvoiceForJob(j.id);
+    return !inv || inv.status === 'void_reversed';
+  });
+  const financeOverdueInvoices = invoices.filter((i) => {
+    return new Date(i.dueDate) < new Date() && i.balanceDue > 0 && i.status !== 'void_reversed';
+  });
+  const financePendingWhtCertificates = invoices.filter((i) => {
+    return i.balanceDue > 0 && (!i.customerWhtTotal || i.customerWhtTotal === 0);
+  });
+
+  // 4. TECHNICIAN QUEUE
+  const techJobsToday = jobs
+    .filter((j) => j.scheduledDate === todayStr || j.status === 'in_progress')
+    .sort((a, b) => {
+      const order = { morning: 1, afternoon: 2, evening: 3, night_shift: 4 };
+      return (order[a.timeSlot] || 1) - (order[b.timeSlot] || 1);
+    });
+
   return (
     <div className="animate-fade-in">
       {/* Welcome Banner */}
@@ -55,7 +118,7 @@ export const DashboardPage: React.FC = () => {
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          marginBottom: '1.75rem',
+          marginBottom: '1.5rem',
           flexWrap: 'wrap',
           gap: '1rem',
         }}
@@ -65,7 +128,7 @@ export const DashboardPage: React.FC = () => {
             Welcome, {userProfile?.displayName || 'User'}
           </h1>
           <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-            IKPM Enterprise Operations Dashboard • Active Role: <strong>{effectiveRole?.toUpperCase()}</strong> • Scope: <strong>{userProfile?.dataScope?.toUpperCase() || 'COMPANY'}</strong>
+            IKPM Target Workflow: Lead ─► Inspection ─► Proposal ─► Contract ─► Job ─► Report ─► Invoice ─► Paid
           </p>
         </div>
 
@@ -80,41 +143,385 @@ export const DashboardPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Pending Approvals Notice (Approval Matrix AP-01/02) */}
-      {pendingApprovals.length > 0 && ['super_admin', 'management', 'sales'].includes(effectiveRole || '') && (
-        <div
-          style={{
-            padding: '1rem 1.25rem',
-            backgroundColor: 'var(--ikpm-amber-100)',
-            border: '1px solid #FCD34D',
-            borderRadius: 'var(--radius-lg)',
-            marginBottom: '1.75rem',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '1rem',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <AlertTriangle size={22} color="#92400E" />
-            <div>
-              <strong style={{ color: '#92400E' }}>
-                {pendingApprovals.length} Proposal(s) Pending Critical Escalation Approval
-              </strong>
-              <div style={{ fontSize: '0.8rem', color: '#B45309' }}>
-                Approval Matrix: Proposals exceeding discount or value thresholds require authorized sign-off.
+      {/* TODAY'S WORK QUEUE (Step 4 of Roadmap) */}
+      <div
+        className="card"
+        style={{
+          padding: '1.25rem',
+          marginBottom: '1.75rem',
+          borderLeft: '4px solid var(--ikpm-navy-700)',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Briefcase size={20} color="var(--ikpm-navy-900)" />
+            <h2 style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', margin: 0 }}>
+              Today&apos;s Work Queue
+            </h2>
+            <span className="badge-status badge-navy" style={{ fontSize: '0.7rem' }}>
+              Action Required
+            </span>
+          </div>
+
+          {/* Role Queue Switcher */}
+          <div style={{ display: 'flex', backgroundColor: 'var(--bg-surface-alt)', padding: '3px', borderRadius: 'var(--radius-md)', gap: '2px' }}>
+            {[
+              { id: 'operations', label: 'Operations Queue' },
+              { id: 'sales', label: 'Sales Queue' },
+              { id: 'finance', label: 'Finance Queue' },
+              { id: 'technician', label: 'Technician Route' },
+            ].map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setActiveQueueTab(t.id as RoleQueueTab)}
+                style={{
+                  padding: '0.35rem 0.75rem',
+                  fontSize: '0.78rem',
+                  fontWeight: activeQueueTab === t.id ? 700 : 500,
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  backgroundColor: activeQueueTab === t.id ? 'var(--bg-surface)' : 'transparent',
+                  color: activeQueueTab === t.id ? 'var(--ikpm-navy-900)' : 'var(--text-muted)',
+                  boxShadow: activeQueueTab === t.id ? 'var(--shadow-sm)' : 'none',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 1. SALES QUEUE */}
+        {activeQueueTab === 'sales' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+            {/* Leads to Call */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Leads to Call ({salesLeadsToCall.length})
+                </strong>
+                <Link to="/crm" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>View CRM</Link>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {salesLeadsToCall.slice(0, 3).map((lead) => (
+                  <div
+                    key={lead.id}
+                    onClick={() => navigate(`/crm?lead=${lead.id}`)}
+                    style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)' }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{lead.title}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{lead.contactName} • {lead.phone}</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                      <span className="badge-status badge-navy" style={{ fontSize: '0.62rem' }}>{lead.stage}</span>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--ikpm-emerald-600)' }}>{formatPKR(lead.estimatedValue)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Proposals Awaiting Reply */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Proposals Awaiting Reply ({salesProposalsAwaitingReply.length})
+                </strong>
+                <Link to="/proposals" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>All Proposals</Link>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {salesProposalsAwaitingReply.slice(0, 3).map((prop) => (
+                  <div
+                    key={prop.id}
+                    onClick={() => navigate(`/proposals`)}
+                    style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)' }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{prop.customerName}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Proposal {prop.id} • Sent: {formatDate(prop.sentDate || prop.createdAt)}</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                      <span className="badge-status badge-slate" style={{ fontSize: '0.62rem' }}>{prop.status}</span>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700 }}>{formatPKR(prop.totalAmount)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Proposals Needing Approval */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: '#92400E' }}>
+                  Proposals Needing Approval ({salesProposalsNeedApproval.length})
+                </strong>
+              </div>
+              {salesProposalsNeedApproval.length === 0 ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                  No pending discount escalations.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {salesProposalsNeedApproval.map((p) => (
+                    <div
+                      key={p.id}
+                      onClick={() => navigate(`/proposals?filter=pending_approval`)}
+                      style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid #FCD34D' }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{p.customerName}</div>
+                      <div style={{ fontSize: '0.72rem', color: '#B45309' }}>
+                        Discount: {p.discountPercent}% • Value: {formatPKR(p.totalAmount)}
+                      </div>
+                      <button className="btn btn-primary" style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', marginTop: '4px' }}>
+                        Review AP-01 Approval
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 2. OPERATIONS QUEUE */}
+        {activeQueueTab === 'operations' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+            {/* Today's & Tomorrow's Jobs */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Today &amp; Tomorrow&apos;s Visits ({opsJobsTodayAndTomorrow.length})
+                </strong>
+                <Link to="/operations/jobs" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Jobs List</Link>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {opsJobsTodayAndTomorrow.slice(0, 3).map((job) => (
+                  <div
+                    key={job.id}
+                    onClick={() => navigate(`/operations/jobs?job=${job.id}`)}
+                    style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)' }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ fontSize: '0.8rem' }}>{job.customerName}</strong>
+                      <span className="badge-status badge-slate" style={{ fontSize: '0.62rem' }}>{job.timeSlot}</span>
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      {job.siteName} • Tech: {job.leadPcoName}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Reports Waiting for Supervisor QC */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Reports Waiting for QC ({opsReportsWaitingVerification.length})
+                </strong>
+              </div>
+              {opsReportsWaitingVerification.length === 0 ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                  All completed reports have been verified.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {opsReportsWaitingVerification.map((j) => (
+                    <div
+                      key={j.id}
+                      onClick={() => navigate(`/operations/jobs?job=${j.id}`)}
+                      style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--ikpm-emerald-300)' }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{j.customerName} ({j.id})</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        Client Signed • Tech: {j.leadPcoName}
+                      </div>
+                      <button className="btn btn-outline-emerald" style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', marginTop: '4px' }}>
+                        <ShieldCheck size={12} />
+                        <span>Verify QC Report</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Unassigned Jobs */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: '#92400E' }}>
+                  Unassigned Jobs ({opsUnassignedJobs.length})
+                </strong>
+              </div>
+              {opsUnassignedJobs.length === 0 ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                  All scheduled jobs have assigned technicians.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {opsUnassignedJobs.map((j) => (
+                    <div
+                      key={j.id}
+                      onClick={() => navigate(`/operations/jobs?job=${j.id}`)}
+                      style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid #FCD34D' }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{j.customerName}</div>
+                      <div style={{ fontSize: '0.72rem', color: '#92400E' }}>Date: {formatDate(j.scheduledDate)}</div>
+                      <button className="btn btn-primary" style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', marginTop: '4px' }}>
+                        Assign Technician
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 3. FINANCE QUEUE */}
+        {activeQueueTab === 'finance' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+            {/* Verified Reports Not Yet Invoiced */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Verified Reports to Invoice ({financeVerifiedReportsNotYetInvoiced.length})
+                </strong>
+              </div>
+              {financeVerifiedReportsNotYetInvoiced.length === 0 ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                  All verified reports have been invoiced.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {financeVerifiedReportsNotYetInvoiced.map((j) => (
+                    <div
+                      key={j.id}
+                      onClick={() => navigate(`/finance/invoices?action=new_invoice&fromJob=${j.id}`)}
+                      style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)' }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{j.customerName}</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        Job {j.id} • QC Verified by {j.supervisorVerification?.supervisorName}
+                      </div>
+                      <button className="btn btn-primary" style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', marginTop: '4px' }}>
+                        <Receipt size={12} />
+                        <span>Create Invoice</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Overdue Invoices */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-rose-500)' }}>
+                  Overdue Invoices ({financeOverdueInvoices.length})
+                </strong>
+                <Link to="/finance/invoices" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Invoices</Link>
+              </div>
+              {financeOverdueInvoices.length === 0 ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                  No overdue invoices.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {financeOverdueInvoices.map((inv) => (
+                    <div
+                      key={inv.id}
+                      onClick={() => navigate(`/finance/invoices`)}
+                      style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--ikpm-rose-300)' }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <strong style={{ fontSize: '0.8rem' }}>{inv.customerName}</strong>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--ikpm-rose-500)' }}>
+                          {formatPKR(inv.balanceDue)}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        Inv: {inv.invoiceNumber} • Due: {formatDate(inv.dueDate)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* WHT Certificates Pending */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Receivable Balances Pending ({financePendingWhtCertificates.length})
+                </strong>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {financePendingWhtCertificates.slice(0, 3).map((inv) => (
+                  <div
+                    key={inv.id}
+                    onClick={() => navigate(`/finance/invoices`)}
+                    style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)' }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{inv.customerName}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      Outstanding: <strong>{formatPKR(inv.balanceDue)}</strong>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
-          <button
-            className="btn btn-primary"
-            style={{ backgroundColor: '#92400E', padding: '0.4rem 0.85rem', fontSize: '0.8rem' }}
-            onClick={() => navigate('/proposals?filter=pending_approval')}
-          >
-            Review Approval Queue
-          </button>
-        </div>
-      )}
+        )}
+
+        {/* 4. TECHNICIAN ROUTE QUEUE */}
+        {activeQueueTab === 'technician' && (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <span style={{ fontSize: '0.825rem', color: 'var(--text-secondary)' }}>
+                Route Order for Today: <strong>{techJobsToday.length} assigned visits</strong>
+              </span>
+              <button className="btn btn-primary" onClick={() => navigate('/pco-field')}>
+                <Truck size={14} />
+                <span>Open Guided Field Screen</span>
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '0.75rem' }}>
+              {techJobsToday.map((j, idx) => (
+                <div
+                  key={j.id}
+                  onClick={() => navigate('/pco-field')}
+                  style={{
+                    padding: '0.85rem',
+                    backgroundColor: 'var(--bg-surface-alt)',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--border-subtle)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span className="badge-status badge-navy" style={{ fontSize: '0.65rem' }}>
+                      Stop #{idx + 1} • {j.timeSlot.replace('_', ' ')}
+                    </span>
+                    <StatusBadge status={j.status} />
+                  </div>
+                  <strong style={{ fontSize: '0.9rem', display: 'block', marginTop: '4px' }}>{j.customerName}</strong>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{j.siteName}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem' }}>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                      Pests: {j.targetPests.join(', ')}
+                    </span>
+                    <button className="btn btn-outline-emerald" style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem' }}>
+                      Start
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Real KPI Metrics Cards */}
       <div className="kpi-grid">
@@ -136,7 +543,7 @@ export const DashboardPage: React.FC = () => {
             <div className="kpi-title">Open Sales Pipeline Leads</div>
             <div className="kpi-value">{openLeadsCount}</div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-              Inquiries, Inspections & Drafts
+              Inquiries, Inspections &amp; Drafts
             </div>
           </div>
           <div className="kpi-icon" style={{ backgroundColor: '#E0E7FF', color: 'var(--ikpm-navy-700)' }}>
@@ -146,7 +553,7 @@ export const DashboardPage: React.FC = () => {
 
         <div className="kpi-card" onClick={() => navigate('/contracts')} style={{ cursor: 'pointer' }}>
           <div>
-            <div className="kpi-title">Active AMCs & Contracts</div>
+            <div className="kpi-title">Active AMCs &amp; Contracts</div>
             <div className="kpi-value">{activeContractsCount}</div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
               Recurring preventive maintenance
@@ -162,159 +569,12 @@ export const DashboardPage: React.FC = () => {
             <div className="kpi-title">Scheduled Service Visits</div>
             <div className="kpi-value">{scheduledJobsCount}</div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-              Field jobs & PCO assignments
+              Field jobs &amp; PCO assignments
             </div>
           </div>
           <div className="kpi-icon" style={{ backgroundColor: 'var(--ikpm-emerald-100)', color: 'var(--ikpm-emerald-600)' }}>
             <Truck size={22} />
           </div>
-        </div>
-
-        {['super_admin', 'management', 'finance'].includes(effectiveRole || '') && (
-          <div className="kpi-card" onClick={() => navigate('/finance/invoices')} style={{ cursor: 'pointer' }}>
-            <div>
-              <div className="kpi-title">Total Outstanding Receivables</div>
-              <div className="kpi-value" style={{ color: totalOutstandingBalance > 0 ? 'var(--ikpm-rose-500)' : 'var(--ikpm-emerald-600)' }}>
-                {formatPKR(totalOutstandingBalance)}
-              </div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-                Operational billing ledger
-              </div>
-            </div>
-            <div className="kpi-icon" style={{ backgroundColor: '#FEE2E2', color: 'var(--ikpm-rose-500)' }}>
-              <Receipt size={22} />
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Main Grid: Scheduled Jobs & Recent Leads */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '1.5rem', marginBottom: '2rem' }}>
-        {/* Next Scheduled Jobs */}
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--ikpm-navy-900)' }}>
-              Upcoming Operations & Field Jobs
-            </h3>
-            <Link to="/operations/jobs" style={{ fontSize: '0.8rem', color: 'var(--ikpm-emerald-600)', fontWeight: 600 }}>
-              View All Dispatch Jobs
-            </Link>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {jobs.slice(0, 4).map((j) => (
-              <div
-                key={j.id}
-                onClick={() => navigate(`/operations/jobs?job=${j.id}`)}
-                style={{
-                  padding: '0.85rem 1rem',
-                  backgroundColor: 'var(--bg-surface-alt)',
-                  borderRadius: 'var(--radius-md)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  cursor: 'pointer',
-                  transition: 'background-color 0.15s',
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <span style={{ fontWeight: 700, fontSize: '0.875rem' }}>{j.customerName}</span>
-                    <span className="badge-status badge-slate" style={{ fontSize: '0.68rem' }}>{j.id}</span>
-                  </div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                    Site: {j.siteName} • Lead PCO: {j.leadPcoName}
-                  </div>
-                </div>
-
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>{formatDate(j.scheduledDate)}</div>
-                  <StatusBadge status={j.status} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Recent Inquiries & Leads */}
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--ikpm-navy-900)' }}>
-              Active Inquiries & Leads
-            </h3>
-            <Link to="/crm" style={{ fontSize: '0.8rem', color: 'var(--ikpm-emerald-600)', fontWeight: 600 }}>
-              Pipeline Kanban
-            </Link>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {leads.slice(0, 4).map((l) => (
-              <div
-                key={l.id}
-                onClick={() => navigate(`/crm?lead=${l.id}`)}
-                style={{
-                  padding: '0.85rem 1rem',
-                  backgroundColor: 'var(--bg-surface-alt)',
-                  borderRadius: 'var(--radius-md)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  cursor: 'pointer',
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '0.875rem' }}>{l.title}</div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    {l.contactName} • {l.city}
-                  </div>
-                </div>
-                <StatusBadge status={l.stage} />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Audit Trail Snippet */}
-      <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-          <h3 style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--ikpm-navy-900)' }}>
-            System Audit Trail (Immutable Log)
-          </h3>
-          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Security & Traceability</span>
-        </div>
-
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Timestamp</th>
-                <th>Action</th>
-                <th>Entity Type</th>
-                <th>User</th>
-                <th>Action Details</th>
-              </tr>
-            </thead>
-            <tbody>
-              {auditLogs.length === 0 ? (
-                <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--text-muted)' }}>
-                    System initialized. Audit records will appear upon business actions.
-                  </td>
-                </tr>
-              ) : (
-                auditLogs.map((log) => (
-                  <tr key={log.id}>
-                    <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{formatDate(log.timestamp)}</td>
-                    <td><span className="badge-status badge-navy">{log.action.toUpperCase()}</span></td>
-                    <td style={{ fontWeight: 600 }}>{log.entityType}</td>
-                    <td>{log.userEmail}</td>
-                    <td style={{ fontSize: '0.825rem' }}>{log.details}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
         </div>
       </div>
     </div>
