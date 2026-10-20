@@ -23,7 +23,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useSync } from '../../contexts/SyncContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { normalizePakistaniPhone } from '../../lib/formatters';
-import { canAccessModule, ROLE_LABELS, type ModuleKey } from '../../lib/permissions';
+import { canAccessModule, canEditModule, roleColor, roleLabel, type ModuleKey } from '../../lib/permissions';
 
 interface SearchHit {
   key: string;
@@ -179,7 +179,7 @@ export const Header: React.FC<{ onMenu: () => void }> = ({ onMenu }) => {
           <button
             type="button"
             className="header-icon-btn"
-            title={simulatedRole ? `Viewing as ${ROLE_LABELS[simulatedRole]}. Click to exit` : 'Preview the portal as another role'}
+            title={simulatedRole ? `Viewing as ${roleLabel(simulatedRole)}. Click to exit` : 'Preview the portal as another role'}
             onClick={() => (simulatedRole ? setSimulatedRole(null) : navigate('/settings?tab=roles'))}
             style={simulatedRole ? { background: '#F3E8FF', color: '#6B21A8' } : undefined}
           >
@@ -192,7 +192,7 @@ export const Header: React.FC<{ onMenu: () => void }> = ({ onMenu }) => {
             <div className="header-user-text" style={{ textAlign: 'right', lineHeight: 1.2 }}>
               <div style={{ fontSize: '0.82rem', fontWeight: 600 }}>{userProfile?.displayName || 'User'}</div>
               <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                {effectiveRole ? ROLE_LABELS[effectiveRole] : ''}
+                {effectiveRole ? roleLabel(effectiveRole) : ''}
                 {userProfile?.teamName ? ` · ${userProfile.teamName}` : ''}
               </div>
             </div>
@@ -207,7 +207,7 @@ export const Header: React.FC<{ onMenu: () => void }> = ({ onMenu }) => {
                   <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{userProfile?.displayName}</div>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userProfile?.email}</div>
                   <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
-                    {userProfile?.role && <span className={`role-pill ${userProfile.role}`}>{ROLE_LABELS[userProfile.role]}</span>}
+                    {userProfile?.role && <span className="role-pill" style={{ background: `${roleColor(userProfile.role)}1F`, color: roleColor(userProfile.role) }}>{roleLabel(userProfile.role)}</span>}
                     {userProfile?.teamName && <span className="role-pill">{userProfile.teamName}</span>}
                   </div>
                 </div>
@@ -216,7 +216,7 @@ export const Header: React.FC<{ onMenu: () => void }> = ({ onMenu }) => {
                 <Mail size={15} />
                 <span>Client emails sent from <strong>{userProfile?.businessEmail || userProfile?.email}</strong></span>
               </div>
-              {isSuperAdmin && (
+              {(canEditModule(userProfile?.role, 'team') || canEditModule(userProfile?.role, 'roles')) && (
                 <button type="button" className="dropdown-item" onClick={() => { setShowUserMenu(false); navigate('/admin/team'); }}>
                   <UsersRound size={15} /> Team & access
                 </button>

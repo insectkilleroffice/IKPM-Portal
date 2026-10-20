@@ -18,7 +18,16 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { canReadCollection, seesAllRecords } from '../lib/permissions';
+import {
+  accessLevel,
+  canAccessModule,
+  DEFAULT_ROLES,
+  getRole,
+  seesAllRecords,
+  setRoleDefinitions,
+  type ModuleKey,
+  type RoleDefinition,
+} from '../lib/permissions';
 import type {
   IndividualClient,
   CompanyMaster,
@@ -32,6 +41,7 @@ import type { Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
 import type { AuditLogEntry, DataScope, RecordOwnership, Team, UserProfile, UserRole } from '../types';
 import type { DocumentOwner, DocumentPack, OutreachLog, PortalDocument } from '../types/document';
 import { normalizePakistaniPhone } from '../lib/formatters';
+import { deleteFromCloudinary } from '../lib/cloudinary';
 import {
   SEED_COMPANIES,
   SEED_BRANCHES,
@@ -67,6 +77,7 @@ interface DbState {
   outreachLogs: OutreachLog[];
   users: UserProfile[];
   teams: Team[];
+  roles: RoleDefinition[];
 }
 
 type StateKey = keyof DbState;
@@ -90,10 +101,32 @@ const COLLECTIONS: Record<StateKey, string> = {
   outreachLogs: 'outreach_logs',
   users: 'users',
   teams: 'teams',
+  roles: 'roles',
 };
 
 /** Business records that are scoped to their owner / team. */
 const SCOPED: StateKey[] = ['companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs', 'outreachLogs'];
+
+/** Everything except staff/teams/roles, which are loaded for every signed-in person. */
+const BUSINESS_KEYS: StateKey[] = [
+  'companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs',
+  'invoices', 'payments', 'taxRules', 'auditLogs', 'documents', 'documentPacks', 'outreachLogs',
+];
+
+/** Module that grants read access to each business collection (mirrors firestore.rules). */
+const MODULE_FOR: Partial<Record<StateKey, ModuleKey>> = {
+  companies: 'customers',
+  branches: 'customers',
+  clients: 'customers',
+  sites: 'customers',
+  leads: 'crm',
+  proposals: 'proposals',
+  contracts: 'contracts',
+  jobs: 'jobs',
+  invoices: 'invoices',
+  payments: 'invoices',
+  auditLogs: 'settings',
+};
 
 /** Records uploaded by the one-time local → cloud migration (users/teams/audit are never migrated). */
 const MIGRATABLE: StateKey[] = [
@@ -134,6 +167,7 @@ const emptyState = (): DbState => ({
   outreachLogs: [],
   users: [],
   teams: [],
+  roles: [...DEFAULT_ROLES],
 });
 
 const now = () => new Date().toISOString();
@@ -188,6 +222,9 @@ class DataService {
   private version = 0;
   private session: DataSession | null = null;
   private unsubs: Unsubscribe[] = [];
+  /** Business-data subscriptions; reopened when the person's role permissions change. */
+  private scopedUnsubs: Unsubscribe[] = [];
+  private accessSignature = '';
   /** Per-collection, per-query result sets; a collection's state is the union of its queries. */
   private partials = new Map<StateKey, Map<string, Map<string, unknown>>>();
   private cloud: CloudState = { status: 'signed_out', pendingWrites: 0, blocked: [] };
@@ -219,6 +256,7 @@ class DataService {
 
     this.unsubs.forEach((u) => u());
     this.unsubs = [];
+    this.closeScoped();
     this.partials.clear();
     this.loadedKeys.clear();
     this.s = emptyState();
@@ -231,37 +269,87 @@ class DataService {
     }
 
     this.cloud = { status: 'connecting', pendingWrites: 0, blocked: [] };
-    (Object.keys(COLLECTIONS) as StateKey[]).forEach((key) => {
-      this.queriesFor(key, session).forEach((q, i) => this.listen(key, `${key}#${i}`, q));
-    });
+    // Staff, teams and role definitions are needed by everyone and decide what else to load
+    (['users', 'teams', 'roles'] as StateKey[]).forEach((key) => this.listen(key, `${key}#0`, collection(db, COLLECTIONS[key]), this.unsubs));
+    this.openScoped();
     this.commit();
   }
 
-  private queriesFor(key: StateKey, se: DataSession): Query[] {
-    const name = COLLECTIONS[key];
-    const col = collection(db, name);
-
-    if (key === 'users' || key === 'teams') return [col];
-    if (!canReadCollection(se.role, name)) return [];
-    if (key === 'auditLogs') return [query(col, orderBy('timestamp', 'desc'), limit(500))];
-    if (key === 'taxRules' || key === 'documentPacks' || key === 'invoices' || key === 'payments') return [col];
-
-    if (key === 'jobs' && se.role === 'technician') {
-      return [query(col, where('assignedTechnicianIds', 'array-contains', se.uid))];
-    }
-    if (key === 'documents' && se.role === 'technician') {
-      return [query(col, where('ownerUid', '==', se.uid))];
-    }
-
-    if (seesAllRecords(se.role, se.dataScope)) return [col];
-
-    const scoped: Query[] = [query(col, where('ownerUid', '==', se.uid))];
-    if (se.dataScope === 'team' && se.teamId) scoped.push(query(col, where('teamId', '==', se.teamId)));
-    if (key === 'documents') scoped.push(query(col, where('owner.kind', '==', 'library')));
-    return scoped;
+  private closeScoped() {
+    this.scopedUnsubs.forEach((u) => u());
+    this.scopedUnsubs = [];
+    BUSINESS_KEYS.forEach((k) => this.partials.delete(k));
   }
 
-  private listen(key: StateKey, queryKey: string, q: Query) {
+  /** (Re)opens business-data subscriptions for the current role's module access. */
+  private openScoped() {
+    const se = this.session;
+    if (!se) return;
+    const role = getRole(se.role);
+    this.accessSignature = JSON.stringify(role?.modules ?? {});
+    BUSINESS_KEYS.forEach((key) => {
+      this.queriesFor(key, se).forEach((q, i) => this.listen(key, `${key}#${i}`, q, this.scopedUnsubs));
+    });
+  }
+
+  /** Role documents changed: refresh the registry and reload data if this person's access changed. */
+  private onRolesUpdated() {
+    setRoleDefinitions(this.s.roles);
+    const se = this.session;
+    if (!se) return;
+    const sig = JSON.stringify(getRole(se.role)?.modules ?? {});
+    if (sig !== this.accessSignature) {
+      this.closeScoped();
+      BUSINESS_KEYS.forEach((k) => this.rebuild(k));
+      this.openScoped();
+    }
+  }
+
+  /** Queries this person may run for a collection; each must be provable by firestore.rules. */
+  private queriesFor(key: StateKey, se: DataSession): Query[] {
+    const col = collection(db, COLLECTIONS[key]);
+    const all = seesAllRecords(se.role, se.dataScope);
+    const can = (m: ModuleKey) => canAccessModule(se.role, m);
+    const ownAndTeam = (): Query[] => {
+      const qs: Query[] = [query(col, where('ownerUid', '==', se.uid))];
+      if (se.dataScope === 'team' && se.teamId) qs.push(query(col, where('teamId', '==', se.teamId)));
+      return qs;
+    };
+
+    // Shared configuration: readable by every active person
+    if (key === 'taxRules' || key === 'documentPacks') return [col];
+
+    if (key === 'auditLogs') return can('settings') ? [query(col, orderBy('timestamp', 'desc'), limit(500))] : [];
+
+    // Finance records aren't owner-scoped
+    if (key === 'invoices' || key === 'payments') return can('invoices') ? [col] : [];
+
+    if (key === 'jobs') {
+      const qs: Query[] = [];
+      if (can('jobs')) qs.push(...(all ? [col] : ownAndTeam()));
+      // Field app: jobs assigned to this person
+      if (can('pco') && !(can('jobs') && all)) qs.push(query(col, where('assignedTechnicianIds', 'array-contains', se.uid)));
+      return qs;
+    }
+
+    if (key === 'documents') {
+      if (can('files') && all) return [col];
+      const qs: Query[] = can('files') ? ownAndTeam() : [query(col, where('ownerUid', '==', se.uid))];
+      if (can('documents')) qs.push(query(col, where('owner.kind', '==', 'library')));
+      return qs;
+    }
+
+    if (key === 'outreachLogs') {
+      if (!(can('crm') || can('proposals') || can('documents'))) return [];
+      return all ? [col] : ownAndTeam();
+    }
+
+    const module = MODULE_FOR[key];
+    if (!module || accessLevel(se.role, module) === 'none') return [];
+    return all ? [col] : ownAndTeam();
+  }
+
+  private listen(key: StateKey, queryKey: string, q: Query, bucket: Unsubscribe[]) {
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -276,6 +364,7 @@ class DataService {
         this.rebuild(key);
         this.loadedKeys.add(key);
         if (this.cloud.status === 'connecting') this.cloud = { ...this.cloud, status: 'live' };
+        if (key === 'roles') this.onRolesUpdated();
         this.commit();
         this.maybeSeedDefaults(key, snap.empty && !snap.metadata.fromCache);
       },
@@ -289,7 +378,7 @@ class DataService {
         });
       }
     );
-    this.unsubs.push(unsub);
+    bucket.push(unsub);
   }
 
   private rebuild(key: StateKey) {
@@ -298,7 +387,12 @@ class DataService {
     let list = Array.from(merged.values()) as Record<string, unknown>[];
     list.sort((a, b) => recordTime(b).localeCompare(recordTime(a)));
     // Shared config keeps showing defaults until someone saves real values
-    if (list.length === 0 && (key === 'taxRules' || key === 'documentPacks')) {
+    if (key === 'roles') {
+      // Built-in roles always exist; cloud copies override them
+      const byId = new Map(DEFAULT_ROLES.map((r) => [r.id, r as unknown as Record<string, unknown>]));
+      list.forEach((r) => byId.set(String(r.id), { ...byId.get(String(r.id)), ...r }));
+      list = Array.from(byId.values());
+    } else if (list.length === 0 && (key === 'taxRules' || key === 'documentPacks')) {
       list = [...(SEEDS[key] as unknown as Record<string, unknown>[])];
     }
     (this.s as unknown as Record<StateKey, unknown[]>)[key] = list;
@@ -307,6 +401,11 @@ class DataService {
   /** First super-admin login on an empty project: store the default tax rules & document packs. */
   private maybeSeedDefaults(key: StateKey, empty: boolean) {
     if (!empty || this.session?.role !== 'super_admin') return;
+    if (key === 'roles') {
+      // The rules read role documents, so the built-in roles must exist in Firestore
+      DEFAULT_ROLES.filter((r) => r.id !== 'super_admin').forEach((r) => this.write('roles', r.id, { ...r, createdAt: now(), updatedAt: now() }));
+      return;
+    }
     if (key !== 'taxRules' && key !== 'documentPacks') return;
     (SEEDS[key] ?? []).forEach((item) => this.write(COLLECTIONS[key], item.id, item));
   }
@@ -409,6 +508,10 @@ class DataService {
 
   public getStaff(roles?: UserRole[]): UserProfile[] {
     return this.getUsers().filter((u) => u.isActive && (!roles || roles.includes(u.role)));
+  }
+
+  public getRoles(): RoleDefinition[] {
+    return [...this.s.roles];
   }
 
   public getTeams(): Team[] {
@@ -1005,7 +1108,7 @@ class DataService {
     return document;
   }
 
-  /** Removes the record from the portal. The file itself stays in Cloudinary (deleting requires a signed API call). */
+  /** Removes the record from the portal and, when the server API is configured, deletes the file from Cloudinary. */
   public removeDocument(id: string, userEmail = 'admin') {
     const docRec = this.getDocumentById(id);
     if (!docRec) return;
@@ -1013,6 +1116,13 @@ class DataService {
     this.s.documentPacks = this.s.documentPacks.map((p) => ({ ...p, documentIds: p.documentIds.filter((x) => x !== id) }));
     this.audit(userEmail, 'delete', 'document', id, docRec.title, `Removed document "${docRec.title}" from portal`);
     this.write('documents', id, { removed: true, removedAt: now() });
+    // Delete the actual file unless another document still points at it (e.g. a copy)
+    const shared = this.s.documents.some((d) => d.file.publicId && d.file.publicId === docRec.file.publicId);
+    if (!shared) {
+      deleteFromCloudinary(docRec.file).catch((err: Error) =>
+        this.emitError({ collection: 'cloudinary', id, code: 'cloudinary', message: `${docRec.title}: ${err.message}` })
+      );
+    }
   }
 
   public getDocumentPacks(): DocumentPack[] {

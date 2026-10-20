@@ -10,7 +10,7 @@ import { LoadingSpinner } from './components/common/LoadingSpinner';
 import type { ModuleKey } from './lib/permissions';
 
 /** Route element restricted to the roles allowed to use a module (see src/lib/permissions.ts). */
-const guard = (module: ModuleKey, element: React.ReactNode) => <ProtectedRoute module={module}>{element}</ProtectedRoute>;
+const guard = (module: ModuleKey | ModuleKey[], element: React.ReactNode) => <ProtectedRoute module={module}>{element}</ProtectedRoute>;
 
 // Pages are code-split per route so the first load stays small
 const LoginPage = lazy(() => import('./pages/auth/LoginPage').then((m) => ({ default: m.LoginPage })));
@@ -78,7 +78,7 @@ function App() {
                 <Route path="/finance/tax-rules" element={guard('tax', <TaxRulesPage />)} />
 
                 {/* Administration */}
-                <Route path="/admin/team" element={guard('team', <TeamAccessPage />)} />
+                <Route path="/admin/team" element={guard(['team', 'roles'], <TeamAccessPage />)} />
                 <Route path="/settings" element={guard('settings', <SettingsPage />)} />
               </Route>
 

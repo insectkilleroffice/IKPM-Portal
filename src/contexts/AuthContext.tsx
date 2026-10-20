@@ -11,6 +11,7 @@ import { doc, getDoc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import { dataService } from '../services/dataService';
 import { UserProfile, UserRole, SystemInitialization } from '../types';
+import { baseRoleOf } from '../lib/permissions';
 
 /** Why a signed-in user can't use the portal yet. */
 export type ProfileIssue =
@@ -215,7 +216,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     (roles: UserRole[]) => {
       if (!effectiveRole) return false;
       if (userProfile?.role === 'super_admin' && !simulatedRole) return true;
-      return roles.includes(effectiveRole);
+      // Custom roles behave like the built-in role they were based on for feature checks
+      const base = baseRoleOf(effectiveRole);
+      return roles.includes(effectiveRole) || Boolean(base && roles.includes(base));
     },
     [effectiveRole, userProfile, simulatedRole]
   );

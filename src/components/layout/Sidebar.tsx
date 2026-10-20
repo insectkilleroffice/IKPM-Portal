@@ -20,7 +20,8 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { canAccessModule, ROLE_LABELS, type ModuleKey } from '../../lib/permissions';
+import { useDataStore } from '../../hooks/useDataStore';
+import { canAccessModule, roleLabel, type ModuleKey } from '../../lib/permissions';
 
 interface NavEntry {
   to: string;
@@ -94,6 +95,7 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onNavigate }) => {
   const { effectiveRole } = useAuth();
+  useDataStore(); // role definitions load from Firestore
   const navigate = useNavigate();
   const [showNew, setShowNew] = useState(false);
   const newRef = useRef<HTMLDivElement>(null);
@@ -107,7 +109,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onNavigate }) => {
     return () => document.removeEventListener('mousedown', close);
   }, [showNew]);
 
-  const can = (m: ModuleKey) => canAccessModule(effectiveRole, m);
+  const can = (m: ModuleKey) =>
+    canAccessModule(effectiveRole, m) || (m === 'team' && canAccessModule(effectiveRole, 'roles'));
   const quick = QUICK_CREATE.filter((q) => can(q.module));
 
   return (
@@ -172,7 +175,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onNavigate }) => {
       </nav>
 
       <div className="sidebar-footer">
-        <span>Signed in as {effectiveRole ? ROLE_LABELS[effectiveRole] : '—'}</span>
+        <span>Signed in as {effectiveRole ? roleLabel(effectiveRole) : '—'}</span>
         <span>IKPM Portal · v1.1</span>
       </div>
     </aside>

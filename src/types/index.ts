@@ -1,13 +1,11 @@
 // Core shared types for IKPM Portal
 
-export type UserRole =
-  | 'super_admin'
-  | 'management'
-  | 'sales'
-  | 'operations'
-  | 'finance'
-  | 'technician'
-  | 'auditor';
+/**
+ * A role id: one of the built-in roles ('super_admin', 'management', 'sales', 'operations',
+ * 'finance', 'technician', 'auditor') or a custom role created by the super admin.
+ * Definitions live in src/lib/permissions.ts and the Firestore `roles` collection.
+ */
+export type UserRole = string;
 
 export type DataScope = 'own' | 'team' | 'area' | 'branch' | 'department' | 'company';
 

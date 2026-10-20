@@ -69,6 +69,20 @@ export async function getPortalProfile(req: Req, uid: string, loginEmail: string
   return profile;
 }
 
+/** Module access levels of the caller's role (read with their own token; super admin = everything). */
+export async function getRoleModules(req: Req, role: string): Promise<Record<string, string> | 'all'> {
+  if (role === 'super_admin') return 'all';
+  const projectId = env('FIREBASE_PROJECT_ID') || env('VITE_FIREBASE_PROJECT_ID');
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/roles/${encodeURIComponent(role)}`,
+    { headers: { Authorization: String(req.headers.authorization || '') } }
+  );
+  if (!res.ok) throw new HttpError(403, 'Your role could not be verified.');
+  const data = (await res.json()) as { fields?: { modules?: { mapValue?: { fields?: Record<string, { stringValue?: string }> } } } };
+  const fields = data.fields?.modules?.mapValue?.fields || {};
+  return Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, v.stringValue || 'none']));
+}
+
 /** Only allow attachments hosted in our own Cloudinary account, so the API can't be used to relay arbitrary links. */
 export function assertOwnCloudinaryUrl(url: string) {
   const cloud = env('CLOUDINARY_CLOUD_NAME') || env('VITE_CLOUDINARY_CLOUD_NAME');

@@ -2,15 +2,16 @@ import React from 'react';
 import { Link, Navigate, useLocation } from 'react-router-dom';
 import { ShieldOff, UserX, DatabaseZap, Lock } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useDataStore } from '../../hooks/useDataStore';
 import { UserRole } from '../../types';
 import { LoadingSpinner } from '../common/LoadingSpinner';
-import { canAccessModule, homePathFor, ROLE_LABELS, type ModuleKey } from '../../lib/permissions';
+import { canAccessModule, homePathFor, roleLabel, type ModuleKey } from '../../lib/permissions';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
   allowedRoles?: UserRole[];
   /** Module from src/lib/permissions.ts; the route is hidden from roles that can't use it. */
-  module?: ModuleKey;
+  module?: ModuleKey | ModuleKey[];
 }
 
 const BlockedScreen: React.FC<{ icon: React.ReactNode; title: string; children: React.ReactNode }> = ({ icon, title, children }) => {
@@ -34,6 +35,7 @@ const BlockedScreen: React.FC<{ icon: React.ReactNode; title: string; children: 
 export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowedRoles, module }) => {
   const { currentUser, isLoading, effectiveRole, hasRole, profileIssue, isInitialized } = useAuth();
   const location = useLocation();
+  useDataStore(); // re-check once role definitions arrive
 
   if (isLoading) {
     return <LoadingSpinner fullPage message="Signing you in…" />;
@@ -87,7 +89,8 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowe
     );
   }
 
-  const moduleDenied = module && !hasRole([]) && !canAccessModule(effectiveRole, module);
+  const modules = module ? (Array.isArray(module) ? module : [module]) : [];
+  const moduleDenied = modules.length > 0 && !hasRole([]) && !modules.some((m) => canAccessModule(effectiveRole, m));
   const roleDenied = allowedRoles && allowedRoles.length > 0 && !hasRole(allowedRoles);
 
   if (moduleDenied || roleDenied) {
@@ -100,7 +103,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowe
         <Lock size={36} color="var(--text-muted)" style={{ marginBottom: '0.75rem' }} />
         <h2 style={{ fontSize: '1.2rem', fontWeight: 600, marginBottom: '0.35rem' }}>You don't have access to this page</h2>
         <p style={{ color: 'var(--text-muted)', maxWidth: 460, margin: '0 auto 1.5rem' }}>
-          Your role ({effectiveRole ? ROLE_LABELS[effectiveRole] : 'unknown'}) can't open this module. Ask the super admin if you need it.
+          Your role ({effectiveRole ? roleLabel(effectiveRole) : 'unknown'}) can't open this module. Ask the super admin if you need it.
         </p>
         <Link to={homePathFor(effectiveRole)} className="btn btn-secondary">
           Go to my home page

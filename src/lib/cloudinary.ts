@@ -1,7 +1,7 @@
 // Direct browser -> Cloudinary uploads using an UNSIGNED upload preset (no API secret in the frontend).
 // Falls back to an inline data URL for small files when Cloudinary is not configured (demo / offline mode).
 
-import { cloudinaryEnv, integrations } from '../config/env';
+import { cloudinaryEnv, integrations, outreachEnv } from '../config/env';
 import type { StoredFile } from '../types/document';
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // Cloudinary free plan: 10 MB per file
@@ -109,4 +109,24 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * Permanently deletes a file from Cloudinary through the server (/api/delete-file), which holds
+ * the API secret. Returns false when the server API isn't configured (the file then stays in Cloudinary).
+ */
+export async function deleteFromCloudinary(file: StoredFile): Promise<boolean> {
+  if (file.storage !== 'cloudinary' || !file.publicId || !integrations.outreachApi) return false;
+  const { auth } = await import('./firebase');
+  const token = await auth.currentUser?.getIdToken();
+  const res = await fetch(`${outreachEnv.apiBaseUrl.replace(/\/$/, '')}/delete-file`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ publicId: file.publicId, resourceType: file.resourceType || 'image' }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Could not delete the file from Cloudinary (HTTP ${res.status})`);
+  }
+  return true;
 }

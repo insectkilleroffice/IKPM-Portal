@@ -2,20 +2,16 @@ import React from 'react';
 import { Eye, X } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { UserRole } from '../../types';
+import { getRoleDefinitions, roleLabel } from '../../lib/permissions';
 
 export const RoleSimulatorBanner: React.FC = () => {
   const { isSuperAdmin, simulatedRole, setSimulatedRole } = useAuth();
 
   if (!isSuperAdmin) return null;
 
-  const roles: { role: UserRole; label: string }[] = [
-    { role: 'management', label: 'Management (CEO/General)' },
-    { role: 'sales', label: 'Sales (Manager / CRO)' },
-    { role: 'operations', label: 'Operations (Dispatch / QC)' },
-    { role: 'finance', label: 'Finance (Accounts / Tax)' },
-    { role: 'technician', label: 'Technician / PCO (Mobile Field)' },
-    { role: 'auditor', label: 'Read-only Auditor' },
-  ];
+  const roles: { role: UserRole; label: string }[] = getRoleDefinitions()
+    .filter((r) => r.id !== 'super_admin')
+    .map((r) => ({ role: r.id, label: r.name }));
 
   if (!simulatedRole) {
     return null;
@@ -39,7 +35,7 @@ export const RoleSimulatorBanner: React.FC = () => {
         <Eye size={15} />
         <span>
           <strong>Role Simulator Active (SRS RBAC-004):</strong> Viewing portal through permissions of{' '}
-          <span style={{ textDecoration: 'underline' }}>{simulatedRole.toUpperCase()}</span>.
+          <span style={{ textDecoration: 'underline' }}>{roleLabel(simulatedRole)}</span>.
         </span>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>

@@ -158,7 +158,7 @@ export const DocumentLibraryPage: React.FC = () => {
           setToRemove(null);
         }}
         title="Remove document?"
-        message={`"${toRemove?.title}" will no longer be offered when pitching. The file stays in Cloudinary.`}
+        message={`"${toRemove?.title}" will be removed from the portal and permanently deleted from Cloudinary.`}
         confirmLabel="Remove"
       />
     </div>

@@ -12,9 +12,10 @@ import {
   Plus,
   Trash2,
   Check,
-  Minus,
+  Eye,
+  EyeOff,
+  Lock,
   Copy,
-  Mail,
 } from 'lucide-react';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { Modal } from '../../components/common/Modal';
@@ -23,81 +24,95 @@ import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
-import { staffService, type NewStaffInput } from '../../services/staffService';
+import { staffService, passwordProblem, MIN_PASSWORD_LENGTH, type NewStaffInput } from '../../services/staffService';
 import {
-  DEFAULT_SCOPE,
-  MODULE_ROLES,
-  ROLE_DESCRIPTIONS,
-  ROLE_LABELS,
+  canEditModule,
+  defaultScopeFor,
+  getRoleDefinitions,
+  MODULES,
+  roleColor,
+  roleDescription,
+  roleLabel,
   SCOPE_LABELS,
+  SYSTEM_ROLE_IDS,
+  type AccessLevel,
   type ModuleKey,
+  type RoleDefinition,
+  type SystemRole,
 } from '../../lib/permissions';
 import { formatDateTime } from '../../lib/formatters';
-import type { DataScope, Team, UserProfile, UserRole } from '../../types';
+import type { DataScope, Team, UserProfile } from '../../types';
 
-const ROLES: UserRole[] = ['super_admin', 'management', 'sales', 'operations', 'finance', 'technician', 'auditor'];
 const SCOPES: DataScope[] = ['own', 'team', 'company'];
-const TEAM_COLORS = ['#0E8A5F', '#1A73E8', '#D97706', '#7C3AED', '#DC2626', '#0891B2', '#475569'];
-
-const MODULE_LABELS: Record<ModuleKey, string> = {
-  dashboard: 'Dashboard',
-  customers: 'Customer accounts',
-  crm: 'Leads',
-  proposals: 'Proposals',
-  contracts: 'Contracts & AMCs',
-  files: 'Client files',
-  documents: 'Company documents',
-  calendar: 'Dispatch calendar',
-  jobs: 'Service jobs',
-  pco: 'PCO field app',
-  invoices: 'Invoices & receipts',
-  tax: 'Tax rules',
-  settings: 'Settings & audit',
-  team: 'Team & access',
-};
+const COLORS = ['#0E8A5F', '#1A73E8', '#D97706', '#7C3AED', '#DC2626', '#0891B2', '#9A3412', '#475569'];
+const LEVELS: { value: AccessLevel; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'view', label: 'View' },
+  { value: 'edit', label: 'Edit' },
+];
 
 const initials = (name?: string) =>
   (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 
-type Tab = 'people' | 'teams' | 'permissions';
+const RolePill: React.FC<{ role: string }> = ({ role }) => (
+  <span className="role-pill" style={{ background: `${roleColor(role)}1F`, color: roleColor(role) }}>{roleLabel(role)}</span>
+);
 
-interface PersonForm extends NewStaffInput {
+type Tab = 'people' | 'teams' | 'roles';
+
+interface PersonForm extends Omit<NewStaffInput, 'password'> {
   uid?: string;
-  isActive?: boolean;
+  password: string;
+  confirmPassword: string;
 }
 
 const blankPerson = (): PersonForm => ({
   displayName: '',
   email: '',
+  password: '',
+  confirmPassword: '',
   businessEmail: '',
   phone: '',
   role: 'sales',
-  dataScope: DEFAULT_SCOPE.sales,
+  dataScope: defaultScopeFor('sales'),
   teamId: '',
   designationTitle: '',
+  sendResetEmail: false,
 });
 
 export const TeamAccessPage: React.FC = () => {
   const store = useDataStore();
-  const { userProfile } = useAuth();
+  const { userProfile, isSuperAdmin } = useAuth();
   const { success, error, info } = useNotification();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [tab, setTab] = useState<Tab>((searchParams.get('tab') as Tab) || 'people');
+  const myRole = userProfile?.role;
+  const canManageStaff = canEditModule(myRole, 'team');
+  const canManageRoles = canEditModule(myRole, 'roles');
+
+  const initialTab = (searchParams.get('tab') as Tab) || (canManageStaff ? 'people' : 'roles');
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [query, setQuery] = useState('');
-  const [roleFilter, setRoleFilter] = useState<UserRole | 'all'>('all');
+  const [roleFilter, setRoleFilter] = useState<string>('all');
   const [teamFilter, setTeamFilter] = useState<string>('all');
   const [showInactive, setShowInactive] = useState(false);
 
-  const [person, setPerson] = useState<PersonForm | null>(searchParams.get('action') === 'new_user' ? blankPerson() : null);
+  const [person, setPerson] = useState<PersonForm | null>(canManageStaff && searchParams.get('action') === 'new_user' ? blankPerson() : null);
+  const [showPassword, setShowPassword] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [created, setCreated] = useState<{ name: string; email: string; tempPassword: string; resetEmailSent: boolean } | null>(null);
 
   const [team, setTeam] = useState<(Partial<Team> & { memberIds: string[] }) | null>(null);
   const [teamToDelete, setTeamToDelete] = useState<Team | null>(null);
 
+  const [roleDraft, setRoleDraft] = useState<RoleDefinition | null>(null);
+  const [roleToDelete, setRoleToDelete] = useState<RoleDefinition | null>(null);
+
   const users = store.getUsers();
   const teams = store.getTeams();
+  store.getRoles(); // keep role list reactive
+  const roles = getRoleDefinitions();
+  // Only the super admin can hand out the Super Admin role
+  const assignableRoles = roles.filter((r) => isSuperAdmin || r.id !== 'super_admin');
 
   const visibleUsers = useMemo(() => {
     const q = query.toLowerCase().trim();
@@ -116,21 +131,29 @@ export const TeamAccessPage: React.FC = () => {
     setSearchParams(t === 'people' ? {} : { tab: t }, { replace: true });
   };
 
+  /** Staff managers can't edit the super admin or themselves; only the super admin can. */
+  const canEditPerson = (u: UserProfile) =>
+    isSuperAdmin || (canManageStaff && u.uid !== userProfile?.uid && u.role !== 'super_admin');
+
   // ---------- People ----------
-  const openNewPerson = () => setPerson(blankPerson());
+  const openNewPerson = () => {
+    setShowPassword(false);
+    setPerson(blankPerson());
+  };
 
   const openEditPerson = (u: UserProfile) =>
     setPerson({
       uid: u.uid,
       displayName: u.displayName,
       email: u.email,
+      password: '',
+      confirmPassword: '',
       businessEmail: u.businessEmail || u.email,
       phone: u.phone || '',
       role: u.role,
       dataScope: u.dataScope,
       teamId: u.teamId || '',
       designationTitle: u.designationTitle || '',
-      isActive: u.isActive,
     });
 
   const personProblems = (p: PersonForm): string[] => {
@@ -139,14 +162,16 @@ export const TeamAccessPage: React.FC = () => {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p.email.trim())) out.push('Enter a valid login email.');
     if (p.businessEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p.businessEmail.trim())) out.push('Business email is not valid.');
     if (!p.uid && users.some((u) => u.email.toLowerCase() === p.email.trim().toLowerCase())) out.push('Someone already uses this login email.');
+    if (!p.uid) {
+      const pw = passwordProblem(p.password, p.confirmPassword);
+      if (pw) out.push(pw);
+    }
     if (p.dataScope === 'team' && !p.teamId) out.push('“Own team’s records” needs a team. Pick one or change data access.');
     return out;
   };
 
   const savePerson = async () => {
-    if (!person) return;
-    const problems = personProblems(person);
-    if (problems.length) return;
+    if (!person || personProblems(person).length) return;
     setSaving(true);
     try {
       if (person.uid) {
@@ -162,7 +187,10 @@ export const TeamAccessPage: React.FC = () => {
         success('Saved', `${person.displayName}'s access was updated. It applies to them immediately.`);
       } else {
         const res = await staffService.createStaff({ ...person, teamId: person.teamId || undefined });
-        setCreated({ name: person.displayName, email: person.email.trim().toLowerCase(), tempPassword: res.tempPassword, resetEmailSent: res.resetEmailSent });
+        success(
+          'Login created',
+          `${person.displayName} can now sign in with ${person.email.trim().toLowerCase()} and the password you set.${res.resetEmailSent ? ' A link to change it was also emailed.' : ''}`
+        );
       }
       setPerson(null);
       if (searchParams.get('action')) setSearchParams({}, { replace: true });
@@ -174,10 +202,6 @@ export const TeamAccessPage: React.FC = () => {
   };
 
   const toggleActive = async (u: UserProfile) => {
-    if (u.uid === userProfile?.uid) {
-      error('Not allowed', 'You cannot deactivate your own account.');
-      return;
-    }
     try {
       await staffService.updateStaff(u.uid, { isActive: !u.isActive });
       success(u.isActive ? 'Access paused' : 'Access restored', `${u.displayName} ${u.isActive ? 'can no longer sign in to the portal' : 'can use the portal again'}.`);
@@ -196,8 +220,7 @@ export const TeamAccessPage: React.FC = () => {
   };
 
   // ---------- Teams ----------
-  const openNewTeam = () => setTeam({ name: '', department: '', description: '', color: TEAM_COLORS[teams.length % TEAM_COLORS.length], isActive: true, memberIds: [] });
-
+  const openNewTeam = () => setTeam({ name: '', department: '', description: '', color: COLORS[teams.length % COLORS.length], isActive: true, memberIds: [] });
   const openEditTeam = (t: Team) => setTeam({ ...t, memberIds: users.filter((u) => u.teamId === t.id).map((u) => u.uid) });
 
   const saveTeam = async () => {
@@ -217,14 +240,12 @@ export const TeamAccessPage: React.FC = () => {
         isActive: true,
         createdAt: team.createdAt,
       });
-      // Membership: add newly ticked people, remove unticked ones
       const before = new Set(users.filter((u) => u.teamId === id).map((u) => u.uid));
       const after = new Set(team.memberIds);
-      const changes = [
+      await Promise.all([
         ...[...after].filter((uid) => !before.has(uid)).map((uid) => staffService.updateStaff(uid, { teamId: id })),
         ...[...before].filter((uid) => !after.has(uid)).map((uid) => staffService.updateStaff(uid, { teamId: undefined })),
-      ];
-      await Promise.all(changes);
+      ]);
       success(team.id ? 'Team updated' : 'Team created', `${team.name} has ${after.size} member(s).`);
       setTeam(null);
     } catch (err) {
@@ -234,8 +255,41 @@ export const TeamAccessPage: React.FC = () => {
     }
   };
 
+  // ---------- Roles ----------
+  const openNewRole = (template: SystemRole = 'sales') => {
+    const base = roles.find((r) => r.id === template)!;
+    setRoleDraft({
+      id: '',
+      name: '',
+      description: '',
+      color: COLORS[(roles.length + 1) % COLORS.length],
+      basedOn: template,
+      modules: { ...base.modules },
+      defaultScope: base.defaultScope,
+    });
+  };
+
+  const saveRole = async () => {
+    if (!roleDraft || !roleDraft.name.trim()) return;
+    setSaving(true);
+    try {
+      const id = roleDraft.id || `role_${roleDraft.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 30)}_${Date.now().toString(36).slice(-4)}`;
+      await staffService.saveRole({ ...roleDraft, id, name: roleDraft.name.trim() });
+      success(roleDraft.id ? 'Role updated' : 'Role created', `${roleDraft.name} permissions apply to everyone with this role straight away.`);
+      setRoleDraft(null);
+    } catch (err) {
+      error('Could not save role', err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const problems = person ? personProblems(person) : [];
   const activeCount = users.filter((u) => u.isActive).length;
+  const headerAction =
+    tab === 'teams' ? (canManageStaff && <button className="btn btn-primary" onClick={openNewTeam}><Plus size={16} /> New team</button>)
+      : tab === 'roles' ? (canManageRoles && <button className="btn btn-primary" onClick={() => openNewRole()}><Plus size={16} /> New role</button>)
+        : (canManageStaff && <button className="btn btn-primary" onClick={openNewPerson}><UserPlus size={16} /> Add person</button>);
 
   return (
     <div className="animate-fade-in">
@@ -245,53 +299,47 @@ export const TeamAccessPage: React.FC = () => {
         <div className="page-title-wrap">
           <h1>Team & Access</h1>
           <p className="page-subtitle">
-            Add staff logins, group them into teams and choose what each role can see. Staff only see the modules and records their role and team allow.
+            Add staff and set their passwords, group them into teams, and decide exactly what each role can see and change. The database enforces the same permissions.
           </p>
         </div>
-        <div>
-          {tab === 'teams' ? (
-            <button className="btn btn-primary" onClick={openNewTeam}>
-              <Plus size={16} /> New team
-            </button>
-          ) : (
-            <button className="btn btn-primary" onClick={openNewPerson}>
-              <UserPlus size={16} /> Add person
-            </button>
-          )}
-        </div>
+        <div>{headerAction}</div>
       </div>
 
       <div className="tab-bar" role="tablist">
-        <button className={`tab-btn ${tab === 'people' ? 'active' : ''}`} onClick={() => switchTab('people')} role="tab">
-          <UsersRound size={16} /> People <span className="tab-count">{activeCount}</span>
-        </button>
-        <button className={`tab-btn ${tab === 'teams' ? 'active' : ''}`} onClick={() => switchTab('teams')} role="tab">
-          <UsersRound size={16} /> Teams <span className="tab-count">{teams.length}</span>
-        </button>
-        <button className={`tab-btn ${tab === 'permissions' ? 'active' : ''}`} onClick={() => switchTab('permissions')} role="tab">
-          <ShieldCheck size={16} /> Role permissions
+        {canManageStaff && (
+          <>
+            <button className={`tab-btn ${tab === 'people' ? 'active' : ''}`} onClick={() => switchTab('people')} role="tab">
+              <UsersRound size={16} /> People <span className="tab-count">{activeCount}</span>
+            </button>
+            <button className={`tab-btn ${tab === 'teams' ? 'active' : ''}`} onClick={() => switchTab('teams')} role="tab">
+              <UsersRound size={16} /> Teams <span className="tab-count">{teams.length}</span>
+            </button>
+          </>
+        )}
+        <button className={`tab-btn ${tab === 'roles' ? 'active' : ''}`} onClick={() => switchTab('roles')} role="tab">
+          <ShieldCheck size={16} /> Roles & permissions <span className="tab-count">{roles.length}</span>
         </button>
       </div>
 
       {/* ---------------- People ---------------- */}
-      {tab === 'people' && (
+      {tab === 'people' && canManageStaff && (
         <>
           <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>
             <div className="drive-search" style={{ flex: '1 1 260px', maxWidth: 380 }}>
               <Search size={16} color="var(--text-muted)" />
               <input placeholder="Search name, email or team" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
-            <select className="form-select" style={{ width: 'auto', minHeight: 36, borderRadius: 8 }} value={roleFilter} onChange={(e) => setRoleFilter(e.target.value as UserRole | 'all')}>
+            <select className="form-select" style={{ width: 'auto', minHeight: 36 }} value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
               <option value="all">All roles</option>
-              {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+              {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
-            <select className="form-select" style={{ width: 'auto', minHeight: 36, borderRadius: 8 }} value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
+            <select className="form-select" style={{ width: 'auto', minHeight: 36 }} value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
               <option value="all">All teams</option>
               <option value="none">No team</option>
               {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
             </select>
             <button type="button" className={`chip ${showInactive ? 'chip-on' : ''}`} onClick={() => setShowInactive((v) => !v)}>
-              {showInactive ? <Check size={14} /> : null} Show paused accounts
+              {showInactive && <Check size={14} />} Show paused accounts
             </button>
           </div>
 
@@ -299,7 +347,7 @@ export const TeamAccessPage: React.FC = () => {
             <EmptyState
               icon={UsersRound}
               title={users.length <= 1 ? 'Add your first staff member' : 'Nobody matches these filters'}
-              description="Each person gets their own login. Their role decides which modules they see, and their data access decides whose records they see."
+              description="Each person gets their own login with a password you set. Their role decides which modules they see; their data access decides whose records they see."
               action={{ label: 'Add person', onClick: openNewPerson }}
             />
           ) : (
@@ -321,7 +369,7 @@ export const TeamAccessPage: React.FC = () => {
                     <tr key={u.uid} style={u.isActive ? undefined : { opacity: 0.55 }}>
                       <td>
                         <div className="cell-main">
-                          <div className="user-avatar" style={{ width: 32, height: 32, fontSize: '0.75rem', background: teams.find((t) => t.id === u.teamId)?.color }}>
+                          <div className="user-avatar" style={{ width: 32, height: 32, fontSize: '0.75rem', background: teams.find((t) => t.id === u.teamId)?.color || roleColor(u.role) }}>
                             {initials(u.displayName)}
                           </div>
                           <div style={{ minWidth: 0 }}>
@@ -332,19 +380,25 @@ export const TeamAccessPage: React.FC = () => {
                           </div>
                         </div>
                       </td>
-                      <td><span className={`role-pill ${u.role}`}>{ROLE_LABELS[u.role]}</span></td>
+                      <td><RolePill role={u.role} /></td>
                       <td>{u.teamName || <span className="cell-sub">No team</span>}</td>
-                      <td className="cell-sub">{SCOPE_LABELS[u.dataScope] || u.dataScope}</td>
+                      <td className="cell-sub">{u.role === 'super_admin' ? 'Entire company' : SCOPE_LABELS[u.dataScope] || u.dataScope}</td>
                       <td className="cell-sub">{u.businessEmail || u.email}</td>
-                      <td className="cell-sub">{u.lastLoginAt ? formatDateTime(u.lastLoginAt) : (u.isActive ? 'Never' : 'Paused')}</td>
+                      <td className="cell-sub">{u.lastLoginAt ? formatDateTime(u.lastLoginAt) : u.isActive ? 'Never' : 'Paused'}</td>
                       <td>
                         <div className="cell-actions">
-                          <button className="icon-btn" title="Edit access" onClick={() => openEditPerson(u)}><Pencil size={16} /></button>
-                          <button className="icon-btn" title="Email a password-reset link" onClick={() => sendReset(u)}><KeyRound size={16} /></button>
-                          {u.uid !== userProfile?.uid && (
-                            <button className={`icon-btn ${u.isActive ? 'danger' : ''}`} title={u.isActive ? 'Pause access' : 'Restore access'} onClick={() => toggleActive(u)}>
-                              {u.isActive ? <UserX size={16} /> : <UserCheck size={16} />}
-                            </button>
+                          {canEditPerson(u) ? (
+                            <>
+                              <button className="icon-btn" title="Edit access" onClick={() => openEditPerson(u)}><Pencil size={16} /></button>
+                              <button className="icon-btn" title="Email a password-reset link" onClick={() => sendReset(u)}><KeyRound size={16} /></button>
+                              {u.uid !== userProfile?.uid && (
+                                <button className={`icon-btn ${u.isActive ? 'danger' : ''}`} title={u.isActive ? 'Pause access' : 'Restore access'} onClick={() => toggleActive(u)}>
+                                  {u.isActive ? <UserX size={16} /> : <UserCheck size={16} />}
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <span className="cell-sub" title="Only the super admin can change this account"><Lock size={14} /></span>
                           )}
                         </div>
                       </td>
@@ -358,12 +412,12 @@ export const TeamAccessPage: React.FC = () => {
       )}
 
       {/* ---------------- Teams ---------------- */}
-      {tab === 'teams' && (
+      {tab === 'teams' && canManageStaff && (
         teams.length === 0 ? (
           <EmptyState
             icon={UsersRound}
             title="No teams yet"
-            description="Create teams such as “Karachi Sales” or “North Region Operations”. People with “own team’s records” access will share leads, customers and proposals within their team."
+            description="Create teams such as “Karachi Sales” or “North Region Operations”. People with “own team’s records” access share leads, customers, proposals and jobs within their team."
             action={{ label: 'New team', onClick: openNewTeam }}
           />
         ) : (
@@ -398,45 +452,73 @@ export const TeamAccessPage: React.FC = () => {
         )
       )}
 
-      {/* ---------------- Permissions ---------------- */}
-      {tab === 'permissions' && (
+      {/* ---------------- Roles & permissions ---------------- */}
+      {tab === 'roles' && (
         <>
           <div className="info-hint" style={{ marginBottom: '1rem' }}>
-            The same matrix is enforced by the Firestore security rules on the server, so hidden modules can't be opened by typing a URL.
-            <strong> Data access</strong> narrows it further: <em>Own records</em> shows only what the person created; <em>Own team’s records</em> adds their teammates’ records.
+            <strong>View</strong> lets people open a module; <strong>Edit</strong> also lets them create and change records.
+            To let someone else add staff or build teams, give their role <strong>Manage staff & teams: Edit</strong>. To let them change these permissions, give <strong>Customize roles: Edit</strong>.
+            Only the super admin can create another super admin.
           </div>
           <div className="table-container">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Module</th>
-                  {ROLES.map((r) => <th key={r} style={{ textAlign: 'center' }}>{ROLE_LABELS[r]}</th>)}
+                  <th>Role</th>
+                  <th>People</th>
+                  <th>Modules</th>
+                  <th>Default data access</th>
+                  <th style={{ width: 100 }} />
                 </tr>
               </thead>
               <tbody>
-                {(Object.keys(MODULE_ROLES) as ModuleKey[]).map((m) => (
-                  <tr key={m}>
-                    <td className="cell-title">{MODULE_LABELS[m]}</td>
-                    {ROLES.map((r) => (
-                      <td key={r} style={{ textAlign: 'center' }}>
-                        {MODULE_ROLES[m].includes(r)
-                          ? <Check size={16} color="var(--ikpm-emerald-600)" />
-                          : <Minus size={16} color="var(--border-strong)" />}
+                {roles.map((r) => {
+                  const holders = users.filter((u) => u.role === r.id && u.isActive).length;
+                  const editMods = MODULES.filter((m) => r.modules[m.key] === 'edit').length;
+                  const viewMods = MODULES.filter((m) => r.modules[m.key] === 'view').length;
+                  const locked = r.id === 'super_admin';
+                  return (
+                    <tr key={r.id}>
+                      <td>
+                        <div className="cell-main">
+                          <span className="team-swatch" style={{ background: r.color || '#475569', width: 32, height: 32, fontSize: '0.75rem' }}>{initials(r.name)}</span>
+                          <div style={{ minWidth: 0 }}>
+                            <div className="cell-title">
+                              {r.name} {r.isSystem ? <span className="badge-status badge-slate" style={{ marginLeft: 4 }}>Built-in</span> : <span className="badge-status badge-blue" style={{ marginLeft: 4 }}>Custom</span>}
+                            </div>
+                            <div className="cell-sub">{r.description || roleDescription(r.id)}</div>
+                          </div>
+                        </div>
                       </td>
-                    ))}
-                  </tr>
-                ))}
+                      <td>{holders}</td>
+                      <td className="cell-sub">{locked ? 'Everything' : `${editMods} edit · ${viewMods} view`}</td>
+                      <td className="cell-sub">{SCOPE_LABELS[r.defaultScope]}</td>
+                      <td>
+                        <div className="cell-actions">
+                          {locked ? (
+                            <span className="cell-sub" title="Super Admin always has full access"><Lock size={14} /></span>
+                          ) : (
+                            <>
+                              <button className="icon-btn" title={canManageRoles ? 'Edit permissions' : 'View permissions'} onClick={() => setRoleDraft({ ...r, modules: { ...r.modules } })}>
+                                {canManageRoles ? <Pencil size={16} /> : <Eye size={16} />}
+                              </button>
+                              {canManageRoles && (
+                                <button className="icon-btn" title="Duplicate as a new role" onClick={() => setRoleDraft({ ...r, id: '', name: `${r.name} (copy)`, isSystem: false, createdAt: undefined, modules: { ...r.modules } })}>
+                                  <Copy size={16} />
+                                </button>
+                              )}
+                              {canManageRoles && !r.isSystem && (
+                                <button className="icon-btn danger" title="Delete role" onClick={() => setRoleToDelete(r)}><Trash2 size={16} /></button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
-          </div>
-          <div className="team-grid" style={{ marginTop: '1rem' }}>
-            {ROLES.map((r) => (
-              <div key={r} className="team-card">
-                <span className={`role-pill ${r}`} style={{ alignSelf: 'flex-start' }}>{ROLE_LABELS[r]}</span>
-                <div className="cell-sub">{ROLE_DESCRIPTIONS[r]}</div>
-                <div className="cell-sub">Default data access: <strong>{SCOPE_LABELS[DEFAULT_SCOPE[r]]}</strong></div>
-              </div>
-            ))}
           </div>
         </>
       )}
@@ -446,8 +528,8 @@ export const TeamAccessPage: React.FC = () => {
         isOpen={Boolean(person)}
         onClose={() => !saving && setPerson(null)}
         title={person?.uid ? `Edit ${person.displayName}` : 'Add a person'}
-        subtitle={person?.uid ? 'Changes apply immediately, even if they are signed in.' : 'They get their own login and an email to set their password.'}
-        maxWidth="680px"
+        subtitle={person?.uid ? 'Changes apply immediately, even if they are signed in.' : 'Set their login email and password. Share it with them, and they can change it later.'}
+        maxWidth="720px"
         footer={
           <>
             <button className="btn btn-secondary" onClick={() => setPerson(null)} disabled={saving}>Cancel</button>
@@ -473,11 +555,11 @@ export const TeamAccessPage: React.FC = () => {
                 <input
                   className="form-input"
                   type="email"
+                  autoComplete="off"
                   value={person.email}
                   disabled={Boolean(person.uid)}
                   onChange={(e) => {
                     const email = e.target.value;
-                    // Keep business email in step until it's edited separately
                     const sameAsLogin = !person.businessEmail || person.businessEmail === person.email;
                     setPerson({ ...person, email, businessEmail: sameAsLogin ? email : person.businessEmail });
                   }}
@@ -488,8 +570,40 @@ export const TeamAccessPage: React.FC = () => {
               <div className="form-group">
                 <label className="form-label">Business email (client emails are sent from this)</label>
                 <input className="form-input" type="email" value={person.businessEmail} onChange={(e) => setPerson({ ...person, businessEmail: e.target.value })} placeholder="ayesha@insectkiller.pk" />
-                <div className="form-hint">Proposals and documents are sent as this person, from this address.</div>
               </div>
+
+              {!person.uid && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">Password <span className="required">*</span></label>
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        className="form-input"
+                        type={showPassword ? 'text' : 'password'}
+                        autoComplete="new-password"
+                        value={person.password}
+                        onChange={(e) => setPerson({ ...person, password: e.target.value })}
+                        placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+                        style={{ paddingRight: 40 }}
+                      />
+                      <button type="button" className="icon-btn" onClick={() => setShowPassword((v) => !v)} title={showPassword ? 'Hide' : 'Show'} style={{ position: 'absolute', right: 3, top: 3 }}>
+                        {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Confirm password <span className="required">*</span></label>
+                    <input
+                      className="form-input"
+                      type={showPassword ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      value={person.confirmPassword}
+                      onChange={(e) => setPerson({ ...person, confirmPassword: e.target.value })}
+                    />
+                  </div>
+                </>
+              )}
+
               <div className="form-group">
                 <label className="form-label">Mobile</label>
                 <input className="form-input" value={person.phone} onChange={(e) => setPerson({ ...person, phone: e.target.value })} placeholder="03XX XXXXXXX" />
@@ -503,31 +617,40 @@ export const TeamAccessPage: React.FC = () => {
               </div>
             </div>
 
+            {person.uid && (
+              <div className="info-hint" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem' }}>
+                <span>Passwords can't be read or changed by admins for security. Send a reset link and they choose a new one.</span>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => sendReset(users.find((u) => u.uid === person.uid)!)}>
+                  <KeyRound size={14} /> Send reset link
+                </button>
+              </div>
+            )}
+
             <div className="form-group">
               <label className="form-label">Role <span className="required">*</span></label>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: '0.5rem' }}>
-                {ROLES.map((r) => (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '0.5rem' }}>
+                {assignableRoles.map((r) => (
                   <label
-                    key={r}
+                    key={r.id}
                     className="doc-check"
                     style={{
                       alignItems: 'flex-start',
-                      border: `1px solid ${person.role === r ? 'var(--ikpm-emerald-600)' : 'var(--border-subtle)'}`,
-                      background: person.role === r ? 'var(--ikpm-emerald-50)' : undefined,
+                      border: `1px solid ${person.role === r.id ? 'var(--ikpm-emerald-600)' : 'var(--border-subtle)'}`,
+                      background: person.role === r.id ? 'var(--ikpm-emerald-50)' : undefined,
                       padding: '0.55rem 0.65rem',
                     }}
                   >
                     <input
                       type="radio"
                       name="role"
-                      checked={person.role === r}
-                      disabled={person.uid === userProfile?.uid && r !== 'super_admin'}
-                      onChange={() => setPerson({ ...person, role: r, dataScope: person.uid ? person.dataScope : DEFAULT_SCOPE[r] })}
+                      checked={person.role === r.id}
+                      disabled={person.uid === userProfile?.uid}
+                      onChange={() => setPerson({ ...person, role: r.id, dataScope: person.uid ? person.dataScope : r.defaultScope })}
                       style={{ marginTop: 3 }}
                     />
                     <span>
-                      <span style={{ display: 'block', fontWeight: 600 }}>{ROLE_LABELS[r]}</span>
-                      <span className="cell-sub">{ROLE_DESCRIPTIONS[r]}</span>
+                      <span style={{ display: 'block', fontWeight: 600 }}>{r.name}</span>
+                      <span className="cell-sub">{r.description}</span>
                     </span>
                   </label>
                 ))}
@@ -536,56 +659,29 @@ export const TeamAccessPage: React.FC = () => {
 
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Data access</label>
-              <div className="chip-row" style={{ marginBottom: 0 }}>
-                {SCOPES.map((sc) => (
-                  <button key={sc} type="button" className={`chip ${person.dataScope === sc ? 'chip-on' : ''}`} onClick={() => setPerson({ ...person, dataScope: sc })}>
-                    {person.dataScope === sc && <Check size={14} />} {SCOPE_LABELS[sc]}
-                  </button>
-                ))}
-              </div>
-              {['super_admin', 'management', 'auditor'].includes(person.role) && (
-                <div className="form-hint">{ROLE_LABELS[person.role]} always sees all company records.</div>
+              {person.role === 'super_admin' ? (
+                <div className="form-hint">Super Admin always sees all company records.</div>
+              ) : (
+                <div className="chip-row" style={{ marginBottom: 0 }}>
+                  {SCOPES.map((sc) => (
+                    <button key={sc} type="button" className={`chip ${person.dataScope === sc ? 'chip-on' : ''}`} onClick={() => setPerson({ ...person, dataScope: sc })}>
+                      {person.dataScope === sc && <Check size={14} />} {SCOPE_LABELS[sc]}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
 
-            {problems.length > 0 && (person.displayName || person.email) && (
+            {!person.uid && (
+              <label className="doc-check" style={{ marginTop: '0.75rem', display: 'inline-flex' }}>
+                <input type="checkbox" checked={Boolean(person.sendResetEmail)} onChange={(e) => setPerson({ ...person, sendResetEmail: e.target.checked })} />
+                Also email them a link to change this password
+              </label>
+            )}
+
+            {problems.length > 0 && (person.displayName || person.email || person.password) && (
               <ul className="form-problems">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
             )}
-          </>
-        )}
-      </Modal>
-
-      {/* ---------------- Created confirmation ---------------- */}
-      <Modal
-        isOpen={Boolean(created)}
-        onClose={() => setCreated(null)}
-        title="Login created"
-        subtitle={created ? `${created.name} can now sign in to the portal.` : undefined}
-        footer={<button className="btn btn-primary" onClick={() => setCreated(null)}>Done</button>}
-      >
-        {created && (
-          <>
-            {created.resetEmailSent ? (
-              <div className="info-hint" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                <Mail size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-                <span>We emailed <strong>{created.email}</strong> a link to choose their own password. Ask them to check spam if it doesn't arrive.</span>
-              </div>
-            ) : (
-              <div className="empty-hint">The password email could not be sent. Share the temporary password below instead.</div>
-            )}
-            <div className="form-group" style={{ marginTop: '1rem', marginBottom: 0 }}>
-              <label className="form-label">Temporary password (shown once)</label>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <input className="form-input font-mono" readOnly value={created.tempPassword} onFocus={(e) => e.target.select()} />
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => navigator.clipboard?.writeText(created.tempPassword).then(() => success('Copied', 'Temporary password copied.'))}
-                >
-                  <Copy size={15} /> Copy
-                </button>
-              </div>
-              <div className="form-hint">They should change it after first sign-in using “Forgot password?” on the login page.</div>
-            </div>
           </>
         )}
       </Modal>
@@ -626,17 +722,7 @@ export const TeamAccessPage: React.FC = () => {
               </div>
               <div className="form-group">
                 <label className="form-label">Colour</label>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center', minHeight: 38 }}>
-                  {TEAM_COLORS.map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      aria-label={`Colour ${c}`}
-                      onClick={() => setTeam({ ...team, color: c })}
-                      style={{ width: 26, height: 26, borderRadius: '50%', background: c, border: team.color === c ? '3px solid var(--ikpm-navy-900)' : '3px solid transparent', cursor: 'pointer' }}
-                    />
-                  ))}
-                </div>
+                <ColorPicker value={team.color} onChange={(c) => setTeam({ ...team, color: c })} />
               </div>
             </div>
             <div className="form-group">
@@ -649,15 +735,17 @@ export const TeamAccessPage: React.FC = () => {
                 {users.filter((u) => u.isActive).map((u) => {
                   const checked = team.memberIds.includes(u.uid);
                   const elsewhere = u.teamId && u.teamId !== team.id ? u.teamName : undefined;
+                  const editable = canEditPerson(u) || isSuperAdmin;
                   return (
-                    <label key={u.uid} className="doc-check">
+                    <label key={u.uid} className={`doc-check ${editable ? '' : 'is-disabled'}`}>
                       <input
                         type="checkbox"
                         checked={checked}
+                        disabled={!editable}
                         onChange={() => setTeam({ ...team, memberIds: checked ? team.memberIds.filter((x) => x !== u.uid) : [...team.memberIds, u.uid] })}
                       />
                       <span style={{ flex: 1 }}>{u.displayName} <span className="cell-sub">· {u.email}</span></span>
-                      <span className={`role-pill ${u.role}`}>{ROLE_LABELS[u.role]}</span>
+                      <RolePill role={u.role} />
                       {elsewhere && <span className="cell-sub" title="Ticking moves them to this team">in {elsewhere}</span>}
                     </label>
                   );
@@ -666,6 +754,126 @@ export const TeamAccessPage: React.FC = () => {
               </div>
             </div>
           </>
+        )}
+      </Modal>
+
+      {/* ---------------- Role editor ---------------- */}
+      <Modal
+        isOpen={Boolean(roleDraft)}
+        onClose={() => !saving && setRoleDraft(null)}
+        title={roleDraft?.createdAt || roleDraft?.isSystem ? `${canManageRoles ? 'Edit' : 'View'} role: ${roleDraft?.name}` : 'New role'}
+        subtitle="Choose what people with this role can open and change."
+        maxWidth="760px"
+        footer={
+          canManageRoles ? (
+            <>
+              <button className="btn btn-secondary" onClick={() => setRoleDraft(null)} disabled={saving}>Cancel</button>
+              <button className="btn btn-primary" onClick={saveRole} disabled={saving || !roleDraft?.name.trim()}>
+                {saving ? 'Saving…' : 'Save role'}
+              </button>
+            </>
+          ) : (
+            <button className="btn btn-secondary" onClick={() => setRoleDraft(null)}>Close</button>
+          )
+        }
+      >
+        {roleDraft && (
+          <fieldset disabled={!canManageRoles} style={{ border: 'none' }}>
+            <div className="form-grid-2">
+              <div className="form-group">
+                <label className="form-label">Role name <span className="required">*</span></label>
+                <input className="form-input" value={roleDraft.name} onChange={(e) => setRoleDraft({ ...roleDraft, name: e.target.value })} placeholder="e.g. Branch Supervisor" autoFocus />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Behaves like</label>
+                <select
+                  className="form-select"
+                  value={roleDraft.basedOn}
+                  disabled={roleDraft.isSystem}
+                  onChange={(e) => {
+                    const base = roles.find((r) => r.id === e.target.value);
+                    setRoleDraft({ ...roleDraft, basedOn: e.target.value as SystemRole, ...(roleDraft.createdAt ? {} : { modules: { ...base?.modules }, defaultScope: base?.defaultScope || 'own' }) });
+                  }}
+                >
+                  {SYSTEM_ROLE_IDS.filter((id) => id !== 'super_admin').map((id) => <option key={id} value={id}>{roleLabel(id)}</option>)}
+                </select>
+                <div className="form-hint">Used for built-in workflow rules (e.g. who can approve discounts).</div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Description</label>
+                <input className="form-input" value={roleDraft.description || ''} onChange={(e) => setRoleDraft({ ...roleDraft, description: e.target.value })} placeholder="What this role is for" />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Colour</label>
+                <ColorPicker value={roleDraft.color} onChange={(c) => setRoleDraft({ ...roleDraft, color: c })} />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Default data access for new people</label>
+              <div className="chip-row" style={{ marginBottom: 0 }}>
+                {SCOPES.map((sc) => (
+                  <button key={sc} type="button" className={`chip ${roleDraft.defaultScope === sc ? 'chip-on' : ''}`} onClick={() => setRoleDraft({ ...roleDraft, defaultScope: sc })}>
+                    {roleDraft.defaultScope === sc && <Check size={14} />} {SCOPE_LABELS[sc]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Module</th>
+                    <th style={{ width: 230 }}>Access</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {MODULES.map((m, i) => {
+                    const level = roleDraft.modules[m.key] ?? 'none';
+                    const newGroup = i === 0 || MODULES[i - 1].group !== m.group;
+                    return (
+                      <React.Fragment key={m.key}>
+                        {newGroup && (
+                          <tr>
+                            <td colSpan={2} style={{ background: 'var(--bg-surface-alt)', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', padding: '0.45rem 1rem' }}>
+                              {m.group}
+                            </td>
+                          </tr>
+                        )}
+                        <tr>
+                          <td>
+                            <div className="cell-title">{m.label}</div>
+                            {m.hint && <div className="cell-sub">{m.hint}</div>}
+                          </td>
+                          <td>
+                            <div className="view-toggle" style={{ borderRadius: 8 }}>
+                              {LEVELS.map((l) => (
+                                <button
+                                  key={l.value}
+                                  type="button"
+                                  className={level === l.value ? 'active' : ''}
+                                  style={{ width: 72, fontSize: '0.78rem', fontWeight: 600 }}
+                                  onClick={() => setRoleDraft({ ...roleDraft, modules: { ...roleDraft.modules, [m.key]: l.value } as Partial<Record<ModuleKey, AccessLevel>> })}
+                                >
+                                  {l.label}
+                                </button>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {(roleDraft.modules.roles === 'edit') && (
+              <div className="empty-hint" style={{ marginTop: '0.75rem' }}>
+                People with this role will be able to change every role's permissions, including their own. Only give this to people you trust like a super admin.
+              </div>
+            )}
+          </fieldset>
         )}
       </Modal>
 
@@ -686,8 +894,40 @@ export const TeamAccessPage: React.FC = () => {
         message={`${teamToDelete?.name} will be removed and its members will have no team. Their records are kept.`}
         confirmLabel="Delete team"
       />
+
+      <ConfirmDialog
+        isOpen={Boolean(roleToDelete)}
+        onClose={() => setRoleToDelete(null)}
+        onConfirm={async () => {
+          if (!roleToDelete) return;
+          try {
+            await staffService.deleteRole(roleToDelete);
+            success('Role deleted', `${roleToDelete.name} was removed.`);
+          } catch (err) {
+            error('Could not delete', err instanceof Error ? err.message : String(err));
+          }
+          setRoleToDelete(null);
+        }}
+        title="Delete role?"
+        message={`${roleToDelete?.name} will be removed. Nobody may still have this role.`}
+        confirmLabel="Delete role"
+      />
     </div>
   );
 };
+
+const ColorPicker: React.FC<{ value?: string; onChange: (c: string) => void }> = ({ value, onChange }) => (
+  <div style={{ display: 'flex', gap: 6, alignItems: 'center', minHeight: 38, flexWrap: 'wrap' }}>
+    {COLORS.map((c) => (
+      <button
+        key={c}
+        type="button"
+        aria-label={`Colour ${c}`}
+        onClick={() => onChange(c)}
+        style={{ width: 26, height: 26, borderRadius: '50%', background: c, border: value === c ? '3px solid var(--ikpm-navy-900)' : '3px solid transparent', cursor: 'pointer' }}
+      />
+    ))}
+  </div>
+);
 
 export default TeamAccessPage;

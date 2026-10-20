@@ -1,14 +1,17 @@
 rules_version = '2';
 
 // IKPM Portal security rules.
-// Mirrors src/lib/permissions.ts: each collection lists the roles that may use it, and
-// records are scoped to the owner / their team unless the user has company-wide scope.
+// Permissions are data: each staff profile (users/{uid}) names a role, and roles/{roleId}
+// gives every module an access level ('none' | 'view' | 'edit'). The super admin edits roles on
+// the Team & Access page; these rules read the same documents, so the server enforces exactly
+// what the portal shows. Records are also scoped to their owner / team unless the person has
+// company-wide data access. Mirrors src/lib/permissions.ts.
 //
-// Deploy with:  npx firebase-tools deploy --only firestore:rules,firestore:indexes
+// Deploy with:  npx firebase-tools deploy --only firestore
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ---------- Identity helpers ----------
+    // ---------- Identity ----------
     function signedIn() {
       return request.auth != null;
     }
@@ -17,74 +20,74 @@ service cloud.firestore {
       return /databases/$(database)/documents/users/$(request.auth.uid);
     }
 
-    function hasProfile() {
-      return signedIn() && exists(profilePath());
-    }
-
     function me() {
       return get(profilePath()).data;
     }
 
-    // An active portal user with a profile created by the super admin (or the bootstrap)
     function active() {
-      return hasProfile() && me().get('isActive', false) == true;
+      return signedIn() && exists(profilePath()) && me().get('isActive', false) == true;
     }
 
     function role() {
       return me().role;
     }
 
-    function hasRole(roles) {
-      return active() && role() in roles;
-    }
-
     function isSuperAdmin() {
-      return hasRole(['super_admin']);
+      return active() && role() == 'super_admin';
     }
 
-    // Super admin, management and auditors see every record; others only if given company scope
+    // ---------- Role-based module access ----------
+    function access(module) {
+      return get(/databases/$(database)/documents/roles/$(role())).data.get('modules', {}).get(module, 'none');
+    }
+
+    function canView(module) {
+      return isSuperAdmin() || (active() && access(module) in ['view', 'edit']);
+    }
+
+    function canEdit(module) {
+      return isSuperAdmin() || (active() && access(module) == 'edit');
+    }
+
+    // ---------- Record scope ----------
     function seesAll() {
-      return active() && (role() in ['super_admin', 'management', 'auditor'] || me().get('dataScope', 'own') == 'company');
+      return isSuperAdmin() || (active() && me().get('dataScope', 'own') == 'company');
     }
 
     function myTeam() {
       return me().get('teamId', '__no_team__');
     }
 
-    // Record-level scope check for reads/updates of existing documents
     function inScope(data) {
       return seesAll()
         || data.ownerUid == request.auth.uid
         || (me().get('dataScope', 'own') == 'team' && data.teamId == myTeam());
     }
 
-    // New records must be stamped with the creator (company-wide users may create on behalf of others)
     function ownsNew() {
       return seesAll() || request.resource.data.get('ownerUid', '') == request.auth.uid;
     }
 
-    // Ownership fields can't be reassigned by scoped users
     function keepsOwner() {
       return seesAll() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerUid', 'teamId']);
     }
 
-    function readScoped(roles) {
-      return hasRole(roles) && inScope(resource.data);
+    // Standard business collection guarded by one module
+    function readMod(module) {
+      return canView(module) && inScope(resource.data);
     }
 
-    function createScoped(roles) {
-      return hasRole(roles) && ownsNew();
+    function createMod(module) {
+      return canEdit(module) && ownsNew();
     }
 
-    function updateScoped(roles) {
-      return hasRole(roles) && inScope(resource.data) && keepsOwner();
+    function updateMod(module) {
+      return canEdit(module) && inScope(resource.data) && keepsOwner();
     }
 
     // ---------- System bootstrap ----------
-    // Readable by anyone so the login page knows whether first-admin setup is needed.
     match /system_config/{configId} {
       allow read: if true;
-      // Only the account that just created its own super_admin profile can lock initialization.
       allow create: if configId == 'initialization'
         && signedIn()
         && !exists(/databases/$(database)/documents/system_config/initialization)
@@ -93,141 +96,160 @@ service cloud.firestore {
       allow update, delete: if isSuperAdmin();
     }
 
+    // ---------- Roles (customizable permissions) ----------
+    match /roles/{roleId} {
+      allow read: if signedIn();
+      // Super admin, or a role granted "Customize roles". Nobody but the super admin can touch super_admin.
+      allow write: if isSuperAdmin() || (roleId != 'super_admin' && canEdit('roles'));
+    }
+
     // ---------- Staff accounts & teams ----------
     match /users/{userId} {
       allow read: if active() || (signedIn() && request.auth.uid == userId);
-      // Super admin provisions staff. The very first super admin may create itself before initialization.
-      allow create: if isSuperAdmin() || (
-        signedIn() && request.auth.uid == userId
-        && request.resource.data.role == 'super_admin'
-        && !exists(/databases/$(database)/documents/system_config/initialization)
-      );
-      // Users may edit their own name/avatar/phone, never their access fields.
-      allow update: if isSuperAdmin() || (
-        signedIn() && request.auth.uid == userId
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-          ['role', 'dataScope', 'isActive', 'teamId', 'teamName', 'businessEmail', 'email'])
-      );
+      allow create: if isSuperAdmin()
+        || (canEdit('team') && request.resource.data.role != 'super_admin')
+        || (
+          // First super admin bootstrap (only before initialization)
+          signedIn() && request.auth.uid == userId
+          && request.resource.data.role == 'super_admin'
+          && !exists(/databases/$(database)/documents/system_config/initialization)
+        );
+      allow update: if isSuperAdmin()
+        || (
+          // Staff managers can edit other non-super-admin people, never promote to super admin
+          canEdit('team') && userId != request.auth.uid
+          && resource.data.role != 'super_admin' && request.resource.data.role != 'super_admin'
+        )
+        || (
+          // Anyone may edit their own name / phone / last login, never their access
+          signedIn() && request.auth.uid == userId
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+            ['role', 'dataScope', 'isActive', 'teamId', 'teamName', 'businessEmail', 'email'])
+        );
       allow delete: if isSuperAdmin();
     }
 
     match /teams/{teamId} {
       allow read: if active();
-      allow write: if isSuperAdmin();
+      allow write: if canEdit('team');
     }
 
     // ---------- Customers ----------
     match /companies/{id} {
-      allow read: if readScoped(['super_admin', 'management', 'sales', 'operations', 'finance', 'auditor']);
-      allow create: if createScoped(['super_admin', 'management', 'sales', 'operations']);
-      allow update: if updateScoped(['super_admin', 'management', 'sales', 'operations']);
+      allow read: if readMod('customers');
+      allow create: if createMod('customers');
+      allow update: if updateMod('customers');
       allow delete: if isSuperAdmin();
     }
 
     match /branches/{id} {
-      allow read: if readScoped(['super_admin', 'management', 'sales', 'operations', 'finance', 'auditor']);
-      allow create: if createScoped(['super_admin', 'management', 'sales', 'operations']);
-      allow update: if updateScoped(['super_admin', 'management', 'sales', 'operations']);
+      allow read: if readMod('customers');
+      allow create: if createMod('customers');
+      allow update: if updateMod('customers');
       allow delete: if isSuperAdmin();
     }
 
     match /clients/{id} {
-      allow read: if readScoped(['super_admin', 'management', 'sales', 'operations', 'finance', 'auditor']);
-      allow create: if createScoped(['super_admin', 'management', 'sales', 'operations']);
-      allow update: if updateScoped(['super_admin', 'management', 'sales', 'operations']);
+      allow read: if readMod('customers');
+      allow create: if createMod('customers');
+      allow update: if updateMod('customers');
       allow delete: if isSuperAdmin();
     }
 
     match /sites/{id} {
-      allow read: if readScoped(['super_admin', 'management', 'sales', 'operations', 'finance', 'auditor']);
-      allow create: if createScoped(['super_admin', 'management', 'sales', 'operations']);
-      allow update: if updateScoped(['super_admin', 'management', 'sales', 'operations']);
+      allow read: if readMod('customers');
+      allow create: if createMod('customers');
+      allow update: if updateMod('customers');
       allow delete: if isSuperAdmin();
     }
 
     // ---------- Sales pipeline ----------
     match /leads/{id} {
-      allow read: if readScoped(['super_admin', 'management', 'sales', 'auditor']);
-      allow create: if createScoped(['super_admin', 'management', 'sales']);
-      allow update: if updateScoped(['super_admin', 'management', 'sales']);
+      allow read: if readMod('crm');
+      allow create: if createMod('crm');
+      allow update: if updateMod('crm');
       allow delete: if isSuperAdmin();
     }
 
     match /proposals/{id} {
-      allow read: if readScoped(['super_admin', 'management', 'sales', 'auditor']);
-      allow create: if createScoped(['super_admin', 'management', 'sales']);
-      allow update: if updateScoped(['super_admin', 'management', 'sales']);
+      allow read: if readMod('proposals');
+      allow create: if createMod('proposals');
+      allow update: if updateMod('proposals');
       allow delete: if isSuperAdmin();
     }
 
     match /contracts/{id} {
-      allow read: if readScoped(['super_admin', 'management', 'sales', 'operations', 'finance', 'auditor']);
-      allow create: if createScoped(['super_admin', 'management', 'sales', 'operations']);
-      allow update: if updateScoped(['super_admin', 'management', 'sales', 'operations']);
+      allow read: if readMod('contracts');
+      allow create: if createMod('contracts');
+      allow update: if updateMod('contracts');
       allow delete: if isSuperAdmin();
     }
 
     // ---------- Field operations ----------
     match /service_jobs/{id} {
-      allow read: if readScoped(['super_admin', 'management', 'operations', 'finance', 'auditor'])
-        || (hasRole(['technician']) && request.auth.uid in resource.data.assignedTechnicianIds);
-      allow create: if createScoped(['super_admin', 'management', 'operations', 'sales']);
-      allow update: if updateScoped(['super_admin', 'management', 'operations'])
-        || (hasRole(['technician'])
+      allow read: if readMod('jobs')
+        || (canView('pco') && request.auth.uid in resource.data.assignedTechnicianIds);
+      // Contracts generate their visit schedule, so contract editors may create jobs too
+      allow create: if (canEdit('jobs') || canEdit('contracts')) && ownsNew();
+      allow update: if updateMod('jobs')
+        || (canEdit('pco')
             && request.auth.uid in resource.data.assignedTechnicianIds
             && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
               ['ownerUid', 'teamId', 'assignedTechnicianIds', 'customerId', 'contractId']));
-      allow delete: if hasRole(['super_admin', 'management']);
+      allow delete: if isSuperAdmin();
     }
 
     // ---------- Finance ----------
     match /invoices/{id} {
-      allow read: if hasRole(['super_admin', 'management', 'finance', 'auditor']);
-      allow create: if hasRole(['super_admin', 'management', 'finance']);
+      allow read: if canView('invoices');
+      allow create: if canEdit('invoices');
       // Posted invoices are immutable except for a credit-note reversal
-      allow update: if hasRole(['super_admin', 'management', 'finance']) && (
+      allow update: if canEdit('invoices') && (
         resource.data.get('isPosted', false) != true || request.resource.data.status == 'void_reversed'
       );
       allow delete: if false;
     }
 
     match /payments/{id} {
-      allow read: if hasRole(['super_admin', 'management', 'finance', 'auditor']);
-      allow create: if hasRole(['super_admin', 'management', 'finance']);
+      allow read: if canView('invoices');
+      allow create: if canEdit('invoices');
       allow update, delete: if false;
     }
 
     match /tax_rules/{id} {
       allow read: if active();
-      allow write: if hasRole(['super_admin', 'management', 'finance']);
+      allow write: if canEdit('tax');
     }
 
     // ---------- Documents (files live in Cloudinary) ----------
     match /documents/{id} {
-      allow read: if (hasRole(['super_admin', 'management', 'sales', 'operations', 'finance', 'auditor'])
-          && (resource.data.owner.kind == 'library' || inScope(resource.data)))
-        || (hasRole(['technician']) && resource.data.ownerUid == request.auth.uid);
-      allow create: if active() && role() != 'auditor' && request.resource.data.get('ownerUid', '') == request.auth.uid;
-      allow update: if hasRole(['super_admin', 'management', 'sales', 'operations', 'finance'])
-        && (resource.data.owner.kind == 'library' || inScope(resource.data)) && keepsOwner();
-      allow delete: if hasRole(['super_admin', 'management']);
+      allow read: if (canView('documents') && resource.data.owner.kind == 'library')
+        || (canView('files') && inScope(resource.data))
+        || (active() && resource.data.ownerUid == request.auth.uid);
+      allow create: if active()
+        && request.resource.data.get('ownerUid', '') == request.auth.uid
+        && (canEdit('files') || canEdit('documents') || canEdit('pco') || canEdit('proposals'));
+      allow update: if ((canEdit('documents') && resource.data.owner.kind == 'library')
+          || (canEdit('files') && inScope(resource.data)))
+        && keepsOwner();
+      allow delete: if isSuperAdmin();
     }
 
     match /document_packs/{id} {
       allow read: if active();
-      allow write: if hasRole(['super_admin', 'management']);
+      allow write: if canEdit('documents');
     }
 
     // ---------- Outreach & audit (append-only) ----------
     match /outreach_logs/{id} {
-      allow read: if readScoped(['super_admin', 'management', 'sales', 'auditor']);
+      allow read: if (canView('crm') || canView('proposals') || canView('documents')) && inScope(resource.data);
       allow create: if active() && request.resource.data.sentBy == request.auth.token.email
         && request.resource.data.get('ownerUid', '') == request.auth.uid;
       allow update, delete: if false;
     }
 
     match /audit_logs/{id} {
-      allow read: if hasRole(['super_admin', 'management', 'auditor']);
+      allow read: if canView('settings');
       allow create: if active() && request.resource.data.userId == request.auth.uid;
       allow update, delete: if false;
     }
