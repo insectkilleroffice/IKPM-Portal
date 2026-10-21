@@ -36,11 +36,6 @@ export const DashboardPage: React.FC = () => {
   const { userProfile, effectiveRole, isSuperAdmin, setSimulatedRole } = useAuth();
   useDataStore();
 
-  // If user is a technician, skip full portal and open PCO field workstation directly
-  if (effectiveRole === 'technician') {
-    return <Navigate to="/pco-field" replace />;
-  }
-
   // Determine default queue tab based on active role
   const getDefaultTab = (): RoleQueueTab => {
     if (effectiveRole === 'finance') return 'finance';
@@ -49,6 +44,11 @@ export const DashboardPage: React.FC = () => {
   };
 
   const [activeQueueTab, setActiveQueueTab] = useState<RoleQueueTab>(getDefaultTab());
+
+  // If user is a technician, skip full portal and open PCO field workstation directly
+  if (effectiveRole === 'technician') {
+    return <Navigate to="/pco-field" replace />;
+  }
 
   // Metrics queried from active database records
   const companies = dataService.getCompanies();
