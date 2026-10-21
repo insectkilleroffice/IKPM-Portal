@@ -6,6 +6,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { dataService } from '../../services/dataService';
 import { uploadFile, validateFile, ACCEPT_ATTR, formatBytes } from '../../lib/cloudinary';
 import { integrations } from '../../config/env';
+import { documentFolderCategory } from '../../lib/folders';
 import { COMPANY_DOC_CATEGORIES, type CompanyDocCategory, type DocumentOwner } from '../../types/document';
 import { useDataStore } from '../../hooks/useDataStore';
 
@@ -63,7 +64,8 @@ export const DocumentUploadModal: React.FC<Props> = ({ isOpen, onClose, owner, d
     onClose();
   };
 
-  const folder = owner.kind === 'library' ? `library/${category}` : `${owner.kind}/${owner.id}`;
+  // Same category → folder mapping the saved record uses (src/lib/folders.ts)
+  const fileCategory = documentFolderCategory({ owner, category }).category;
 
   const handleUpload = async () => {
     if (files.length === 0) return;
@@ -75,7 +77,7 @@ export const DocumentUploadModal: React.FC<Props> = ({ isOpen, onClose, owner, d
       const pending = files[i];
       try {
         const stored = await uploadFile(pending.file, {
-          folder,
+          scope: dataService.uploadScopeFor(owner, fileCategory),
           onProgress: (pct) => setFiles((prev) => prev.map((f, idx) => (idx === i ? { ...f, progress: pct } : f))),
         });
         dataService.saveDocument(
@@ -83,6 +85,7 @@ export const DocumentUploadModal: React.FC<Props> = ({ isOpen, onClose, owner, d
             id: `DOC-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             title: pending.title || titleFromFile(pending.file.name),
             category,
+            fileCategory,
             owner,
             file: stored,
             issuedBy: issuedBy || undefined,

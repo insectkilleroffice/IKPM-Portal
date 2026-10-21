@@ -1,6 +1,7 @@
 // Finance, Invoices, Payments, Tax Separation, and Balances
 
 import type { CustomerType } from './customer';
+import type { FolderMeta } from './folders';
 
 export type TaxJurisdiction =
   | 'sindh_srb'
@@ -38,7 +39,7 @@ export interface CustomerWithholdingTax {
   notes?: string;
 }
 
-export interface Invoice {
+export interface Invoice extends FolderMeta {
   id: string;
   invoiceNumber: string;
   invoiceType: 'standard_service' | 'statutory_sales_tax_invoice';
@@ -73,7 +74,7 @@ export interface Invoice {
   updatedAt: string;
 }
 
-export interface PaymentReceipt {
+export interface PaymentReceipt extends FolderMeta {
   id: string;
   receiptNumber: string;
   invoiceId: string;

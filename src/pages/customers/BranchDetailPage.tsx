@@ -23,14 +23,15 @@ import { formatPKR, formatDate } from '../../lib/formatters';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { EntityDocumentsPanel } from '../../features/documents/EntityDocumentsPanel';
+import { DeviceRegisterPanel } from '../../features/devices/DeviceRegisterPanel';
 
 export const BranchDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { hasRole } = useAuth();
+  const { hasRole, userProfile } = useAuth();
   useDataStore();
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'sites' | 'jobs' | 'proposals' | 'contracts' | 'invoices' | 'documents'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'sites' | 'jobs' | 'proposals' | 'contracts' | 'invoices' | 'documents' | 'devices'>('overview');
 
   const branch = dataService.getBranchById(id || '');
   const company = branch ? dataService.getCompanyById(branch.companyId) : undefined;
@@ -180,7 +181,11 @@ export const BranchDetailPage: React.FC = () => {
           onClick={() => setActiveTab('documents')}
         >
           <Paperclip size={14} />
-          Documents
+          Files
+        </button>
+        <button className={`tab-btn ${activeTab === 'devices' ? 'active' : ''}`} onClick={() => setActiveTab('devices')}>
+          <MapPin size={14} />
+          Devices
         </button>
       </div>
 
@@ -297,6 +302,19 @@ export const BranchDetailPage: React.FC = () => {
             </div>
           ))}
         </div>
+      )}
+
+      {activeTab === 'devices' && (
+        <DeviceRegisterPanel
+          clientId={branch.companyId}
+          clientType="company"
+          clientName={branch.companyName}
+          branchId={branch.id}
+          branchName={branch.branchName}
+          address={branch.physicalAddress}
+          floorPlan={branch.floorPlan}
+          onFloorPlanSaved={(file) => dataService.saveBranch({ ...branch, floorPlan: file }, userProfile?.email)}
+        />
       )}
 
       {activeTab === 'documents' && (

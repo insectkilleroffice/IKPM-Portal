@@ -31,6 +31,8 @@ import type { ServiceJob, JobStatus, SupervisorVerification } from '../../types/
 import type { PestType } from '../../types/crm';
 import { UnifiedWorkflowStatusBar } from '../../components/common/UnifiedWorkflowStatusBar';
 import { getJobNextAction } from '../../lib/workflow';
+import { fileGenerated } from '../../features/documents/fileGenerated';
+import type { DocumentOwner } from '../../types/document';
 
 export const JobsListPage: React.FC = () => {
   const navigate = useNavigate();
@@ -211,13 +213,13 @@ export const JobsListPage: React.FC = () => {
     setSelectedJob(updated);
   };
 
-  const handleVerifyQC = (e: React.FormEvent) => {
+  const handleVerifyQC = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!showVerifyModal) return;
 
     const verification: SupervisorVerification = {
       isVerified: true,
-      supervisorId: 'sup_01',
+      supervisorId: userProfile?.uid || 'sup_01',
       supervisorName: verifyForm.supervisorName,
       verifiedAt: new Date().toISOString(),
       qcRating: verifyForm.qcRating,
@@ -230,7 +232,28 @@ export const JobsListPage: React.FC = () => {
     };
 
     dataService.saveJob(updated, userProfile?.email);
-    success('Report QC Verified', `Job ${updated.id} certified by ${verification.supervisorName}. Invoicing is now unlocked.`);
+
+    // Step 15: Auto-file verified service report into client's Service Reports/{YYYY}/{MM} folder
+    try {
+      const owner: DocumentOwner = updated.branchId
+        ? { kind: 'branch', id: updated.branchId }
+        : updated.customerType === 'company'
+        ? { kind: 'company', id: updated.customerId }
+        : { kind: 'client', id: updated.customerId };
+      const blob = await pdfGenerator.jobReportPDFBlob(updated);
+      await fileGenerated(blob, {
+        owner,
+        category: 'service_report',
+        title: `Verified Service Report - ${updated.id} (${updated.customerName})`,
+        fileName: pdfGenerator.jobReportFileName(updated),
+        subPath: updated.id,
+        user: { email: userProfile?.email, displayName: userProfile?.displayName },
+      });
+    } catch (err) {
+      console.warn('Auto-filing verified report background error:', err);
+    }
+
+    success('Report QC Verified & Filed', `Job ${updated.id} certified by ${verification.supervisorName}. Report auto-filed in Service Reports and invoicing unlocked.`);
     setShowVerifyModal(null);
     if (selectedJob?.id === updated.id) {
       setSelectedJob(updated);

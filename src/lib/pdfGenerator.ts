@@ -14,6 +14,11 @@ import type { Lead } from '../types/crm';
 import { formatDate } from './formatters';
 import { companyProfile, DEFAULT_ACCENT_COLOR, DEFAULT_BRAND_COLOR, type CompanyProfile } from '../services/companyProfile';
 import { dataService } from '../services/dataService';
+import { planPricing } from './proposalPlan';
+import { fillSop } from './sopTemplate';
+import { fillTemplate } from './templateFill';
+import { documentTemplates } from '../services/documentTemplates';
+import type { SopInput } from '../types/document';
 
 // ---------------------------------------------------------------------------
 // Palette & layout (mm, A4 portrait)
@@ -176,7 +181,7 @@ class DocBuilder {
     else this.doc.setDrawColor(c[0], c[1], c[2]);
   }
 
-  private font(size: number, style: 'normal' | 'bold' | 'italic' = 'normal', c: RGB = INK) {
+  font(size: number, style: 'normal' | 'bold' | 'italic' = 'normal', c: RGB = INK) {
     this.doc.setFont('helvetica', style);
     this.doc.setFontSize(size);
     this.color(c);
@@ -314,6 +319,29 @@ class DocBuilder {
       this.y += lines.length * 3.8 + 1.2;
     });
     this.y += 2;
+  }
+
+  /** Lettered list: (a), (b), (c)… */
+  lettered(items: string[], size = 8) {
+    items.filter((t) => t.trim()).forEach((t, i) => {
+      this.font(size, 'normal', INK);
+      const lines = this.doc.splitTextToSize(t.trim(), CONTENT_W - 8) as string[];
+      this.ensure(lines.length * 4 + 1);
+      this.font(size, 'bold', this.brand);
+      this.doc.text(`(${String.fromCharCode(97 + (i % 26))})`, M, this.y);
+      this.font(size, 'normal', INK);
+      lines.forEach((l, j) => this.doc.text(l, M + 7, this.y + j * 3.8));
+      this.y += lines.length * 3.8 + 1.2;
+    });
+    this.y += 2;
+  }
+
+  /** Small bold heading inside a section (e.g. "A. Rodent control"). */
+  subheading(text: string) {
+    this.ensure(10);
+    this.font(8.8, 'bold', this.navy);
+    this.doc.text(text, M, this.y);
+    this.y += 4.6;
   }
 
   /** Label / value grid, two columns. */
@@ -454,6 +482,29 @@ class DocBuilder {
       });
       this.y += h + 9;
     }
+  }
+
+  /** Floor plan image with numbered pins (x / y are 0–1 of the image). */
+  floorPlan(img: Img, pins: { x: number; y: number; label: string }[]) {
+    const maxH = PAGE_H - FOOTER_H - 30;
+    const scale = Math.min(CONTENT_W / img.w, maxH / img.h);
+    const w = img.w * scale;
+    const h = img.h * scale;
+    this.ensure(h + 4);
+    const x0 = M + (CONTENT_W - w) / 2;
+    const y0 = this.y;
+    this.doc.addImage(img.data, 'JPEG', x0, y0, w, h, undefined, 'FAST');
+    this.color(RULE, 'draw');
+    this.doc.rect(x0, y0, w, h, 'S');
+    pins.forEach((p) => {
+      const cx = x0 + p.x * w;
+      const cy = y0 + p.y * h;
+      this.color(this.brand, 'fill');
+      this.doc.circle(cx, cy, 2.6, 'F');
+      this.font(5.6, 'bold', [255, 255, 255]);
+      this.doc.text(p.label, cx, cy + 0.9, { align: 'center' });
+    });
+    this.y += h + 6;
   }
 
   ensure(space: number) {
@@ -614,7 +665,137 @@ const statusLabel = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (m) => 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+/** Monthly IPM service plan proposal: cover letter, scope A/B/C, terms (a)–(h), service plan, charges & tenure. */
+async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
+  const watermark = ['draft', 'pending_approval'].includes(proposal.status) ? 'DRAFT' : proposal.status === 'rejected' ? 'REJECTED' : undefined;
+  const ref = `${proposal.id}${proposal.revisionNumber ? `-R${proposal.revisionNumber}` : ''}`;
+  const { b, profile } = await builder('Quotation', ref, watermark, undefined, {
+    type: 'proposal', issued: proposal.createdAt, client: proposal.customerName, clientIsPerson: proposal.customerType !== 'company', amount: proposal.totalAmount, status: proposal.status,
+  });
+  const company = profile.shortName || profile.legalName;
+  const pricing = planPricing({
+    monthlyRate: proposal.monthlyRate ?? 0,
+    taxMode: proposal.taxMode ?? 'exclusive',
+    taxPercent: proposal.taxPercent,
+    tenureMonths: proposal.tenureMonths ?? 12,
+    discountPercent: proposal.discountPercent,
+  });
+  const validUntil = new Date(new Date(proposal.createdAt).getTime() + (proposal.validityDays || 30) * 86400000).toISOString();
+  const fill = (t: string) =>
+    fillTemplate(t, {
+      clientName: proposal.customerName,
+      companyName: company,
+      siteName: proposal.branchName,
+      monthlyRate: money(proposal.monthlyRate),
+      tenureMonths: proposal.tenureMonths,
+      tenureStart: proposal.tenureStart ? formatDate(proposal.tenureStart) : undefined,
+      tenureEnd: proposal.tenureEnd ? formatDate(proposal.tenureEnd) : undefined,
+      paymentTermsDays: proposal.paymentTermsDays ?? 15,
+    });
+
+  // The date is always the day the proposal was created
+  b.titleBand(
+    [
+      { label: 'Ref. No.', value: ref },
+      { label: 'Date', value: formatDate(proposal.createdAt) },
+      { label: 'Valid until', value: formatDate(validUntil) },
+    ],
+    'Integrated Pest Management services'
+  );
+
+  // Cover letter
+  const party = clientParty(proposal.customerType, proposal.customerId, proposal.customerName, proposal.branchId, 'To');
+  const att = proposal.attentionTo;
+  b.font(8.8, 'normal', INK);
+  const toLines = [
+    att?.name ? `Attn: ${att.name}${att.designation ? `, ${att.designation}` : ''}` : '',
+    party.name,
+    proposal.branchName ? `${proposal.branchName}` : '',
+    proposal.clientAddress || (party.lines[1] as string) || '',
+  ].filter(Boolean);
+  b.ensure(toLines.length * 4.4 + 16);
+  b.doc.text('To,', M, b.y);
+  b.y += 4.6;
+  toLines.forEach((l, i) => {
+    b.font(8.8, i === 1 ? 'bold' : 'normal', INK);
+    b.doc.text(l, M, b.y, { maxWidth: CONTENT_W });
+    b.y += 4.4;
+  });
+  b.y += 2;
+  b.font(9, 'bold', b.navy);
+  b.doc.text('Subject: Proposal for Integrated Pest Management (IPM) Services', M, b.y);
+  b.y += 6;
+  b.paragraph(att?.name ? `Dear ${att.name},` : 'Dear Sir / Madam,');
+  b.paragraph(fill(proposal.coverLetter || proposal.scopeOfWork));
+
+  if (proposal.scopeSections?.length) {
+    b.section('Scope of services');
+    proposal.scopeSections.forEach((sec) => {
+      b.subheading(`${sec.key}. ${fill(sec.title)}`);
+      b.paragraph(fill(sec.body));
+    });
+  }
+
+  if (proposal.terms?.length) {
+    b.section('Terms');
+    b.lettered(proposal.terms.map(fill));
+  }
+
+  b.section('Monthly IPM service plan', 34);
+  b.table(
+    ['#', 'Service', 'Frequency'],
+    (proposal.servicePlan ?? []).map((row, i) => [i + 1, row.service, row.frequency]),
+    { columnStyles: { 0: { cellWidth: 9, halign: 'center' }, 1: { fontStyle: 'bold' }, 2: { cellWidth: 52 } } }
+  );
+  const pco = proposal.pcoCountMin || proposal.pcoCountMax
+    ? proposal.pcoCountMin && proposal.pcoCountMax && proposal.pcoCountMin !== proposal.pcoCountMax
+      ? `${proposal.pcoCountMin} to ${proposal.pcoCountMax}`
+      : String(proposal.pcoCountMax || proposal.pcoCountMin)
+    : undefined;
+  b.keyValues([
+    ['Service visits per month', proposal.serviceVisitsPerMonth ? String(proposal.serviceVisitsPerMonth) : undefined],
+    ['Follow-up visits per month', proposal.followUpVisitsPerMonth ? String(proposal.followUpVisitsPerMonth) : undefined],
+    ['PCOs per visit', pco],
+  ], 3);
+  if (proposal.documentationIncluded?.length) b.noteBox('Documentation included', proposal.documentationIncluded.map((d) => `•  ${d}`));
+
+  b.section('Charges & tenure', 40);
+  const taxLabel = proposal.taxPercent > 0 ? `Sales tax (${proposal.taxPercent}%)` : 'Sales tax';
+  const months = proposal.tenureMonths ?? 12;
+  b.table(
+    ['Description', 'Amount (PKR)'],
+    [
+      [`Monthly charges${proposal.taxMode === 'inclusive' ? ' (excluding tax)' : ''}`, money(pricing.monthlyBase)],
+      [`${taxLabel} per month`, money(pricing.monthlyTax)],
+      ['Monthly charges including tax', money(pricing.monthlyTotal)],
+      [`Tenure`, `${months} month${months === 1 ? '' : 's'}${proposal.tenureStart ? `: ${formatDate(proposal.tenureStart)} to ${formatDate(proposal.tenureEnd)}` : ''}`],
+    ],
+    { columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right', cellWidth: 70 } } }
+  );
+  const rows: [string, string][] = [[`Charges for ${months} month${months === 1 ? '' : 's'}`, pkr(pricing.subtotal)]];
+  if (proposal.discountPercent > 0) rows.push([`Discount (${proposal.discountPercent}%)`, `- ${pkr(pricing.discountAmount)}`]);
+  if (pricing.taxAmount > 0) rows.push([taxLabel, pkr(pricing.taxAmount)]);
+  b.totals(rows, ['Total for tenure', pricing.totalAmount]);
+  const snap = (proposal.templateSnapshot ?? {}) as { taxWording?: string; paymentTerms?: string };
+  const current = documentTemplates.get();
+  b.paragraph(fillTemplate(snap.taxWording ?? current.taxWording, { taxMode: proposal.taxMode === 'inclusive' ? 'inclusive' : 'exclusive' }), 8, MUTED);
+
+  b.section('Payment terms');
+  b.paragraph(`${fill(snap.paymentTerms ?? current.paymentTerms)}${proposal.paymentTerms ? ` ${proposal.paymentTerms}` : ''}`);
+
+  const notes = [proposal.exclusions && `Exclusions: ${proposal.exclusions}`, proposal.deviceOwnership && `Devices: ${proposal.deviceOwnership}`].filter(Boolean) as string[];
+  if (notes.length) b.noteBox('Please note', notes, b.brandTint);
+
+  b.paragraph(`We look forward to serving you. For any questions please contact ${proposal.preparedByName}${profile.phone ? ` at ${profile.phone}` : ''}.`);
+  b.signatures([
+    { label: `For ${company}`, name: profile.signatoryName || proposal.preparedByName, sub: profile.signatoryTitle },
+    { label: 'Accepted by client', name: att?.name || ' ', sub: att?.designation ? `${att.designation} · signature, stamp & date` : 'Name, signature, stamp & date' },
+  ]);
+  return b.finish();
+}
+
 async function buildProposal(proposal: Proposal): Promise<jsPDF> {
+  if (proposal.servicePlan?.length) return buildPlanProposal(proposal);
   const watermark = ['draft', 'pending_approval'].includes(proposal.status) ? 'DRAFT' : proposal.status === 'rejected' ? 'REJECTED' : undefined;
   const ref = `${proposal.id}${proposal.revisionNumber ? `-R${proposal.revisionNumber}` : ''}`;
   const { b, profile } = await builder('Proposal & Quotation', ref, watermark, undefined, {
@@ -925,33 +1106,39 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
   return b.finish();
 }
 
+/** Risk assessment report: picture evidence, observation, risk and recommendation per finding. */
 async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
   const i = lead.inspection;
-  const { b, profile } = await builder('Site Inspection Report', i?.id || lead.id, i?.status === 'completed' ? undefined : 'SCHEDULED', undefined, {
-    type: 'inspection_report', issued: i?.completedDate || i?.scheduledDate || lead.createdAt, client: lead.companyName || lead.title,
+  const findings = i?.findings ?? [];
+  const client = lead.companyName || lead.title;
+  const title = findings.length ? 'Risk Assessment Report' : 'Site Inspection Report';
+  const { b, profile } = await builder(title, i?.id || lead.id, i?.status === 'completed' ? undefined : 'SCHEDULED', undefined, {
+    type: 'inspection_report', issued: i?.completedDate || i?.scheduledDate || lead.createdAt, client,
     clientIsPerson: lead.customerType !== 'company', status: i?.status || 'scheduled',
   });
   const primary = lead.contacts?.find((c) => c.isPrimary) ?? lead.contacts?.[0];
+  const preparedBy = i?.findingsBy || i?.inspectorNames?.join(', ') || i?.inspectorName || '—';
   b.titleBand(
     [
-      { label: 'Inspection No.', value: i?.id || '—' },
-      { label: 'Lead', value: lead.id },
-      { label: 'Visit date', value: formatDate(i?.completedDate || i?.scheduledDate) },
-      { label: 'Inspector(s)', value: i?.inspectorNames?.join(', ') || i?.inspectorName || '—' },
+      { label: 'Report No.', value: i?.id || '—' },
+      { label: 'Date', value: formatDate(i?.completedDate || i?.scheduledDate) },
+      { label: 'Branch / site', value: i?.siteName || [lead.area, lead.city].filter(Boolean).join(', ') || '—' },
+      { label: 'Prepared by', value: preparedBy },
+      { label: 'Observed by', value: i?.observedBy || '—' },
     ],
-    'Pest activity assessment & treatment recommendation'
+    i?.reportTitle || `${title} - ${client}`
   );
   b.parties(
     {
       heading: 'Client',
-      name: lead.companyName || lead.title,
+      name: client,
       lines: [
         primary && `Attn: ${primary.name}${primary.designation ? ` (${primary.designation})` : ''}`,
         [primary?.phone || lead.phone, primary?.email || lead.email].filter(Boolean).join('  ·  '),
         lead.industry,
       ],
     },
-    { heading: 'Inspected site', name: [lead.area, lead.city].filter(Boolean).join(', ') || lead.city, lines: [lead.propertyAddress, i?.teamName && `Team: ${i.teamName}`] }
+    { heading: 'Inspected site', name: i?.siteName || [lead.area, lead.city].filter(Boolean).join(', ') || lead.city, lines: [lead.propertyAddress, i?.teamName && `Team: ${i.teamName}`] }
   );
   if (i) {
     b.keyValues([
@@ -960,6 +1147,44 @@ async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
       ['Area inspected', i.areaSqFt ? `${i.areaSqFt.toLocaleString()} sq ft` : undefined],
       ['Status', statusLabel(i.status)],
     ]);
+  }
+
+  if (findings.length) {
+    // Table: picture evidence | observation | risk | recommendation
+    const images = await Promise.all(findings.map((f) => (f.photo ? loadImage(f.photo.imageUrl, 700) : Promise.resolve(null))));
+    const PIC_W = 42;
+    const PIC_H = 34;
+    b.section('Findings', 50);
+    b.table(
+      ['#', 'Picture evidence', 'Observation', 'Risk', 'Recommendation'],
+      findings.map((f, idx) => [idx + 1, images[idx] ? '' : f.photo ? '(photo unavailable)' : '—', `${f.location ? `${f.location}\n` : ''}${f.observation}`, f.risk, f.recommendation]),
+      {
+        styles: { fontSize: 8, valign: 'top', cellPadding: 2.2, lineColor: RULE, lineWidth: 0.2, textColor: INK, font: 'helvetica' },
+        alternateRowStyles: {},
+        columnStyles: {
+          0: { cellWidth: 8, halign: 'center' },
+          1: { cellWidth: PIC_W + 4, minCellHeight: PIC_H + 4, halign: 'center' },
+          2: { cellWidth: 46 },
+          3: { cellWidth: 38 },
+        },
+        rowPageBreak: 'avoid',
+        didDrawCell: (d) => {
+          if (d.section !== 'body' || d.column.index !== 1) return;
+          const img = images[d.row.index];
+          if (!img) return;
+          const scale = Math.min(PIC_W / img.w, PIC_H / img.h);
+          const w = img.w * scale;
+          const h = img.h * scale;
+          b.doc.addImage(img.data, 'JPEG', d.cell.x + (d.cell.width - w) / 2, d.cell.y + 2, w, h, undefined, 'FAST');
+        },
+      }
+    );
+    if (i?.recommendedTreatment) {
+      b.section('Recommended treatment');
+      b.paragraph(i.recommendedTreatment);
+    }
+  } else if (i) {
+    // Older inspections: free-text findings
     b.section('Findings');
     b.paragraph(i.criticalFindings || 'Findings pending.');
     if (i.recommendedTreatment) {
@@ -967,20 +1192,70 @@ async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
       b.paragraph(i.recommendedTreatment);
     }
   }
-  const photos = await photoItems(i?.photos?.length ? i.photos : lead.sitePhotos ?? [], (p) => p.caption || statusLabel(p.type));
+
+  const general = i?.photos?.length ? i.photos : findings.length ? [] : lead.sitePhotos ?? [];
+  const photos = await photoItems(general, (p) => p.caption || statusLabel(p.type));
   if (photos.length) {
-    b.section('Photo evidence', 72);
+    b.section('Site photos', 72);
     b.photos(photos);
   }
   b.noteBox('Next step', [`${profile.legalName} will share a detailed proposal with pricing based on these findings.`], b.brandTint);
   b.signatures([
-    { label: 'Inspected by', name: i?.inspectorNames?.join(', ') || i?.inspectorName || ' ' },
-    { label: 'Client representative', name: primary?.name || ' ', sub: primary?.designation },
+    { label: 'Prepared by', name: preparedBy },
+    { label: 'Observed by', name: i?.observedBy || primary?.name || ' ', sub: i?.observedBy ? undefined : primary?.designation },
+  ]);
+  return b.finish();
+}
+
+/** Client SOP / Pest Management Plan from the template in ./sopTemplate.ts. */
+async function buildSop(sop: SopInput): Promise<jsPDF> {
+  const profile = companyProfile.get();
+  const company = profile.shortName || profile.legalName;
+  const { b } = await builder('Pest Management Plan', sop.documentNo);
+  b.titleBand(
+    [
+      { label: 'Document No.', value: sop.documentNo },
+      { label: 'Effective date', value: formatDate(sop.effectiveDate) },
+      { label: 'Review date', value: sop.reviewDate ? formatDate(sop.reviewDate) : '—' },
+      { label: 'Prepared by', value: sop.preparedBy },
+    ],
+    `Integrated Pest Management plan for ${sop.clientName}`
+  );
+  b.parties(
+    { heading: 'Client', name: sop.clientName, lines: [sop.siteName && `Site: ${sop.siteName}`, sop.address] },
+    { heading: 'Service provider', name: profile.legalName, lines: [[profile.address, profile.city].filter(Boolean).join(', '), [profile.phone, profile.email].filter(Boolean).join('  ·  '), profile.pcoLicense && `PCO Licence: ${profile.pcoLicense}`] }
+  );
+  const values = { client: sop.clientName, company, site: sop.siteName };
+  documentTemplates.get().sopSections.forEach((sec, i) => {
+    b.section(`${i + 1}. ${sec.title}`);
+    sec.paragraphs.forEach((t) => b.paragraph(fillSop(t, values)));
+    if (sec.bullets?.length) b.numbered(sec.bullets.map((t) => fillSop(t, values)));
+  });
+
+  if (sop.products.length) {
+    b.section('Products used', 24);
+    b.table(['#', 'Product', 'Used for'], sop.products.map((pr, i) => [i + 1, pr.name, pr.use || '—']), { columnStyles: { 0: { cellWidth: 9, halign: 'center' }, 1: { fontStyle: 'bold' } } });
+    b.paragraph('The MSDS of each product is part of the onboarding pack.', 8, MUTED);
+  }
+  if (sop.authorizedPersons.length) {
+    b.section('Authorised persons', 24);
+    b.table(['Name', 'Designation', 'Organisation'], sop.authorizedPersons.map((a) => [a.name, a.designation || '—', a.organisation === 'ikpm' ? profile.legalName : sop.clientName]));
+  }
+  if (sop.contacts.length) {
+    b.section('Contacts', 24);
+    b.table(['Name', 'Role', 'Phone', 'Email'], sop.contacts.map((c) => [c.name, c.role || '—', c.phone || '—', c.email || '—']));
+  }
+  b.signatures([
+    { label: 'Prepared by', name: sop.preparedBy, sub: profile.legalName },
+    { label: 'Approved by (client)', name: sop.approvedBy || ' ', sub: sop.clientName },
   ]);
   return b.finish();
 }
 
 const prefix = () => companyProfile.get().shortName || 'Document';
+
+/** Shared with src/lib/opsPdf.ts (layouts, monitoring sheets, trend reports, schedules). */
+export const pdfKit = { builder, loadImage, MUTED };
 
 export const pdfGenerator = {
   // Proposals
@@ -1002,7 +1277,13 @@ export const pdfGenerator = {
     return (await buildInvoice(invoice)).output('blob');
   },
   async generateReceiptPDF(receipt: PaymentReceipt) {
-    (await buildReceipt(receipt)).save(safe(`${prefix()}_Receipt_${receipt.receiptNumber}_${receipt.customerName}.pdf`));
+    (await buildReceipt(receipt)).save(this.receiptFileName(receipt));
+  },
+  receiptFileName(receipt: PaymentReceipt) {
+    return safe(`${prefix()}_Receipt_${receipt.receiptNumber}_${receipt.customerName}.pdf`);
+  },
+  async receiptPDFBlob(receipt: PaymentReceipt): Promise<Blob> {
+    return (await buildReceipt(receipt)).output('blob');
   },
 
   // Field service & inspections
@@ -1038,7 +1319,25 @@ export const pdfGenerator = {
     imageCache.clear();
   },
 
+  // Client SOP (onboarding pack)
+  async sopPDFBlob(sop: SopInput): Promise<Blob> {
+    return (await buildSop(sop)).output('blob');
+  },
+  async generateSopPDF(sop: SopInput) {
+    (await buildSop(sop)).save(this.sopFileName(sop));
+  },
+  sopFileName(sop: SopInput) {
+    return safe(`${prefix()}_Pest_Management_Plan_${sop.documentNo}_${sop.clientName}.pdf`);
+  },
+
   async generateInspectionReportPDF(lead: Lead) {
-    (await buildInspectionReport(lead)).save(safe(`${prefix()}_Inspection_${lead.inspection?.id || lead.id}_${lead.title}.pdf`));
+    (await buildInspectionReport(lead)).save(this.inspectionReportFileName(lead));
+  },
+  async inspectionReportPDFBlob(lead: Lead): Promise<Blob> {
+    return (await buildInspectionReport(lead)).output('blob');
+  },
+  inspectionReportFileName(lead: Lead) {
+    const kind = lead.inspection?.findings?.length ? 'Risk_Assessment' : 'Inspection';
+    return safe(`${prefix()}_${kind}_${lead.inspection?.id || lead.id}_${lead.companyName || lead.title}.pdf`);
   },
 };

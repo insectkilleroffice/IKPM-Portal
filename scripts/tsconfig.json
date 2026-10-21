@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../node_modules/.tmp/tsconfig.scripts.tsbuildinfo",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["./**/*.ts", "../src/lib/folderBackfill.ts", "../src/lib/folderResolver.ts", "../src/services/seedData.ts"]
+}

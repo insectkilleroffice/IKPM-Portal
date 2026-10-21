@@ -27,6 +27,8 @@ import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
 import { uploadFile } from '../../lib/cloudinary';
 import { integrations } from '../../config/env';
+import { MonitoringStep } from '../../features/field/MonitoringStep';
+import { fileMonitoringSheets } from '../../features/field/monitoringFiles';
 import { JobPhotoCapture } from '../../features/field/JobPhotoCapture';
 import { useSync } from '../../contexts/SyncContext';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -38,7 +40,7 @@ import { CHEMICAL_PRESETS } from '../../lib/workflow';
 import { formatPKR, formatDate } from '../../lib/formatters';
 import { useDataStore } from '../../hooks/useDataStore';
 
-type GuidedStep = 1 | 2 | 3 | 4 | 5;
+type GuidedStep = 1 | 2 | 3 | 4 | 5 | 6;
 
 export const PcoMobilePage: React.FC = () => {
   useDataStore(); // re-render when Firestore data arrives
@@ -76,7 +78,7 @@ export const PcoMobilePage: React.FC = () => {
       setFeedbackRating(activeJob.customerSignOff?.feedbackRating || 5);
 
       if (activeJob.status === 'completed') {
-        setCurrentStep(5);
+        setCurrentStep(6);
         setIsFinished(true);
       } else if (activeJob.status === 'in_progress') {
         setCurrentStep(2);
@@ -171,7 +173,7 @@ export const PcoMobilePage: React.FC = () => {
     setChemicals(chemicals.filter((c) => c.id !== id));
   };
 
-  // Step 3: save each photo on the job straight away so a reload or closed app doesn't lose it
+  // Step 4: save each photo on the job straight away so a reload or closed app doesn't lose it
   const handlePhotosChange = (next: PhotoEvidence[]) => {
     setPhotos(next);
     if (isOnline) {
@@ -190,10 +192,10 @@ export const PcoMobilePage: React.FC = () => {
       setConfirmSkipPhotos(true);
       return;
     }
-    setCurrentStep(4);
+    setCurrentStep(5);
   };
 
-  // Step 5: Finish & Auto Save to Client Documents with no further clicks
+  // Step 6: Finish & Auto Save to Client Documents with no further clicks
   const handleFinishJob = () => {
     let signatureUrl = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60"><text x="10" y="35" font-family="sans-serif" font-size="16" fill="%230F172A">Digitally Signed & Verified</text></svg>';
     if (canvasRef.current && hasDrawnSignature) {
@@ -237,17 +239,19 @@ export const PcoMobilePage: React.FC = () => {
           warning('Report not uploaded', 'No internet or file storage. Download the report from the job once you are back online.');
           return;
         }
-        const file = await uploadFile(blob, { folder: `job/${updatedJob.id}`, fileName });
+        const file = await uploadFile(blob, { scope: { ownerScope: 'client', clientId: updatedJob.customerId, category: 'service_report' }, subPath: updatedJob.id, fileName });
         dataService.saveDocument(
           {
             id: `DOC-${Date.now()}-${updatedJob.id}`,
             title: `Service Report: ${updatedJob.id} (${updatedJob.customerName})`,
             category: 'service_report',
+            fileCategory: 'service_report',
             folder: 'service_reports',
             year: new Date().getFullYear(),
             source: 'generated',
             jobId: updatedJob.id,
             owner: { kind: updatedJob.customerType === 'company' ? 'company' : 'client', id: updatedJob.customerId },
+            ...dataService.resolveFolder({ customerId: updatedJob.customerId, customerType: updatedJob.customerType, customerName: updatedJob.customerName, branchId: updatedJob.branchId, category: 'service_report', date: updatedJob.scheduledDate }),
             file,
             uploadedBy: userProfile?.email || '',
             uploadedByName: userProfile?.displayName || updatedJob.leadPcoName,
@@ -258,10 +262,15 @@ export const PcoMobilePage: React.FC = () => {
       } catch (err) {
         warning('Report not saved to client files', err instanceof Error ? err.message : String(err));
       }
+      try {
+        await fileMonitoringSheets(updatedJob, { email: userProfile?.email, displayName: userProfile?.displayName });
+      } catch (err) {
+        warning('Monitoring sheet not saved', err instanceof Error ? err.message : String(err));
+      }
     })();
 
     setIsFinished(true);
-    setCurrentStep(5);
+    setCurrentStep(6);
     success('Visit completed', 'The service report PDF is being saved to the client’s files. Unlocked for supervisor QC.');
   };
 
@@ -284,7 +293,7 @@ export const PcoMobilePage: React.FC = () => {
           <Smartphone size={20} color="var(--ikpm-emerald-400)" />
           <div>
             <div style={{ fontWeight: 800, fontSize: '0.95rem' }}>Technician Field Visit</div>
-            <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>Guided 5-Step Workflow • Offline-First</div>
+            <div style={{ fontSize: '0.7rem', color: '#94A3B8' }}>Guided 6-Step Workflow • Offline-First</div>
           </div>
         </div>
 
@@ -339,9 +348,10 @@ export const PcoMobilePage: React.FC = () => {
         {[
           { num: 1, label: 'Start' },
           { num: 2, label: 'Chemicals' },
-          { num: 3, label: 'Photos' },
-          { num: 4, label: 'Sign-off' },
-          { num: 5, label: 'Finish' },
+          { num: 3, label: 'Monitor' },
+          { num: 4, label: 'Photos' },
+          { num: 5, label: 'Sign-off' },
+          { num: 6, label: 'Finish' },
         ].map((s) => {
           const isDone = currentStep > s.num || isFinished;
           const isCur = currentStep === s.num && !isFinished;
@@ -526,19 +536,42 @@ export const PcoMobilePage: React.FC = () => {
               disabled={chemicals.length === 0}
               onClick={() => setCurrentStep(3)}
             >
-              <span>Next: Add Photos</span>
+              <span>Next: Monitoring</span>
               <ArrowRight size={15} />
             </button>
           </div>
         </div>
       )}
 
-      {/* STEP 3: ADD PHOTOS */}
+      {/* STEP 3: DEVICE MONITORING */}
       {currentStep === 3 && !isFinished && (
+        <div className="card animate-fade-in" style={{ padding: '1.25rem' }}>
+          <div style={{ marginBottom: '0.75rem' }}>
+            <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Step 3: Device Monitoring</h3>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              Tap what you found at each trap / station. Saved as you go, also offline.
+            </p>
+          </div>
+          <MonitoringStep job={activeJob} user={{ uid: userProfile?.uid || '', name: userProfile?.displayName || activeJob.leadPcoName }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginTop: '1rem' }}>
+            <button className="btn btn-secondary" onClick={() => setCurrentStep(2)}>
+              <ArrowLeft size={15} />
+              <span>Back</span>
+            </button>
+            <button className="btn btn-primary" onClick={() => setCurrentStep(4)}>
+              <span>Next: Photos</span>
+              <ArrowRight size={15} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 4: ADD PHOTOS */}
+      {currentStep === 4 && !isFinished && (
         <div className="card animate-fade-in" style={{ padding: '1.25rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
             <div>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Step 3: Treatment Photos</h3>
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Step 4: Treatment Photos</h3>
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                 Capture photographic evidence for the certified service report.
               </p>
@@ -549,6 +582,7 @@ export const PcoMobilePage: React.FC = () => {
           <div style={{ marginBottom: '1rem' }}>
             <JobPhotoCapture
               jobId={activeJob.id}
+              customerId={activeJob.customerId}
               photos={photos}
               onChange={handlePhotosChange}
               required={['before', 'after']}
@@ -559,7 +593,7 @@ export const PcoMobilePage: React.FC = () => {
           <ConfirmDialog
             isOpen={confirmSkipPhotos}
             onClose={() => setConfirmSkipPhotos(false)}
-            onConfirm={() => setCurrentStep(4)}
+            onConfirm={() => setCurrentStep(5)}
             title="Continue without all photos?"
             message={`No ${missingPhotoSteps.join(' or ')} photo has been added. The service report is stronger with both. Continue anyway?`}
             confirmLabel="Continue anyway"
@@ -567,7 +601,7 @@ export const PcoMobilePage: React.FC = () => {
           />
 
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
-            <button className="btn btn-secondary" onClick={() => setCurrentStep(2)}>
+            <button className="btn btn-secondary" onClick={() => setCurrentStep(3)}>
               <ArrowLeft size={15} />
               <span>Back</span>
             </button>
@@ -580,11 +614,11 @@ export const PcoMobilePage: React.FC = () => {
       )}
 
       {/* STEP 4: CLIENT SIGNATURE */}
-      {currentStep === 4 && !isFinished && (
+      {currentStep === 5 && !isFinished && (
         <div className="card animate-fade-in" style={{ padding: '1.25rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
             <div>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Step 4: Customer Acknowledgment</h3>
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Step 5: Customer Acknowledgment</h3>
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                 Client physical or digital signature and star rating on site.
               </p>
@@ -681,7 +715,7 @@ export const PcoMobilePage: React.FC = () => {
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
-            <button className="btn btn-secondary" onClick={() => setCurrentStep(3)}>
+            <button className="btn btn-secondary" onClick={() => setCurrentStep(4)}>
               <ArrowLeft size={15} />
               <span>Back</span>
             </button>
@@ -694,7 +728,7 @@ export const PcoMobilePage: React.FC = () => {
       )}
 
       {/* STEP 5: COMPLETED CONFIRMATION */}
-      {(currentStep === 5 || isFinished) && (
+      {(currentStep === 6 || isFinished) && (
         <div className="card animate-fade-in" style={{ padding: '1.5rem', textAlign: 'center' }}>
           <div
             style={{

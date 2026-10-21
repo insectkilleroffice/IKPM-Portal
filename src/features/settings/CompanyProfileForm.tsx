@@ -71,7 +71,7 @@ export const CompanyProfileForm: React.FC = () => {
     if (problem) return error('Logo not accepted', problem);
     setUploading(true);
     try {
-      const stored = await uploadFile(file, { folder: 'branding', fileName: `logo_${Date.now()}.${file.type.split('/')[1]}` });
+      const stored = await uploadFile(file, { scope: { ownerScope: 'company', category: 'other' }, subPath: 'branding', fileName: `logo_${Date.now()}.${file.type.split('/')[1]}` });
       set('logoUrl', stored.url);
       pdfGenerator.clearImageCache();
     } catch (err) {

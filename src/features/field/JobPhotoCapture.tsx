@@ -11,6 +11,8 @@ export const PHOTO_TYPES: { value: PhotoEvidence['type']; label: string }[] = [
 
 interface Props {
   jobId: string;
+  /** Client the job belongs to (photos are filed in that client's area). */
+  customerId: string;
   photos: PhotoEvidence[];
   onChange: (photos: PhotoEvidence[]) => void;
   onNotify?: (kind: 'success' | 'warning' | 'error', title: string, message: string) => void;
@@ -18,9 +20,10 @@ interface Props {
 }
 
 /** Camera / gallery photo evidence for a field visit, uploaded to Cloudinary. */
-export const JobPhotoCapture: React.FC<Props> = ({ jobId, photos, onChange, onNotify, required }) => (
+export const JobPhotoCapture: React.FC<Props> = ({ jobId, customerId, photos, onChange, onNotify, required }) => (
   <PhotoCapture<PhotoEvidence>
-    folder={`job/${jobId}/photos`}
+    scope={{ ownerScope: 'client', clientId: customerId, category: 'service_report' }}
+    subPath={`${jobId}/photos`}
     idPrefix={jobId}
     categories={PHOTO_TYPES as PhotoCategory[]}
     photos={photos}

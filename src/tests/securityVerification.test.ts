@@ -110,6 +110,50 @@ function evaluateSelfRoleUpdate(
   return { allowed: true, reason: 'ALLOWED: Privileged update permitted by Super Admin.' };
 }
 
+// ---------------------------------------------------------------------------
+// Virtual folders: mirrors the documents rules and folderOwnerKept() in firestore.rules
+// ---------------------------------------------------------------------------
+type Access = 'none' | 'view' | 'edit';
+
+interface FolderUser {
+  uid: string;
+  role: string;
+  scope: DataScope;
+  modules: Partial<Record<'files' | 'company_files' | 'pco', Access>>;
+}
+
+interface FolderDoc {
+  owner: { kind: 'library' | 'company' | 'client' | 'branch' | 'lead' | 'proposal' | 'job'; id?: string };
+  ownerScope?: 'company' | 'client';
+  clientId?: string;
+  ownerUid?: string;
+}
+
+const CLIENT_OWNER_KINDS = ['company', 'client', 'branch', 'lead', 'proposal', 'job'];
+const can = (u: FolderUser, m: keyof FolderUser['modules'], level: Access = 'view') =>
+  u.role === 'super_admin' || (level === 'view' ? ['view', 'edit'].includes(u.modules[m] ?? 'none') : u.modules[m] === 'edit');
+const seesAllFolder = (u: FolderUser) => u.role === 'super_admin' || u.scope === 'company';
+
+/** documents: allow read (firestore.rules) */
+function evaluateDocumentRead(u: FolderUser, d: FolderDoc): boolean {
+  const isClientKind = CLIENT_OWNER_KINDS.includes(d.owner.kind);
+  return (
+    (d.owner.kind === 'library' && can(u, 'company_files')) ||
+    (isClientKind && can(u, 'files') && (seesAllFolder(u) || d.ownerUid === u.uid)) ||
+    (isClientKind && d.ownerUid === u.uid)
+  );
+}
+
+/** folderOwnerKept(): ownerScope / clientId never change, except lead → its customer account. */
+function evaluateFolderOwnerKept(before: FolderDoc, after: FolderDoc, leads: Record<string, { existingCustomerId?: string }>): boolean {
+  const scopeKept = before.ownerScope === undefined || after.ownerScope === before.ownerScope;
+  const leadConversion =
+    before.ownerScope === 'client' && after.ownerScope === 'client' &&
+    !!before.clientId && leads[before.clientId]?.existingCustomerId === after.clientId;
+  const clientKept = before.clientId === undefined || after.clientId === before.clientId || leadConversion;
+  return scopeKept && clientKept;
+}
+
 // Test Runner
 export function runSecurityVerificationTests() {
   console.log('\n=============================================================');
@@ -299,16 +343,102 @@ export function runSecurityVerificationTests() {
     'Supplier WHT deducted must be remitted directly to the Federal Government.'
   );
 
+  // 6. Virtual folders
+  console.log('\n--- TEST GROUP 6: Client / Company (IKPM) folder separation ---');
+
+  const companyFile: FolderDoc = { owner: { kind: 'library' }, ownerScope: 'company', ownerUid: 'admin-1' };
+  const clientAFile: FolderDoc = { owner: { kind: 'company', id: 'CO-A' }, ownerScope: 'client', clientId: 'CO-A', ownerUid: 'sales-1' };
+  const clientBFile: FolderDoc = { owner: { kind: 'company', id: 'CO-B' }, ownerScope: 'client', clientId: 'CO-B', ownerUid: 'sales-2' };
+  const techOwnReport: FolderDoc = { owner: { kind: 'company', id: 'CO-A' }, ownerScope: 'client', clientId: 'CO-A', ownerUid: 'tech-1' };
+
+  const clientScopedUser: FolderUser = { uid: 'fin-1', role: 'finance', scope: 'company', modules: { files: 'view', company_files: 'none' } };
+  const technician: FolderUser = { uid: 'tech-1', role: 'technician', scope: 'own', modules: { pco: 'edit' } };
+  const salesUser: FolderUser = { uid: 'sales-1', role: 'sales', scope: 'own', modules: { files: 'edit', company_files: 'view' } };
+
+  assert(
+    'Client-scoped user cannot read Company (IKPM) files',
+    !evaluateDocumentRead(clientScopedUser, companyFile),
+    'Finance has client files access but no company_files permission, so library documents are denied.'
+  );
+  assert(
+    'Client-scoped user can still read client files',
+    evaluateDocumentRead(clientScopedUser, clientAFile),
+    'Company-wide data scope + files module reads every client folder.'
+  );
+  assert(
+    "Technician cannot read other clients' files",
+    !evaluateDocumentRead(technician, clientBFile) && !evaluateDocumentRead(technician, clientAFile),
+    'Technicians have no files module; only documents they created themselves are readable.'
+  );
+  assert(
+    'Technician can read the service report they uploaded',
+    evaluateDocumentRead(technician, techOwnReport),
+    'ownerUid == request.auth.uid on a client file.'
+  );
+  assert(
+    'Technician cannot read Company (IKPM) files even if they uploaded one',
+    !evaluateDocumentRead(technician, { ...companyFile, ownerUid: 'tech-1' }),
+    'Company files always need the company_files permission.'
+  );
+  assert(
+    'Own-scope sales user cannot read another salesperson\'s client files',
+    !evaluateDocumentRead(salesUser, clientBFile) && evaluateDocumentRead(salesUser, clientAFile),
+    'Own scope reads only records they own.'
+  );
+
+  const leads = { 'LD-2026-0001': { existingCustomerId: 'CO-A' } };
+  assert(
+    'clientId cannot be changed to another client',
+    !evaluateFolderOwnerKept(clientAFile, { ...clientAFile, clientId: 'CO-B' }, leads),
+    'folderOwnerKept() rejects a changed clientId.'
+  );
+  assert(
+    'ownerScope cannot be changed (client file → company area)',
+    !evaluateFolderOwnerKept(clientAFile, { ...clientAFile, ownerScope: 'company', clientId: undefined }, leads),
+    'folderOwnerKept() rejects a changed ownerScope.'
+  );
+  assert(
+    'clientId may move from a lead to the customer it became',
+    evaluateFolderOwnerKept(
+      { owner: { kind: 'lead', id: 'LD-2026-0001' }, ownerScope: 'client', clientId: 'LD-2026-0001' },
+      { owner: { kind: 'lead', id: 'LD-2026-0001' }, ownerScope: 'client', clientId: 'CO-A' },
+      leads
+    ),
+    'Allowed only when leads/{clientId}.existingCustomerId equals the new clientId.'
+  );
+  assert(
+    'A lead file cannot be moved to an unrelated client',
+    !evaluateFolderOwnerKept(
+      { owner: { kind: 'lead', id: 'LD-2026-0001' }, ownerScope: 'client', clientId: 'LD-2026-0001' },
+      { owner: { kind: 'lead', id: 'LD-2026-0001' }, ownerScope: 'client', clientId: 'CO-B' },
+      leads
+    ),
+    'The lead points at CO-A, so CO-B is rejected.'
+  );
+  assert(
+    'Unfiled records may be filed once',
+    evaluateFolderOwnerKept({ owner: { kind: 'company', id: 'CO-A' } }, clientAFile, leads),
+    'No ownerScope/clientId yet, so the first filing is allowed.'
+  );
+
   console.log('\n=============================================================');
   console.log(`   TEST SUMMARY: ${passed} Passed, ${failed} Failed`);
   console.log('=============================================================\n');
 
-  if (failed > 0) {
-    process.exit(1);
-  }
+  return { passed, failed };
 }
 
-// Direct execution support
-if (typeof process !== 'undefined' && process.argv[1]?.includes('securityVerification')) {
-  runSecurityVerificationTests();
+// Direct execution support (npm run test:security)
+if (typeof process !== 'undefined' && !process.env.VITEST && process.argv[1]?.includes('securityVerification')) {
+  const { failed } = runSecurityVerificationTests();
+  if (failed > 0) process.exit(1);
+}
+
+// Also runs as part of `npm test` (vitest)
+if (typeof process !== 'undefined' && process.env.VITEST) {
+  const { test, expect } = await import('vitest');
+  test('security rules verification suite', () => {
+    const { failed } = runSecurityVerificationTests();
+    expect(failed).toBe(0);
+  });
 }

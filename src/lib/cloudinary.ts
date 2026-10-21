@@ -3,6 +3,7 @@
 
 import { cloudinaryEnv, integrations, outreachEnv } from '../config/env';
 import type { StoredFile } from '../types/document';
+import { storageFolder, type UploadScope } from './folders';
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // Cloudinary free plan: 10 MB per file
 const LOCAL_FALLBACK_MAX_BYTES = 750 * 1024; // keep localStorage usable
@@ -56,15 +57,19 @@ function explainUploadError(status: number, message = ''): string {
 const safeSegment = (v: string) => v.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 60);
 
 /**
- * Uploads a file (or generated Blob such as a proposal PDF).
- * @param folder sub-folder inside VITE_CLOUDINARY_FOLDER, e.g. "library/authority_letter" or "company/CO-2026-0001"
+ * Uploads a file (or generated Blob such as a proposal PDF) into its owner's area:
+ * {VITE_CLOUDINARY_FOLDER}/clients/{clientId}/{category}/... for client files and
+ * {VITE_CLOUDINARY_FOLDER}/company/{category}/... for IKPM's own files (see storageFolder()).
+ * Throws before uploading when the scope and client id disagree.
+ * @param subPath optional extra folders inside the category, e.g. a job id
  */
 export async function uploadFile(
   file: File | Blob,
-  options: { folder: string; fileName?: string; onProgress?: (pct: number) => void }
+  options: { scope: UploadScope; subPath?: string; fileName?: string; onProgress?: (pct: number) => void }
 ): Promise<StoredFile> {
   const fileName = options.fileName || (file instanceof File ? file.name : 'document.pdf');
   const fileType = file.type || 'application/octet-stream';
+  const folder = storageFolder(options.scope, options.subPath);
 
   if (!integrations.cloudinary) {
     if (file.size > LOCAL_FALLBACK_MAX_BYTES) {
@@ -77,7 +82,7 @@ export async function uploadFile(
   const form = new FormData();
   form.append('file', file, fileName);
   form.append('upload_preset', cloudinaryEnv.uploadPreset);
-  form.append('folder', `${cloudinaryEnv.folder}/${options.folder}`.replace(/\/+/g, '/'));
+  form.append('folder', `${cloudinaryEnv.folder}/${folder}`.replace(/\/+/g, '/'));
   form.append('public_id', `${safeSegment(fileName.replace(/\.[^.]+$/, ''))}_${Date.now()}`);
 
   // PDFs go through the "image" pipeline (previews & page thumbnails); Office files must be "raw".

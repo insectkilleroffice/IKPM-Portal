@@ -21,7 +21,7 @@ import {
   type EmailVia,
   type OutreachResult,
 } from '../../services/outreachService';
-import { COMPANY_DOC_CATEGORIES, type OutreachChannel, type OutreachLog } from '../../types/document';
+import { COMPANY_DOC_CATEGORIES, type OutreachChannel, type OutreachLog, type PortalDocument } from '../../types/document';
 import type { Proposal } from '../../types/proposal';
 import { expiryState, isShareable } from '../documents/documentUtils';
 
@@ -33,6 +33,11 @@ export interface SendDocumentsModalProps {
   /** When set, the proposal PDF is generated, uploaded and attached automatically. */
   proposal?: Proposal;
   defaultPackId?: string;
+  /** The client's own files to offer (e.g. the onboarding SOP and layout). */
+  extraDocuments?: PortalDocument[];
+  /** Documents ticked when the modal opens (instead of the first pack). */
+  preselectIds?: string[];
+  title?: string;
   onSent?: (results: OutreachResult[]) => void;
 }
 
@@ -43,6 +48,9 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
   related,
   proposal,
   defaultPackId,
+  extraDocuments = [],
+  preselectIds,
+  title,
   onSent,
 }) => {
   const store = useDataStore();
@@ -50,7 +58,8 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
   const { userProfile } = useAuth();
 
   const library = store.getLibraryDocuments();
-  const packs = store.getDocumentPacks();
+  const packs = store.getLibraryPacks();
+  const sendable = [...library, ...extraDocuments.filter((d) => !library.some((l) => l.id === d.id))];
   const senderName = userProfile?.displayName || 'IKPM Sales Team';
   const senderEmail = userProfile?.businessEmail || userProfile?.email || '';
 
@@ -86,8 +95,11 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     });
     setSubject(draft.subject);
     setMessage(draft.message);
-    const pack = defaultPackId ?? (proposal ? undefined : packs[0]?.id);
-    if (pack) applyPack(pack);
+    const pack = defaultPackId ?? (proposal || preselectIds ? undefined : packs[0]?.id);
+    if (preselectIds) {
+      setActivePack(null);
+      setSelected(new Set(preselectIds));
+    } else if (pack) applyPack(pack);
     else {
       setActivePack(null);
       setSelected(new Set());
@@ -122,7 +134,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     (g) => g.docs.length > 0
   );
 
-  const selectedDocs = library.filter((d) => selected.has(d.id));
+  const selectedDocs = sendable.filter((d) => selected.has(d.id));
   const localOnly = selectedDocs.filter((d) => d.file.storage === 'local');
   const phoneValid = toWhatsAppNumber(phone).length === 12;
   const emailValid = isValidEmail(email);
@@ -153,12 +165,17 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
           await pdfGenerator.generateProposalPDF(proposal);
         } else {
           const fileName = pdfGenerator.proposalFileName(proposal);
-          const stored = await uploadFile(await pdfGenerator.proposalPDFBlob(proposal), { folder: `proposal/${proposal.id}`, fileName });
+          const stored = await uploadFile(await pdfGenerator.proposalPDFBlob(proposal), {
+            scope: store.uploadScopeFor({ kind: 'proposal', id: proposal.id }, 'proposal'),
+            subPath: proposal.id,
+            fileName,
+          });
           store.saveDocument(
             {
               id: `DOC-${Date.now()}-pdf`,
               title: `Proposal ${proposal.id} R${proposal.revisionNumber}`,
               category: 'other',
+              fileCategory: 'proposal',
               owner: { kind: 'proposal', id: proposal.id },
               file: stored,
               uploadedBy: userProfile?.email || 'admin',
@@ -212,7 +229,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={() => !sending && onClose()}
-      title={proposal ? `Send Proposal ${proposal.id} to Client` : 'Send Company Documents'}
+      title={title ?? (proposal ? `Send Proposal ${proposal.id} to Client` : 'Send Company Documents')}
       subtitle={`To ${recipient.name} • ${related.title}`}
       maxWidth="780px"
       footer={
@@ -276,6 +293,18 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
             <FileText size={14} color="var(--ikpm-emerald-600)" />
             <span style={{ fontWeight: 700 }}>Proposal {proposal.id} (R{proposal.revisionNumber}) — PDF</span>
           </label>
+        )}
+
+        {extraDocuments.length > 0 && (
+          <div className="doc-check-list" style={{ marginBottom: '0.75rem' }}>
+            <div className="doc-group-label">Client documents</div>
+            {extraDocuments.map((d) => (
+              <label key={d.id} className="doc-check">
+                <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggleDoc(d.id)} />
+                <span style={{ flex: 1 }}>{d.title}</span>
+              </label>
+            ))}
+          </div>
         )}
 
         {library.length === 0 ? (

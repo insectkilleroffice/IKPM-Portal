@@ -41,8 +41,35 @@ import type { Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
 import type { AuditLogEntry, DataScope, RecordOwnership, Team, UserProfile, UserRole } from '../types';
 import type { DocumentOwner, DocumentPack, OutreachLog, PortalDocument } from '../types/document';
 import { formatDate, generatePermanentId, normalizePakistaniPhone } from '../lib/formatters';
-import { contactsOf, outcomeLabel, stageMeta, stageOf, syncLeadFields } from '../lib/leadWorkflow';
+import {
+  assertCanCreateProposal,
+  assertStageTransition,
+  contactsOf,
+  outcomeLabel,
+  StageTransitionError,
+  stageMeta,
+  stageOf,
+  syncLeadFields,
+} from '../lib/leadWorkflow';
 import { deleteFromCloudinary } from '../lib/cloudinary';
+import {
+  clientInfoFrom,
+  documentLink,
+  recordLink,
+  resolveFolderFrom,
+  type FolderCollection,
+  type FolderLink,
+  type FolderLookups,
+} from '../lib/folderResolver';
+import {
+  folderMeta,
+  moveFolderPathToClient,
+  type ClientSubfolder,
+  type CompanySubfolder,
+  type UploadScope,
+} from '../lib/folders';
+import type { FileCategory, FolderMeta } from '../types/folders';
+import type { Device, MonitoringRecord } from '../types/devices';
 import {
   SEED_COMPANIES,
   SEED_BRANCHES,
@@ -76,6 +103,8 @@ interface DbState {
   documents: PortalDocument[];
   documentPacks: DocumentPack[];
   outreachLogs: OutreachLog[];
+  devices: Device[];
+  monitoringRecords: MonitoringRecord[];
   users: UserProfile[];
   teams: Team[];
   roles: RoleDefinition[];
@@ -100,10 +129,18 @@ const COLLECTIONS: Record<StateKey, string> = {
   documents: 'documents',
   documentPacks: 'document_packs',
   outreachLogs: 'outreach_logs',
+  devices: 'devices',
+  monitoringRecords: 'monitoring_records',
   users: 'users',
   teams: 'teams',
   roles: 'roles',
 };
+
+/** Document owner kinds that are client files; 'library' is the Company (IKPM) area (mirrors firestore.rules). */
+const CLIENT_OWNER_KINDS = ['company', 'client', 'branch', 'lead', 'proposal', 'job'];
+
+/** Folder fields (see src/types/folders.ts). */
+const FOLDER_KEYS: (keyof FolderMeta)[] = ['ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory'];
 
 /** Business records that are scoped to their owner / team. */
 const SCOPED: StateKey[] = ['companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs', 'outreachLogs'];
@@ -112,6 +149,7 @@ const SCOPED: StateKey[] = ['companies', 'branches', 'clients', 'sites', 'leads'
 const BUSINESS_KEYS: StateKey[] = [
   'companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs',
   'invoices', 'payments', 'taxRules', 'auditLogs', 'documents', 'documentPacks', 'outreachLogs',
+  'devices', 'monitoringRecords',
 ];
 
 /** Module that grants read access to each business collection (mirrors firestore.rules). */
@@ -166,6 +204,8 @@ const emptyState = (): DbState => ({
   documents: [],
   documentPacks: [...SEED_DOCUMENT_PACKS],
   outreachLogs: [],
+  devices: [],
+  monitoringRecords: [],
   users: [],
   teams: [],
   roles: [...DEFAULT_ROLES],
@@ -351,9 +391,13 @@ class DataService {
     }
 
     if (key === 'documents') {
-      if (can('files') && all) return [col];
-      const qs: Query[] = can('files') ? ownAndTeam() : [query(col, where('ownerUid', '==', se.uid))];
-      if (can('documents')) qs.push(query(col, where('owner.kind', '==', 'library')));
+      // Company (IKPM) files (owner.kind 'library') and client files are read through separate
+      // queries, so firestore.rules can prove each one (company files need company_files access).
+      const clientFiles = (q: Query) => query(q, where('owner.kind', 'in', CLIENT_OWNER_KINDS));
+      const qs: Query[] = can('files')
+        ? (all ? [clientFiles(col)] : ownAndTeam().map(clientFiles))
+        : [clientFiles(query(col, where('ownerUid', '==', se.uid)))];
+      if (can('company_files')) qs.push(query(col, where('owner.kind', '==', 'library')));
       return qs;
     }
 
@@ -363,6 +407,9 @@ class DataService {
       if (can('inspections') && !(can('crm') && all)) qs.push(query(col, where('inspectorIds', 'array-contains', se.uid)));
       return qs;
     }
+
+    // Devices and monitoring records: customer viewers, dispatch and the PCO field app
+    if (key === 'devices' || key === 'monitoringRecords') return can('customers') || can('jobs') || can('pco') ? [col] : [];
 
     if (key === 'outreachLogs') {
       if (!(can('crm') || can('proposals') || can('documents'))) return [];
@@ -477,7 +524,14 @@ class DataService {
       const kept: RecordOwnership = {};
       if (prev.ownerUid) Object.assign(kept, { ownerUid: prev.ownerUid, ownerName: prev.ownerName, ownerEmail: prev.ownerEmail });
       if (prev.teamId) kept.teamId = prev.teamId;
-      list[idx] = { ...item, ...kept, ...(stamp ? { updatedAt: now() } : {}) };
+      // ...nor its folder (an edit built from an older copy must not unfile the record)
+      const folder: FolderMeta = {};
+      const prevFolder = prev as unknown as FolderMeta;
+      const nextFolder = item as unknown as FolderMeta;
+      FOLDER_KEYS.forEach((k) => {
+        if (prevFolder[k] !== undefined && nextFolder[k] === undefined) (folder as Record<string, unknown>)[k] = prevFolder[k];
+      });
+      list[idx] = { ...item, ...folder, ...kept, ...(stamp ? { updatedAt: now() } : {}) };
       Object.assign(item, list[idx]);
       return false;
     }
@@ -751,7 +805,16 @@ class DataService {
     return this.s.leads.find((l) => l.id === id);
   }
 
-  public saveLead(lead: Lead, userEmail = 'admin'): Lead {
+  /**
+   * Saves a lead. A stage change must follow ALLOWED_TRANSITIONS (throws otherwise) and is
+   * written to audit_logs with who, from, to and the reason.
+   */
+  public saveLead(lead: Lead, userEmail = 'admin', reason?: string): Lead {
+    const prev = this.getLeadById(lead.id);
+    const from = prev ? stageOf(prev) : undefined;
+    const to = stageOf(lead);
+    if (prev && from !== to) assertStageTransition(prev, lead.stage, lead);
+
     const dups = this.checkDuplicates(lead.phone, lead.email);
     if (dups.length > 0) {
       lead.duplicateWarning = dups.join(' | ');
@@ -762,6 +825,19 @@ class DataService {
     const created = this.upsert(this.s.leads, lead);
     this.audit(userEmail, created ? 'create' : 'update', 'lead', lead.id, lead.title,
       created ? `Created new lead inquiry: ${lead.title}` : `Updated lead ${lead.title} stage to ${lead.stage}`);
+    if (from && from !== to) {
+      this.logAudit({
+        userId: this.session?.uid || '',
+        userEmail,
+        action: 'status_change',
+        entityType: 'lead',
+        entityId: lead.id,
+        entityTitle: lead.title,
+        details: `Stage ${stageMeta(from).label} → ${stageMeta(to).label}${reason ? `. Reason: ${reason}` : ''}`,
+        beforeData: { stage: prev!.stage },
+        afterData: { stage: lead.stage, ...(reason ? { reason } : {}) },
+      });
+    }
     this.write('leads', lead.id, lead);
     return lead;
   }
@@ -836,13 +912,21 @@ class DataService {
     const act = this.activity({ kind: 'contact', channel: entry.channel, outcome: entry.outcome, note: entry.note, contactId: entry.contactId, contactName: contact?.name, nextFollowUp: entry.nextFollowUp });
 
     const stage = stageOf(lead);
+    if (stage === 'won' || stage === 'lost') throw new StageTransitionError(`Contacts can't be logged on a ${stageMeta(stage).label} lead. Reopen it first.`);
     let nextStage: LeadStage = lead.stage;
     if (entry.outcome === 'engaged' && ['new', 'contacted'].includes(stage)) nextStage = 'engaged';
     else if (entry.outcome === 'not_interested' || entry.outcome === 'wrong_contact') nextStage = 'lost';
     else if (stage === 'new' && entry.channel !== 'note') nextStage = 'contacted';
 
+    const why = entry.outcome ? outcomeLabel(entry.outcome) : `Logged ${entry.channel}`;
+    // A first call that ends "engaged" passes through Contacted (new → contacted → engaged).
+    if (stage === 'new' && nextStage === 'engaged') {
+      this.saveLead({ ...lead, stage: 'contacted' }, userEmail, why);
+    }
+    const current = this.getLeadById(leadId) ?? lead;
+
     const updated: Lead = {
-      ...lead,
+      ...current,
       stage: nextStage,
       contactOutcome: entry.outcome ?? lead.contactOutcome,
       lastContactedAt: entry.channel === 'note' ? lead.lastContactedAt : act.at,
@@ -852,13 +936,42 @@ class DataService {
         ? { lostAt: now(), lostAtStage: lead.stage, lostReason: entry.lostReason || outcomeLabel(entry.outcome) }
         : {}),
     };
-    return this.saveLead(updated, userEmail);
+    return this.saveLead(updated, userEmail, nextStage === 'lost' ? entry.lostReason || why : why);
+  }
+
+  /** Engaged → proposal without a site inspection. Needs a typed reason (kept on the lead, its timeline and audit_logs). */
+  public skipLeadInspection(leadId: string, reason: string, userEmail = 'admin'): Lead {
+    const lead = this.getLeadById(leadId);
+    if (!lead) throw new Error('Lead not found');
+    const why = reason?.trim();
+    if (!why) throw new StageTransitionError('Give a reason for skipping the inspection.');
+    if (stageOf(lead) !== 'engaged') throw new StageTransitionError(`The inspection can only be skipped while the lead is Engaged (now ${stageMeta(lead.stage).label}).`);
+    if (lead.proposalId) throw new StageTransitionError(`Lead ${lead.id} already has proposal ${lead.proposalId}.`);
+    const updated: Lead = {
+      ...lead,
+      inspectionSkipped: { reason: why, at: now(), by: this.session?.name || userEmail },
+      activities: [this.activity({ kind: 'stage', channel: 'note', note: `Inspection skipped: ${why}` }), ...(lead.activities ?? [])],
+    };
+    this.saveLead(updated, userEmail);
+    this.logAudit({
+      userId: this.session?.uid || '',
+      userEmail,
+      action: 'status_change',
+      entityType: 'lead',
+      entityId: lead.id,
+      entityTitle: lead.title,
+      details: `Inspection skipped (Engaged → Proposal allowed). Reason: ${why}`,
+      afterData: { inspectionSkipped: true, reason: why },
+    });
+    return updated;
   }
 
   /** Moves a lead to any stage manually (with a timeline entry). */
   public setLeadStage(leadId: string, stage: LeadStage, note?: string, userEmail = 'admin'): Lead | undefined {
     const lead = this.getLeadById(leadId);
     if (!lead) return undefined;
+    assertStageTransition(lead, stage, lead);
+    if (stageOf({ stage }) === 'lost' && !note?.trim()) throw new StageTransitionError('Give a reason for marking the lead as lost.');
     const updated: Lead = {
       ...lead,
       stage,
@@ -866,7 +979,7 @@ class DataService {
       ...(stage === 'lost' ? { lostAt: now(), lostAtStage: lead.stage, lostReason: note || lead.lostReason } : {}),
       ...(stage === 'won' ? { wonAt: now() } : {}),
     };
-    return this.saveLead(updated, userEmail);
+    return this.saveLead(updated, userEmail, note);
   }
 
   public scheduleLeadInspection(
@@ -876,6 +989,14 @@ class DataService {
   ): Lead | undefined {
     const lead = this.getLeadById(leadId);
     if (!lead) return undefined;
+    const stage = stageOf(lead);
+    if (stage !== 'engaged' && stage !== 'inspection_scheduled') {
+      throw new StageTransitionError(
+        stage === 'new' || stage === 'contacted'
+          ? 'Log a contact with an "engaged" outcome before scheduling an inspection.'
+          : `An inspection cannot be scheduled while the lead is ${stageMeta(stage).label}.`
+      );
+    }
     const team = this.s.teams.find((t) => t.id === plan.teamId);
     const people = plan.inspectorIds.map((uid) => this.s.users.find((u) => u.uid === uid)).filter(Boolean) as UserProfile[];
     const inspection: InspectionAssessment = {
@@ -915,16 +1036,25 @@ class DataService {
         ...(lead.activities ?? []),
       ],
     };
-    return this.saveLead(updated, userEmail);
+    return this.saveLead(updated, userEmail, `Inspection ${rescheduled ? 'rescheduled' : 'scheduled'} for ${plan.date}`);
   }
 
   public recordInspectionFindings(
     leadId: string,
-    findings: Pick<InspectionAssessment, 'pestTypesFound' | 'infestationSeverity' | 'areaSqFt' | 'criticalFindings' | 'recommendedTreatment' | 'photos'>,
+    findings: Pick<InspectionAssessment, 'pestTypesFound' | 'infestationSeverity' | 'areaSqFt' | 'criticalFindings' | 'recommendedTreatment' | 'photos'>
+      & Partial<Pick<InspectionAssessment, 'findings' | 'reportTitle' | 'siteName' | 'observedBy'>>,
     userEmail = 'admin'
   ): Lead | undefined {
     const lead = this.getLeadById(leadId);
     if (!lead) return undefined;
+    const stage = stageOf(lead);
+    if (stage !== 'inspection_scheduled' && stage !== 'inspection_completed') {
+      throw new StageTransitionError(
+        stage === 'engaged' || stage === 'new' || stage === 'contacted'
+          ? 'Schedule the inspection before recording findings.'
+          : `Inspection findings cannot be changed while the lead is ${stageMeta(stage).label}.`
+      );
+    }
     const base = lead.inspection;
     const inspection: InspectionAssessment = {
       id: base?.id || `INSP-${Date.now().toString(36).toUpperCase()}`,
@@ -935,22 +1065,26 @@ class DataService {
       ...base,
       ...findings,
       photos: findings.photos ?? base?.photos ?? [],
-      photoEvidenceUrls: findings.photos ? findings.photos.map((p) => p.imageUrl) : base?.photoEvidenceUrls ?? [],
+      // Older screens read URLs only: include the finding photos too
+      photoEvidenceUrls: [
+        ...(findings.photos ?? base?.photos ?? []).map((p) => p.imageUrl),
+        ...(findings.findings ?? []).flatMap((f) => (f.photo ? [f.photo.imageUrl] : [])),
+      ],
       completedDate: now().slice(0, 10),
       findingsBy: this.session?.name,
       status: 'completed',
     };
     const updated: Lead = {
       ...lead,
-      stage: ['proposal_sent', 'won', 'lost', 'proposal_drafted'].includes(lead.stage) ? lead.stage : 'inspection_completed',
+      stage: 'inspection_completed',
       inspection,
       pestIssues: findings.pestTypesFound,
       activities: [
-        this.activity({ kind: 'inspection', channel: 'visit', note: `Inspection findings recorded (${findings.infestationSeverity} infestation, ${findings.areaSqFt || 0} sq ft${findings.photos?.length ? `, ${findings.photos.length} photo${findings.photos.length > 1 ? 's' : ''}` : ''})` }),
+        this.activity({ kind: 'inspection', channel: 'visit', note: `Inspection findings recorded (${findings.infestationSeverity} infestation, ${findings.areaSqFt || 0} sq ft${findings.findings?.length ? `, ${findings.findings.length} risk finding${findings.findings.length > 1 ? 's' : ''}` : ''}${findings.photos?.length ? `, ${findings.photos.length} photo${findings.photos.length > 1 ? 's' : ''}` : ''})` }),
         ...(lead.activities ?? []),
       ],
     };
-    return this.saveLead(updated, userEmail);
+    return this.saveLead(updated, userEmail, 'Inspection findings recorded');
   }
 
   private provinceFor(city: string): CompanyMaster['province'] {
@@ -1033,6 +1167,7 @@ class DataService {
     }
 
     this.saveLead({ ...lead, existingCustomerId: customerId }, userEmail);
+    this.refileLeadRecords(lead.id, customerId, userEmail);
     return { customerId, customerType: lead.customerType };
   }
 
@@ -1040,7 +1175,11 @@ class DataService {
   public markLeadWon(leadId: string, note?: string, userEmail = 'admin'): Lead | undefined {
     const lead = this.getLeadById(leadId);
     if (!lead) return undefined;
+    // Check before creating/activating the customer account so nothing is half-done.
+    assertStageTransition(lead, 'won', lead);
     const { customerId, customerType } = this.ensureLeadCustomer(leadId, userEmail);
+    // Files created after the prospect account existed are already filed; this catches the rest.
+    this.refileLeadRecords(leadId, customerId, userEmail);
     if (customerType === 'company') {
       const co = this.getCompanyById(customerId);
       if (co && co.status !== 'active') this.saveCompany({ ...co, status: 'active' }, userEmail);
@@ -1057,20 +1196,24 @@ class DataService {
     const lead = this.getLeadById(proposal.leadId);
     if (!lead) return;
     const stage = stageOf(lead);
-    if (proposal.status === 'accepted' && stage !== 'won') {
-      this.markLeadWon(lead.id, `Proposal ${proposal.id} accepted`, userEmail);
-    } else if (proposal.status === 'declined' && stage !== 'lost') {
-      this.setLeadStage(lead.id, 'lost', `Proposal ${proposal.id} declined`, userEmail);
-    } else if (created || lead.proposalId !== proposal.id) {
+    // Link the proposal first (moves the lead to the Proposal stage), so accepted/declined
+    // below always starts from proposal_sent.
+    if ((created || lead.proposalId !== proposal.id) && !['won', 'lost'].includes(stage)) {
       this.saveLead({
         ...lead,
-        stage: ['won', 'lost'].includes(stage) ? lead.stage : 'proposal_sent',
+        stage: 'proposal_sent',
         proposalId: proposal.id,
         activities: [
           this.activity({ kind: 'proposal', channel: 'note', note: `Proposal ${proposal.id} created (PKR ${Math.round(proposal.totalAmount).toLocaleString()})` }),
           ...(lead.activities ?? []),
         ],
-      }, userEmail);
+      }, userEmail, `Proposal ${proposal.id} created`);
+    }
+    const current = stageOf(this.getLeadById(lead.id) ?? lead);
+    if (proposal.status === 'accepted' && current === 'proposal_sent') {
+      this.markLeadWon(lead.id, `Proposal ${proposal.id} accepted`, userEmail);
+    } else if (proposal.status === 'declined' && current !== 'lost' && current !== 'won') {
+      this.setLeadStage(lead.id, 'lost', `Proposal ${proposal.id} declined`, userEmail);
     }
   }
 
@@ -1088,6 +1231,20 @@ class DataService {
   }
 
   public saveProposal(proposal: Proposal, userEmail = 'admin'): Proposal {
+    // New proposal from a lead: the lead must be ready for one and must not already have one.
+    if (proposal.leadId && !this.getProposalById(proposal.id)) {
+      const lead = this.getLeadById(proposal.leadId);
+      if (lead) assertCanCreateProposal(lead);
+    }
+    this.fileRecord(proposal, {
+      customerId: proposal.customerId,
+      customerType: proposal.customerType,
+      customerName: proposal.customerName,
+      branchId: proposal.branchId,
+      leadId: proposal.leadId,
+      category: 'proposal',
+      date: proposal.createdAt,
+    });
     if (proposal.discountPercent > 10 && proposal.status === 'draft') {
       proposal.status = 'pending_approval';
       proposal.approval = {
@@ -1107,7 +1264,14 @@ class DataService {
         ? `Drafted new proposal ${proposal.id} for ${proposal.customerName}`
         : `Updated proposal ${proposal.id} (status: ${proposal.status})`);
     this.write('proposals', proposal.id, proposal);
-    this.syncLeadWithProposal(proposal, created, userEmail);
+    try {
+      this.syncLeadWithProposal(proposal, created, userEmail);
+    } catch (err) {
+      // New proposals were checked up front; for edits of older proposals whose lead is on another
+      // stage, keep the proposal change and leave the lead where it is.
+      if (created || !(err instanceof StageTransitionError)) throw err;
+      console.warn(`Lead ${proposal.leadId} not updated from proposal ${proposal.id}: ${err.message}`);
+    }
     return proposal;
   }
 
@@ -1158,6 +1322,14 @@ class DataService {
   }
 
   public saveContract(contract: Contract, _userEmail = 'admin'): Contract {
+    this.fileRecord(contract, {
+      customerId: contract.customerId,
+      customerType: contract.customerType,
+      customerName: contract.customerName,
+      branchId: contract.branchId,
+      category: 'contract',
+      date: contract.startDate,
+    });
     this.upsert(this.s.contracts, contract);
     this.commit();
     this.write('contracts', contract.id, contract);
@@ -1253,19 +1425,7 @@ class DataService {
           { id: 'c2', taskDescription: 'Calibrated application of target IPM formulations', isCompleted: false },
           { id: 'c3', taskDescription: 'Post-treatment sanitation and site sign-off with customer', isCompleted: false },
         ],
-        chemicalsUsed: [
-          {
-            id: 'chem_01',
-            chemicalName: 'Maxforce FC Magnum Roach Gel',
-            activeIngredient: 'Fipronil 0.05%',
-            dosageRate: '1-2 spots per sq meter',
-            quantityUsed: 30,
-            unit: 'grams',
-            batchNumber: 'BAY-2026-PAK',
-            targetPest: 'cockroaches',
-            applicationMethod: 'gel_baiting',
-          },
-        ],
+        chemicalsUsed: [],
         photoEvidence: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -1294,6 +1454,69 @@ class DataService {
     return createdJobs;
   }
 
+  /**
+   * Creates the reviewed visit schedule (src/lib/visitSchedule.ts) as service_jobs: one job per
+   * visit, service and follow-up linked through pairedJobId. Refuses PCO double-bookings.
+   */
+  public createScheduledJobs(
+    contract: Contract,
+    visits: { key: string; branchId: string; branchName: string; date: string; kind: 'service' | 'follow_up'; pairKey?: string; timeSlot: ServiceJob['timeSlot']; windowStart?: string; windowEnd?: string; pcoId?: string; pcoName?: string }[],
+    userEmail = 'admin'
+  ): ServiceJob[] {
+    const booked = new Set<string>();
+    this.s.jobs.filter((j) => j.status !== 'cancelled').forEach((j) => j.assignedTechnicianIds.forEach((u) => booked.add(`${u}|${j.scheduledDate.slice(0, 10)}|${j.timeSlot}`)));
+    visits.forEach((v) => {
+      if (!v.pcoId) return;
+      const k = `${v.pcoId}|${v.date}|${v.timeSlot}`;
+      if (booked.has(k)) throw new Error(`${v.pcoName || 'The PCO'} is already booked on ${v.date} (${v.timeSlot.replace('_', ' ')}).`);
+      booked.add(k);
+    });
+
+    const stamp = Date.now().toString(36).toUpperCase();
+    const idOf = new Map(visits.map((v, i) => [v.key, `JOB-${stamp}-${String(i + 1).padStart(3, '0')}`]));
+    const sites = this.getSites(contract.customerId);
+    const created = visits.map((v) => {
+      const branch = v.branchId ? this.getBranchById(v.branchId) : undefined;
+      const site = sites.find((x) => x.branchId === v.branchId) ?? sites[0];
+      const job: ServiceJob = {
+        id: idOf.get(v.key)!,
+        contractId: contract.id,
+        proposalId: contract.proposalId,
+        customerType: contract.customerType,
+        customerId: contract.customerId,
+        customerName: contract.customerName,
+        branchId: branch?.id ?? contract.branchId,
+        branchName: branch?.branchName ?? v.branchName,
+        siteId: site?.id || 'SITE-01',
+        siteName: site?.siteName || v.branchName,
+        siteAddress: site?.addressLine1 || branch?.physicalAddress || '',
+        serviceType: v.kind === 'follow_up' ? `Follow-up: ${contract.serviceScope}` : contract.serviceScope,
+        targetPests: [],
+        scheduledDate: v.date,
+        timeSlot: v.timeSlot,
+        windowStart: v.windowStart,
+        windowEnd: v.windowEnd,
+        visitKind: v.kind,
+        pairedJobId: v.pairKey ? idOf.get(v.pairKey) : undefined,
+        assignedTechnicianIds: v.pcoId ? [v.pcoId] : [],
+        assignedTechnicianNames: v.pcoName ? [v.pcoName] : [],
+        leadPcoId: v.pcoId || '',
+        leadPcoName: v.pcoName || 'Unassigned',
+        status: 'scheduled',
+        checklists: [],
+        chemicalsUsed: [],
+        photoEvidence: [],
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      this.saveJob(job, userEmail);
+      return job;
+    });
+    this.saveContract({ ...contract, totalJobsScheduled: (contract.totalJobsScheduled || 0) + created.length }, userEmail);
+    this.audit(userEmail, 'create', 'contract', contract.id, contract.customerName, `Scheduled ${created.length} visits (${created.filter((j) => j.visitKind === 'service').length} service, ${created.filter((j) => j.visitKind === 'follow_up').length} follow-up)`);
+    return created;
+  }
+
   // --- Service Jobs & PCO Operations ---
   public getJobs(customerId?: string, branchId?: string): ServiceJob[] {
     return this.s.jobs.filter((j) => {
@@ -1312,6 +1535,14 @@ class DataService {
   }
 
   public saveJob(job: ServiceJob, userEmail = 'admin'): ServiceJob {
+    this.fileRecord(job, {
+      customerId: job.customerId,
+      customerType: job.customerType,
+      customerName: job.customerName,
+      branchId: job.branchId,
+      category: 'service_report',
+      date: job.scheduledDate,
+    });
     const created = this.upsert(this.s.jobs, job);
     this.audit(userEmail, created ? 'create' : 'update', 'job', job.id, job.serviceType,
       created ? `Scheduled service job ${job.id} for ${job.customerName}` : `Updated job ${job.id} status to ${job.status}`);
@@ -1328,8 +1559,20 @@ class DataService {
   public saveJobPhotos(jobId: string, photos: PhotoEvidence[]) {
     const job = this.getJobById(jobId);
     if (!job) return;
+    const before = job.photoEvidence?.length ?? 0;
     this.upsert(this.s.jobs, { ...job, photoEvidence: photos });
     this.write('service_jobs', jobId, { photoEvidence: photos, updatedAt: now() });
+    if (photos.length !== before) {
+      this.logAudit({
+        userId: this.session?.uid || '',
+        userEmail: this.session?.email || '',
+        action: photos.length > before ? 'create' : 'delete',
+        entityType: 'document',
+        entityId: jobId,
+        entityTitle: `${job.customerName} job photos`,
+        details: `${photos.length > before ? 'Uploaded' : 'Removed'} ${Math.abs(photos.length - before)} photo(s) on job ${jobId} (${job.folderPath || 'Unfiled'})`,
+      });
+    }
   }
 
   public checkPcoConflict(technicianId: string, date: string, timeSlot: string, currentJobId?: string): boolean {
@@ -1364,6 +1607,16 @@ class DataService {
       }
     }
 
+    if (!existing) {
+      this.fileRecord(invoice, {
+        customerId: invoice.customerId,
+        customerType: invoice.customerType,
+        customerName: invoice.customerName,
+        branchId: invoice.branchId,
+        category: 'invoice',
+        date: invoice.issueDate,
+      });
+    }
     const created = this.upsert(this.s.invoices, invoice);
     this.audit(userEmail, created ? 'create' : 'update', 'invoice', invoice.id, invoice.invoiceNumber,
       created
@@ -1386,6 +1639,14 @@ class DataService {
     const invoice = this.getInvoiceById(payment.invoiceId);
     if (!invoice) throw new Error('Associated invoice not found.');
 
+    this.fileRecord(payment, {
+      customerId: payment.customerId,
+      customerType: invoice.customerType,
+      customerName: payment.customerName,
+      branchId: payment.branchId,
+      category: 'payment_receipt',
+      date: payment.paymentDate,
+    });
     this.s.payments.unshift(payment);
 
     const newPaid = (invoice.amountPaid || 0) + payment.cashAmountReceived;
@@ -1418,6 +1679,182 @@ class DataService {
     return rule;
   }
 
+  // --- Virtual folders (paths built only by src/lib/folders.ts) ---
+
+  /** Lookups for src/lib/folderResolver.ts (the backfill script passes its own). */
+  private readonly folderLookups: FolderLookups = {
+    company: (id) => this.getCompanyById(id),
+    client: (id) => this.getClientById(id),
+    lead: (id) => this.getLeadById(id),
+    branch: (id) => this.getBranchById(id),
+    proposal: (id) => this.getProposalById(id),
+    job: (id) => this.getJobById(id),
+    invoice: (id) => this.getInvoiceById(id),
+  };
+
+  /** Display name and type of a client account, or of a lead that is not a customer yet. */
+  public clientInfo(clientId: string): { name?: string; type?: 'company' | 'individual' } {
+    return clientInfoFrom(this.folderLookups, clientId);
+  }
+
+  /**
+   * Folder fields for a record from its links. Records of a lead that is not a customer yet are
+   * filed under the lead (clientId = lead id, "Leads & Inspections"). Returns {} when nothing
+   * links the record to an owner (it then shows in "Unfiled").
+   */
+  public resolveFolder(link: FolderLink): FolderMeta {
+    return resolveFolderFrom(this.folderLookups, link);
+  }
+
+  /** Adds folder fields to a new record that doesn't have them yet (never overwrites). */
+  private fileRecord<T extends FolderMeta>(record: T, link: FolderLink): T {
+    if (record.folderPath) return record;
+    return Object.assign(record, this.resolveFolder(link));
+  }
+
+  /** Folder fields for a document from its owner (library, client, branch, lead, proposal or job). */
+  public resolveDocumentFolder(document: Pick<PortalDocument, 'owner' | 'category' | 'folder' | 'fileCategory' | 'uploadedAt'>): FolderMeta {
+    const link = documentLink(this.folderLookups, document);
+    return link ? this.resolveFolder(link) : {};
+  }
+
+  /** Upload scope (for uploadFile) of a document owner. */
+  public uploadScopeFor(owner: DocumentOwner, category: FileCategory): UploadScope {
+    const meta = this.resolveDocumentFolder({ owner, category: 'other', fileCategory: category, uploadedAt: now() });
+    if (!meta.ownerScope) throw new Error('This file is not linked to a client or to IKPM, so it cannot be uploaded.');
+    return { ownerScope: meta.ownerScope, clientId: meta.clientId, category };
+  }
+
+  /**
+   * When a lead becomes a customer account, its files move from the lead's folder to the
+   * customer's. Only metadata changes (nothing is re-uploaded); logged in audit_logs.
+   */
+  private refileLeadRecords(leadId: string, customerId: string, userEmail: string) {
+    const info = this.clientInfo(customerId);
+    const keys: StateKey[] = ['documents', 'documentPacks', 'invoices', 'payments', 'proposals', 'contracts', 'jobs', 'outreachLogs'];
+    const moved: string[] = [];
+    for (const key of keys) {
+      const list = this.s[key] as unknown as (FolderMeta & { id: string })[];
+      list.forEach((rec, i) => {
+        if (rec.ownerScope !== 'client' || rec.clientId !== leadId) return;
+        const patch: FolderMeta = {
+          clientId: customerId,
+          clientType: info.type ?? rec.clientType,
+          folderPath: moveFolderPathToClient(rec.folderPath, { clientId: customerId, clientName: info.name }),
+        };
+        list[i] = { ...rec, ...patch };
+        this.write(COLLECTIONS[key], rec.id, { ...patch, folderMovedFrom: leadId, updatedAt: now() });
+        moved.push(`${COLLECTIONS[key]}/${rec.id}`);
+      });
+    }
+    if (!moved.length) return;
+    this.commit();
+    this.logAudit({
+      userId: this.session?.uid || '',
+      userEmail,
+      action: 'update',
+      entityType: 'document',
+      entityId: leadId,
+      entityTitle: info.name,
+      details: `Moved ${moved.length} file record(s) from lead ${leadId} to client ${customerId}: ${moved.slice(0, 20).join(', ')}${moved.length > 20 ? ', …' : ''}`,
+      afterData: { clientId: customerId, records: moved.length },
+    });
+  }
+
+  /**
+   * Files an older record that has no folder yet, from its own links (customer, branch, lead).
+   * Posted invoices are left to the backfill script (they are immutable in the portal).
+   */
+  public fileUnfiledRecord(kind: 'proposal' | 'contract' | 'job' | 'invoice' | 'payment' | 'outreach', id: string, userEmail = 'admin'): FolderMeta {
+    const target: Record<typeof kind, [StateKey, FolderCollection]> = {
+      proposal: ['proposals', 'proposals'],
+      contract: ['contracts', 'contracts'],
+      job: ['jobs', 'service_jobs'],
+      invoice: ['invoices', 'invoices'],
+      payment: ['payments', 'payments'],
+      outreach: ['outreachLogs', 'outreach_logs'],
+    };
+    const [key, collectionName] = target[kind];
+    const list = this.s[key] as unknown as (FolderMeta & { id: string; isPosted?: boolean })[];
+    const idx = list.findIndex((r) => r.id === id);
+    if (idx < 0) throw new Error('Record not found');
+    const rec = list[idx];
+    if (rec.folderPath) return rec;
+    if (kind === 'invoice' && rec.isPosted) throw new Error('Posted invoices are immutable here. The backfill script files them.');
+    const link = recordLink(this.folderLookups, collectionName, rec as unknown as Record<string, unknown>);
+    const meta = link ? this.resolveFolder(link) : {};
+    if (!meta.folderPath) throw new Error('This record is not linked to a client, so it cannot be filed automatically.');
+    list[idx] = { ...rec, ...meta };
+    this.commit();
+    this.write(collectionName, id, { ...meta, updatedAt: now() });
+    this.logAudit({
+      userId: this.session?.uid || '',
+      userEmail,
+      action: 'update',
+      entityType: 'document',
+      entityId: id,
+      entityTitle: `${collectionName}/${id}`,
+      details: `Filed ${collectionName}/${id} into ${meta.folderPath}`,
+      afterData: { folderPath: meta.folderPath },
+    });
+    return meta;
+  }
+
+  /**
+   * Moves a document to another folder of the same owner (or files an unfiled one).
+   * A filed document can't change client or company/client scope; upload it there instead.
+   */
+  public moveDocument(
+    id: string,
+    target: { owner?: DocumentOwner; fileCategory?: FileCategory; folder?: PortalDocument['folder']; year?: number; subfolder?: ClientSubfolder | CompanySubfolder },
+    userEmail = 'admin'
+  ): PortalDocument {
+    const current = this.getDocumentById(id);
+    if (!current) throw new Error('Document not found');
+    const next: PortalDocument = {
+      ...current,
+      owner: target.owner ?? current.owner,
+      folder: target.folder ?? current.folder,
+      year: target.year,
+      fileCategory: target.fileCategory ?? current.fileCategory,
+    };
+    const resolved = this.resolveDocumentFolder(next);
+    const meta = target.subfolder && resolved.ownerScope
+      ? folderMeta({
+          ownerScope: resolved.ownerScope,
+          clientId: resolved.clientId,
+          clientType: resolved.clientType,
+          clientName: resolved.clientId ? this.clientInfo(resolved.clientId).name : undefined,
+          branchId: resolved.branchId,
+          branchName: resolved.branchId ? this.getBranchById(resolved.branchId)?.branchName : undefined,
+          category: resolved.fileCategory,
+          subfolder: target.subfolder,
+        })
+      : resolved;
+    if (current.ownerScope && meta.ownerScope && current.ownerScope !== meta.ownerScope) {
+      throw new Error('Files cannot move between a client and the Company (IKPM) area. Upload a copy there instead.');
+    }
+    if (current.clientId && meta.clientId && current.clientId !== meta.clientId) {
+      throw new Error('Files cannot move to another client. Upload a copy in that client\'s folder instead.');
+    }
+    const updated: PortalDocument = { ...next, ...meta };
+    this.upsert(this.s.documents, updated, false);
+    this.commit();
+    this.write('documents', id, updated);
+    this.logAudit({
+      userId: this.session?.uid || '',
+      userEmail,
+      action: 'update',
+      entityType: 'document',
+      entityId: id,
+      entityTitle: current.title,
+      details: `Moved "${current.title}" from ${current.folderPath || 'Unfiled'} to ${updated.folderPath || 'Unfiled'}`,
+      beforeData: { folderPath: current.folderPath ?? null },
+      afterData: { folderPath: updated.folderPath ?? null },
+    });
+    return updated;
+  }
+
   // --- Documents (IKPM library + client/lead/proposal attachments) ---
   public getDocuments(owner?: DocumentOwner): PortalDocument[] {
     if (!owner) return [...this.s.documents];
@@ -1437,6 +1874,7 @@ class DataService {
   }
 
   public saveDocument(document: PortalDocument, userEmail = 'admin'): PortalDocument {
+    if (!document.folderPath) Object.assign(document, this.resolveDocumentFolder(document));
     const created = this.upsert(this.s.documents, document, false);
     this.commit();
     this.write('documents', document.id, document);
@@ -1449,7 +1887,7 @@ class DataService {
         entityType: 'document',
         entityId: 'id' in document.owner ? document.owner.id : 'library',
         entityTitle: document.title,
-        details: `Uploaded document "${document.title}" to ${ownerLabel}`,
+        details: `Uploaded document "${document.title}" to ${ownerLabel} (${document.folderPath || 'Unfiled'})`,
       });
     }
     return document;
@@ -1476,7 +1914,87 @@ class DataService {
     return [...this.s.documentPacks];
   }
 
+  /** IKPM's pitch packs (not the per-client onboarding packs). */
+  public getLibraryPacks(): DocumentPack[] {
+    return this.s.documentPacks.filter((p) => p.kind !== 'onboarding');
+  }
+
+  // --- Device register (src/lib/devices.ts) ---
+  public getDevices(clientId: string, branchId?: string, includeRetired = false): Device[] {
+    return this.s.devices.filter(
+      (d) => d.clientId === clientId && (branchId === undefined || (d.branchId || '') === (branchId || '')) && (includeRetired || d.status === 'active')
+    );
+  }
+
+  public saveDevices(devices: Device[], userEmail = 'admin', note?: string) {
+    devices.forEach((d) => {
+      this.upsert(this.s.devices, d);
+      this.write('devices', d.id, d);
+    });
+    this.commit();
+    if (devices.length) this.audit(userEmail, 'update', 'device', devices[0].clientId, devices[0].clientId, note || `Saved ${devices.length} device(s)`);
+  }
+
+  public retireDevice(id: string, userEmail = 'admin') {
+    const d = this.s.devices.find((x) => x.id === id);
+    if (!d) return;
+    this.saveDevices([{ ...d, status: 'retired', retiredAt: now() }], userEmail, `Retired device ${d.type} ${d.number}`);
+  }
+
+  // --- Monitoring records (one per device per visit) ---
+  public getMonitoringRecords(filter: { clientId?: string; branchId?: string; jobId?: string }): MonitoringRecord[] {
+    return this.s.monitoringRecords.filter(
+      (r) =>
+        (!filter.jobId || r.jobId === filter.jobId) &&
+        (!filter.clientId || r.clientId === filter.clientId) &&
+        (filter.branchId === undefined || (r.branchId || '') === (filter.branchId || ''))
+    );
+  }
+
+  /** Saved locally first; Firestore's offline cache syncs the write when the device is back online. */
+  public saveMonitoringRecords(records: MonitoringRecord[]) {
+    records.forEach((r) => {
+      this.upsert(this.s.monitoringRecords, r, false);
+      this.write('monitoring_records', r.id, r);
+    });
+    this.commit();
+  }
+
+  // --- Onboarding pack (after a lead is won; see src/lib/onboarding.ts) ---
+  public getOnboardingPack(clientId: string): DocumentPack | undefined {
+    return this.s.documentPacks.find((p) => p.kind === 'onboarding' && p.clientId === clientId);
+  }
+
+  public saveOnboardingPack(pack: DocumentPack, userEmail = 'admin', note?: string): DocumentPack {
+    const created = !this.s.documentPacks.some((p) => p.id === pack.id);
+    const saved: DocumentPack = {
+      ...pack,
+      kind: 'onboarding',
+      ownerScope: 'client',
+      documentIds: Array.from(new Set((pack.items ?? []).flatMap((i) => i.documentIds))),
+      createdAt: pack.createdAt || now(),
+      updatedAt: now(),
+    };
+    this.saveDocumentPack(saved);
+    this.audit(userEmail, created ? 'create' : 'update', 'document', saved.id, saved.name, note || (created ? `Started onboarding pack for ${saved.clientId}` : `Updated onboarding pack ${saved.id}`));
+    return saved;
+  }
+
+  /** Records that the pack went to the client (the message itself is in outreach_logs). */
+  public markOnboardingSent(packId: string, via: OutreachLog['channel'][], userEmail = 'admin'): DocumentPack | undefined {
+    const pack = this.s.documentPacks.find((p) => p.id === packId);
+    if (!pack) return undefined;
+    const updated: DocumentPack = { ...pack, sentAt: now(), sentByName: this.session?.name || userEmail, sentVia: via };
+    this.saveDocumentPack(updated);
+    this.audit(userEmail, 'status_change', 'document', pack.id, pack.name, `Onboarding pack sent via ${via.join(' & ')} (${pack.documentIds.length} document(s))`);
+    return updated;
+  }
+
   public saveDocumentPack(pack: DocumentPack) {
+    // Library packs are IKPM's own; packs made for one client live in that client's Documents
+    this.fileRecord(pack, pack.clientId
+      ? { customerId: pack.clientId, customerType: pack.clientType, branchId: pack.branchId, category: pack.fileCategory ?? 'other' }
+      : { ownerScope: 'company', category: 'other' });
     this.upsert(this.s.documentPacks, pack, false);
     this.commit();
     this.write('document_packs', pack.id, pack);
@@ -1502,6 +2020,8 @@ class DataService {
 
   public logOutreach(log: OutreachLog) {
     Object.assign(log, this.ownership());
+    const link = recordLink(this.folderLookups, 'outreach_logs', log as unknown as Record<string, unknown>);
+    if (link) this.fileRecord(log, link);
     this.s.outreachLogs.unshift(log);
     this.commit();
     this.write('outreach_logs', log.id, log);

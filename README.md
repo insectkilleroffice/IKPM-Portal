@@ -281,7 +281,7 @@ Routes are lazy-loaded (main bundle ~1.5 MB → ~315 KB).
  #   I K P M - P o r t a l  
  #   I K P M - P o r t a l  
  
-## Cloud database, staff & access (v1.1)
+## 5. Cloud database, staff & access (v1.1)
 
 All data now lives in **Cloud Firestore** (live sync, offline cache). The security rules in
 `firestore.rules` must be deployed once, or Firestore stays locked and nothing saves:
@@ -305,3 +305,108 @@ Then:
    - automatic (portal API): set `RESEND_API_KEY`, `EMAIL_SENDER_DOMAINS=insectkiller.pk`
      (domain verified in Resend), `FIREBASE_PROJECT_ID`, optional `EMAIL_FROM` fallback;
    - or opened as a draft in their own Gmail / Google Workspace, Outlook 365 or desktop mail app.
+
+---
+
+## 6. Virtual Folder Structure & Auto-Filing Architecture
+
+All client and company files are organized into a predictable virtual folder hierarchy. Firestore remains flat for performance; records carry `folderPath` alongside `FolderMeta`:
+
+### Folder Hierarchy Layout
+```
+/Clients/{ClientName}__{clientId}/
+   ├── Profile/                       # Registration docs, NTN/STRN certificates
+   ├── Leads & Inspections/           # Site inspection assessments & risk findings
+   ├── Proposals/                     # Commercial proposals, quotation revisions
+   ├── Contracts/                     # Signed AMCs & service agreements
+   ├── Documents/                     # Layouts, SOPs, MSDS, technician certs, visit schedules
+   ├── Service Reports/{YYYY}/{MM}   # Verified field service reports (auto-filed)
+   ├── Monitoring Sheets/             # Mechanical trap & glue station monitoring sheets
+   ├── Invoices/{YYYY}/               # Statutory sales tax invoices (auto-filed)
+   └── Payments/                      # Payment receipts & WHT 153 certificates (auto-filed)
+
+/Clients/{ClientName}__{clientId}/Branches/{BranchName}__{branchId}/
+   └── {Subfolder}/                   # Branch-specific documents, layouts & monitoring
+
+/Company (IKPM)/
+   ├── Profile & Registrations/       # IKPM corporate tax & licensing documents
+   ├── SOP Templates/                 # Standard operating procedure templates
+   ├── MSDS Library/                  # Chemical material safety data sheets
+   ├── Technician Certificates/       # Certified technician training & licenses
+   ├── Proposal & Report Templates/   # Master quotation and report templates
+   ├── Tax Rules/                     # Provincial sales tax reference tables
+   └── Internal/                      # Internal administrative files
+```
+
+### Auto-Filing Triggers
+- **Supervisor QC Verification:** When a field service job is verified by an operations supervisor, the branded PDF service report is generated and auto-filed into `/Clients/.../Service Reports/{YYYY}/{MM}`.
+- **Sales Tax Invoice Posting:** When an invoice is created/posted, the official sales tax invoice PDF is auto-filed into `/Clients/.../Invoices/{YYYY}`.
+- **Payment Allocation:** When a payment is recorded, the formal payment receipt PDF is auto-filed into `/Clients/.../Payments`.
+- **Visit Scheduling:** Exporting the contractual visit schedule auto-files the Dunkin-format PDF into `/Clients/.../Documents`.
+
+---
+
+## 7. CRM Lead Lifecycle & Stage Transition Rules
+
+The CRM enforces strict, auditable stage transitions in `src/lib/leadWorkflow.ts`:
+
+```
+new ──► contacted ──► engaged ──► inspection_scheduled ──► inspection_completed ──► proposal_created ──► won / lost
+```
+
+### Stage Transition Rules
+1. **New ──► Contacted:** Requires recording an initial communication channel (phone, WhatsApp, email) and contact log.
+2. **Contacted ──► Engaged:** The prospect indicates active interest; site parameters (approximate area sq ft, pest types) are recorded.
+3. **Engaged ──► Inspection Scheduled:** Mandatory assignment of an inspector and scheduled inspection date.
+4. **Inspection Scheduled ──► Inspection Completed:** Requires recording field inspection findings, pest infestation severity, and site photos.
+5. **Inspection Completed ──► Proposal Created:** Prohibits issuing proposals before inspection findings are logged. Automatically provisions or links customer account via `ensureLeadCustomer()`. All lead documents and outreach logs seamlessly follow the lead into the newly created customer folder.
+6. **Proposal Accepted ──► Won:** Converts proposal to active contract, prompts onboarding pack transmission (SOP, MSDS, certificates, layout).
+
+---
+
+## 8. New Firestore Collections & Data Models
+
+| Collection | Model Interface | Purpose |
+|---|---|---|
+| `devices` | `Device` | Numbered pest management stations (mechanical traps, glue boards, bait stations) with coordinates/pins on the branch floor plan. |
+| `monitoring_records` | `MonitoringRecord` | Device-level inspection logs from PCO visits (pest counts, damage, replacement, attractant change). |
+| `document_packs` | `DocumentPack` | Assembled client onboarding packs with verified delivery and QR access tokens. |
+| `templates` | `DocumentTemplate` | Standardized legal terms, IPM scope sections, and commercial clauses with semantic versioning. |
+
+---
+
+## 9. Contract Visit Scheduling & Operations (Step 14)
+
+Modeled after commercial franchise schedules (e.g., Dunkin' Pest Control Schedule):
+
+1. **Automated Visit Generation:** Creates `service_jobs` from contract `servicePlan` and frequency (weekly, bi-weekly, monthly) across tenure, producing linked service and follow-up visit pairs.
+2. **Branch Constraints & Operating Hours:** Considers branch closing times and service windows (`closingTime`, `visitWindowStart`, `visitWindowEnd`). Automatically slots after-hours visits into `night_shift`.
+3. **Holiday & Sunday Exclusion:** Skips configured gazetted public holidays and Sundays.
+4. **Double-Booking Prevention:** The scheduling engine runs real-time technician conflict detection (`pcoConflicts`) against existing jobs and blocks overlapping assignments.
+5. **Dunkin Format Export:** One-click PDF export listing each branch, closing time, 1st service date, 2nd service date, and follow-up dates. Auto-filed into client Documents and viewable in `DispatchCalendarPage`.
+
+---
+
+## 10. Financial Guard Rails & AMC Renewal (Step 15)
+
+1. **Supervisor Verification Guard Rail:** Strict system enforcement prevents generating or posting sales tax invoices until the service report is verified with a supervisor QC sign-off.
+2. **Provincial Sales Tax Integrity:** Rates dynamically derive from active rules in `tax_rules` (SRB 13%, PRA 16%, KPRA 15%, ICT 15%, BRA 15%). Contract client invoice base amounts strictly pull from `contract.monthlyRate`.
+3. **60-Day Renewal Automation:** Contracts within 60 days of expiry display renewal alerts. Clicking **Renew Contract** automatically clones the agreement for the subsequent term and creates a linked renewal proposal.
+
+---
+
+## 11. Legacy Data Backfill Instructions
+
+To file legacy records created prior to virtual folder support, use the backfill runner:
+
+```bash
+# 1. Test against sample seed data (no credentials required)
+npx tsx scripts/backfillFolders.ts --seed
+
+# 2. Dry run against live Firestore (generates markdown report in scripts/reports/ without modifying data)
+npx tsx scripts/backfillFolders.ts --key=./service-account.json
+
+# 3. Apply changes (safe & idempotent: skips already filed records and logs audit trail)
+npx tsx scripts/backfillFolders.ts --key=./service-account.json --apply --by=admin@insectkiller.pk
+```
+

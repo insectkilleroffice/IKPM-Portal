@@ -17,12 +17,14 @@ export type ModuleKey =
   | 'contracts'
   | 'files'
   | 'documents'
+  | 'company_files'
   | 'calendar'
   | 'jobs'
   | 'pco'
   | 'invoices'
   | 'tax'
   | 'settings'
+  | 'templates'
   | 'team'
   | 'roles';
 
@@ -52,12 +54,14 @@ export const MODULES: { key: ModuleKey; label: string; group: string; hint?: str
   { key: 'contracts', label: 'Contracts & AMCs', group: 'Sales & customers' },
   { key: 'files', label: 'Client files', group: 'Files' },
   { key: 'documents', label: 'Company documents', group: 'Files' },
+  { key: 'company_files', label: 'Company (IKPM) folder', group: 'Files', hint: 'SOP templates, MSDS library, certificates, registrations. View = read and send; Edit = upload and change' },
   { key: 'calendar', label: 'Dispatch calendar', group: 'Field operations' },
   { key: 'jobs', label: 'Service jobs', group: 'Field operations' },
   { key: 'pco', label: 'PCO field app', group: 'Field operations', hint: 'Only jobs assigned to the person' },
   { key: 'invoices', label: 'Invoices & receipts', group: 'Accounts' },
   { key: 'tax', label: 'Tax rules & WHT', group: 'Accounts' },
   { key: 'settings', label: 'Settings & audit trail', group: 'Administration' },
+  { key: 'templates', label: 'Document templates', group: 'Administration', hint: 'Edit = proposal, scope and SOP wording. Commercial / legal wording stays super admin only' },
   { key: 'team', label: 'Manage staff & teams', group: 'Administration', hint: 'Add people, set passwords, build teams' },
   { key: 'roles', label: 'Customize roles', group: 'Administration', hint: 'Change what each role can do' },
 ];
@@ -73,17 +77,17 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
   {
     id: 'management', name: 'Management', basedOn: 'management', isSystem: true, defaultScope: 'company', color: '#1B3A63',
     description: 'Sees everything, approves proposals, views reports',
-    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'pco', 'invoices', 'tax']), settings: 'view' },
+    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'pco', 'invoices', 'tax']), settings: 'view', company_files: 'view', templates: 'edit' },
   },
   {
     id: 'sales', name: 'Sales', basedOn: 'sales', isSystem: true, defaultScope: 'own', color: '#1A73E8',
     description: 'Leads, proposals and their own customers',
-    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files']), documents: 'view' },
+    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files']), documents: 'view', company_files: 'view' },
   },
   {
     id: 'operations', name: 'Operations', basedOn: 'operations', isSystem: true, defaultScope: 'company', color: '#D97706',
     description: 'Dispatch, service jobs and field teams',
-    modules: { ...all('edit', ['dashboard', 'inspections', 'calendar', 'jobs', 'pco', 'files']), customers: 'view', contracts: 'view', documents: 'view' },
+    modules: { ...all('edit', ['dashboard', 'inspections', 'calendar', 'jobs', 'pco', 'files']), customers: 'view', contracts: 'view', documents: 'view', company_files: 'view' },
   },
   {
     id: 'finance', name: 'Finance', basedOn: 'finance', isSystem: true, defaultScope: 'company', color: '#0E8A5F',
@@ -98,7 +102,7 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
   {
     id: 'auditor', name: 'Auditor (read-only)', basedOn: 'auditor', isSystem: true, defaultScope: 'company', color: '#4B5563',
     description: 'Read-only access for compliance review',
-    modules: all('view', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'invoices', 'settings']),
+    modules: all('view', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'invoices', 'settings']),
   },
 ];
 
@@ -136,6 +140,10 @@ export const accessLevel = (role: UserRole | null | undefined, module: ModuleKey
 export const canAccessModule = (role: UserRole | null | undefined, module: ModuleKey) => accessLevel(role, module) !== 'none';
 
 export const canEditModule = (role: UserRole | null | undefined, module: ModuleKey) => accessLevel(role, module) === 'edit';
+
+/** Company (IKPM) folder: who can see it, and who can upload / rename / move / delete in it. */
+export const canViewCompanyFiles = (role: UserRole | null | undefined) => canAccessModule(role, 'company_files');
+export const canEditCompanyFiles = (role: UserRole | null | undefined) => canEditModule(role, 'company_files');
 
 /** The super admin and anyone given company-wide data access see every record. */
 export const seesAllRecords = (role: UserRole, scope: DataScope) => role === 'super_admin' || scope === 'company';

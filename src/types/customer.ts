@@ -1,3 +1,4 @@
+import type { StoredFile } from './document';
 // Customer profile types for Individual Clients, Companies, Branches, Sites, and Contacts
 
 export type CustomerType = 'individual' | 'company';
@@ -106,6 +107,8 @@ export interface CompanyMaster {
   ntn?: string; // Pakistani National Tax Number (7 digits + 1 check digit)
   strn?: string; // Sales Tax Registration Number
   headOfficeAddress: string;
+  /** Floor plan for the device register / pest management layout (Step 12). */
+  floorPlan?: StoredFile;
   city: string;
   province: 'Sindh' | 'Punjab' | 'Islamabad_ICT' | 'KPK' | 'Balochistan';
   website?: string;
@@ -136,6 +139,12 @@ export interface CompanyBranch {
   area: string;
   province: 'Sindh' | 'Punjab' | 'Islamabad_ICT' | 'KPK' | 'Balochistan';
   physicalAddress: string;
+  /** Floor plan for the device register / pest management layout (Step 12). */
+  floorPlan?: StoredFile;
+  /** Visit scheduling (Step 14): branch closing time and allowed visit window, "HH:MM". */
+  closingTime?: string;
+  visitWindowStart?: string;
+  visitWindowEnd?: string;
   branchPhone: string;
   branchEmail?: string;
   branchManagerName: string;

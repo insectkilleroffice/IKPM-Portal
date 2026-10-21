@@ -2,6 +2,10 @@
 
 import type { CustomerType } from './customer';
 import type { PestType } from './crm';
+import type { FolderMeta, TemplateStamp } from './folders';
+import type { ScopeSection, ServicePlanItem, ServicePlanPreset } from '../lib/proposalPlan';
+
+export type { ScopeSection, ServicePlanItem, ServicePlanPreset };
 
 export type ProposalStatus =
   | 'draft'
@@ -62,7 +66,7 @@ export interface ApprovalRequest {
   comments?: string;
 }
 
-export interface Proposal {
+export interface Proposal extends FolderMeta, TemplateStamp {
   id: string;
   revisionNumber: number;
   parentProposalId?: string;
@@ -98,6 +102,37 @@ export interface Proposal {
   sentDate?: string;
   acceptedDate?: string;
   pdfUrl?: string;
+
+  // ---- Monthly IPM service plan (quotation format). All optional: older proposals use line items only.
+  /** Person the cover letter is addressed to. */
+  attentionTo?: { name: string; designation?: string };
+  clientAddress?: string;
+  coverLetter?: string;
+  /** Scope of services A / B / C. */
+  scopeSections?: ScopeSection[];
+  /** Terms (a) – (h). */
+  terms?: string[];
+  servicePlanPreset?: ServicePlanPreset;
+  /** "Monthly IPM Service Plan" table. */
+  servicePlan?: ServicePlanItem[];
+  serviceVisitsPerMonth?: number;
+  followUpVisitsPerMonth?: number;
+  pcoCountMin?: number;
+  pcoCountMax?: number;
+  documentationIncluded?: string[];
+  /** Monthly charge as entered (see taxMode). */
+  monthlyRate?: number;
+  taxMode?: 'exclusive' | 'inclusive';
+  tenureMonths?: number;
+  tenureStart?: string;
+  tenureEnd?: string;
+  /** Invoices payable within this many days (default 15). */
+  paymentTermsDays?: number;
+  /** Who owns / pays for mechanical devices. */
+  deviceOwnership?: string;
+  /** Products to be used (Fendona, K-Othrine…); the onboarding pack needs an MSDS for each. */
+  chemicals?: string[];
+
   createdAt: string;
   updatedAt: string;
 }

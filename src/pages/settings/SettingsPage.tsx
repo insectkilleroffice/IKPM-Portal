@@ -12,8 +12,10 @@ import {
   AlertTriangle,
   UsersRound,
   Building2,
+  FileText,
 } from 'lucide-react';
 import { CompanyProfileForm } from '../../features/settings/CompanyProfileForm';
+import { TemplatesForm } from '../../features/settings/TemplatesForm';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
@@ -30,7 +32,7 @@ export const SettingsPage: React.FC = () => {
   const { success, error } = useNotification();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  type SettingsTab = 'company' | 'cloud' | 'roles' | 'audit' | 'sync';
+  type SettingsTab = 'company' | 'templates' | 'cloud' | 'roles' | 'audit' | 'sync';
   const [activeTab, setActiveTabState] = useState<SettingsTab>((searchParams.get('tab') as SettingsTab) || 'cloud');
   const setActiveTab = (t: SettingsTab) => {
     setActiveTabState(t);
@@ -88,6 +90,9 @@ export const SettingsPage: React.FC = () => {
         <button className={`tab-btn ${activeTab === 'company' ? 'active' : ''}`} onClick={() => setActiveTab('company')}>
           <Building2 size={16} /> Company profile
         </button>
+        <button className={`tab-btn ${activeTab === 'templates' ? 'active' : ''}`} onClick={() => setActiveTab('templates')}>
+          <FileText size={16} /> Templates
+        </button>
         <button className={`tab-btn ${activeTab === 'cloud' ? 'active' : ''}`} onClick={() => setActiveTab('cloud')}>
           <Cloud size={16} /> Cloud database
           {cloud.status === 'error' && <AlertTriangle size={14} color="var(--ikpm-rose-500)" />}
@@ -104,6 +109,7 @@ export const SettingsPage: React.FC = () => {
       </div>
 
       {activeTab === 'company' && <CompanyProfileForm />}
+      {activeTab === 'templates' && <TemplatesForm />}
 
       {/* Tab: Cloud database */}
       {activeTab === 'cloud' && (

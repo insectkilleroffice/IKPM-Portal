@@ -1,17 +1,14 @@
 import React, { useRef, useState } from 'react';
 import { Camera, Images, Trash2, Loader2, AlertTriangle, CloudOff, Check, RotateCcw } from 'lucide-react';
-import { uploadFile } from '../../lib/cloudinary';
-import { compressImage, blobToDataUrl } from '../../lib/imageUtils';
 import { integrations } from '../../config/env';
+import { isPhotoFile, storePhoto } from './photoUpload';
 import type { SitePhoto } from '../../types/operations';
+import type { UploadScope } from '../../lib/folders';
 
 export interface PhotoCategory {
   value: string;
   label: string;
 }
-
-/** Max photos kept on the device without internet (stored inline on the record until reconnecting). */
-const MAX_OFFLINE = 4;
 
 interface Pending {
   id: string;
@@ -23,8 +20,10 @@ interface Pending {
 }
 
 interface Props<T extends SitePhoto> {
-  /** Cloudinary sub-folder, e.g. `job/JB-2026-0001/photos`. */
-  folder: string;
+  /** Whose files these are (client + category); decides the Cloudinary folder. */
+  scope: UploadScope;
+  /** Extra folders inside the category, e.g. `JB-2026-0001/photos`. */
+  subPath?: string;
   /** Prefix for uploaded file names, usually the record id. */
   idPrefix: string;
   categories: PhotoCategory[];
@@ -37,7 +36,7 @@ interface Props<T extends SitePhoto> {
 }
 
 /** Camera / gallery photo evidence, uploaded to Cloudinary (or kept small on the device when offline). */
-export function PhotoCapture<T extends SitePhoto>({ folder, idPrefix, categories, photos, onChange, onNotify, required, emptyText }: Props<T>) {
+export function PhotoCapture<T extends SitePhoto>({ scope, subPath, idPrefix, categories, photos, onChange, onNotify, required, emptyText }: Props<T>) {
   const [type, setType] = useState(categories[0]?.value ?? 'general');
   const [pending, setPending] = useState<Pending[]>([]);
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -69,26 +68,15 @@ export function PhotoCapture<T extends SitePhoto>({ folder, idPrefix, categories
       ({ id, type: photoType, caption, imageUrl, capturedAt: new Date().toISOString() }) as T;
 
     try {
-      if (navigator.onLine && integrations.cloudinary) {
-        // Phones may give formats the browser can't redraw (HEIC on Android); Cloudinary converts the original
-        const blob = await compressImage(file, 1600, 0.82).catch(() => file);
-        const stored = await uploadFile(blob, {
-          folder,
-          fileName: `${idPrefix}_${photoType}_${Date.now()}.jpg`,
-          onProgress: (pct) => patchPending(id, { progress: pct }),
-        });
-        setList([...photosRef.current, photo(stored.url, labelOf(photoType))]);
-      } else {
-        // No connection: keep a small copy on the record so reports still have it
-        const offlineCount = photosRef.current.filter((p) => p.imageUrl.startsWith('data:')).length;
-        if (offlineCount >= MAX_OFFLINE) {
-          patchPending(id, { error: `Offline limit reached (${MAX_OFFLINE} photos). Connect to the internet to add more.` });
-          return;
-        }
-        const small = await compressImage(file, 900, 0.6);
-        setList([...photosRef.current, photo(await blobToDataUrl(small), `${labelOf(photoType)} (saved offline)`)]);
-        onNotify?.('warning', 'Saved on this phone', 'No internet: the photo is kept at lower quality until you are back online.');
-      }
+      const stored = await storePhoto(file, {
+        scope,
+        subPath,
+        fileName: `${idPrefix}_${photoType}_${Date.now()}.jpg`,
+        onProgress: (pct) => patchPending(id, { progress: pct }),
+        offlineCount: photosRef.current.filter((p) => p.imageUrl.startsWith('data:')).length,
+      });
+      setList([...photosRef.current, photo(stored.url, stored.offline ? `${labelOf(photoType)} (saved offline)` : labelOf(photoType))]);
+      if (stored.offline) onNotify?.('warning', 'Saved on this phone', 'No internet: the photo is kept at lower quality until you are back online.');
       dropPending(id);
     } catch (err) {
       patchPending(id, { error: err instanceof Error ? err.message : 'Upload failed' });
@@ -97,7 +85,7 @@ export function PhotoCapture<T extends SitePhoto>({ folder, idPrefix, categories
 
   const handleFiles = async (files: FileList | null) => {
     if (!files?.length) return;
-    const list = Array.from(files).filter((f) => f.type.startsWith('image/') || /\.(heic|heif|jpe?g|png|webp)$/i.test(f.name));
+    const list = Array.from(files).filter(isPhotoFile);
     if (cameraRef.current) cameraRef.current.value = '';
     if (galleryRef.current) galleryRef.current.value = '';
     if (!list.length) {

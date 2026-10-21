@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Check } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { CHANNELS, contactsOf, INSPECTION_PHOTO_TYPES, OUTCOMES } from '../../lib/leadWorkflow';
 import { roleLabel } from '../../lib/permissions';
-import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, PestType } from '../../types/crm';
+import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, PestType, RiskFinding } from '../../types/crm';
 import type { SitePhoto } from '../../types/operations';
 import { PhotoCapture } from '../field/PhotoCapture';
+import { SinglePhotoField } from '../field/SinglePhotoField';
+import { FINDING_SUGGESTIONS, findingFilled, findingsSummary, newFinding, recommendedTreatmentOf } from '../../lib/riskAssessment';
+import { fileInspectionReport } from './inspectionFiles';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -20,7 +23,7 @@ const addDays = (n: number) => new Date(Date.now() + n * 86400000).toISOString()
 export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
   const store = useDataStore();
   const { userProfile } = useAuth();
-  const { success, warning } = useNotification();
+  const { success, warning, error } = useNotification();
   const [channel, setChannel] = useState<ActivityChannel>('call');
   const [outcome, setOutcome] = useState<ContactOutcome>('no_response');
   const [contactId, setContactId] = useState('');
@@ -44,11 +47,16 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
   const needsFollowUp = outcome === 'callback' || outcome === 'no_response';
 
   const save = () => {
-    const updated = store.logLeadContact(
-      lead.id,
-      { channel, outcome, note: note.trim() || undefined, contactId: contactId || undefined, nextFollowUp: needsFollowUp ? followUp : undefined, lostReason: closing ? lostReason.trim() || undefined : undefined },
-      userProfile?.email
-    );
+    let updated: Lead | undefined;
+    try {
+      updated = store.logLeadContact(
+        lead.id,
+        { channel, outcome, note: note.trim() || undefined, contactId: contactId || undefined, nextFollowUp: needsFollowUp ? followUp : undefined, lostReason: closing ? lostReason.trim() || undefined : undefined },
+        userProfile?.email
+      );
+    } catch (err) {
+      return error('Could not log contact', err instanceof Error ? err.message : String(err));
+    }
     if (!updated) return;
     if (outcome === 'engaged') success('Engaged', `${lead.title} is interested. Next: schedule the inspection.`);
     else if (closing) warning('Moved to Lost', `${lead.title} was marked as ${outcome === 'not_interested' ? 'not interested' : 'unreachable'}.`);
@@ -135,7 +143,7 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
 export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
   const store = useDataStore();
   const { userProfile } = useAuth();
-  const { success, warning } = useNotification();
+  const { success, warning, error } = useNotification();
   const [date, setDate] = useState(addDays(1));
   const [timeSlot, setTimeSlot] = useState<'morning' | 'afternoon' | 'evening'>('morning');
   const [teamId, setTeamId] = useState('');
@@ -171,7 +179,12 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
       warning('Assign someone', 'Choose a team or at least one inspector.');
       return;
     }
-    const updated = store.scheduleLeadInspection(lead.id, { date, timeSlot, teamId: teamId || undefined, inspectorIds, instructions: instructions.trim() || undefined }, userProfile?.email);
+    let updated: Lead | undefined;
+    try {
+      updated = store.scheduleLeadInspection(lead.id, { date, timeSlot, teamId: teamId || undefined, inspectorIds, instructions: instructions.trim() || undefined }, userProfile?.email);
+    } catch (err) {
+      return error('Could not schedule inspection', err instanceof Error ? err.message : String(err));
+    }
     if (updated) {
       success('Inspection scheduled', `${new Date(date).toLocaleDateString('en-GB')} (${timeSlot}). It now appears in Site Inspections for the assigned people.`);
       onDone?.(updated);
@@ -273,35 +286,75 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
   const [photos, setPhotos] = useState<SitePhoto[]>([]);
   const [severity, setSeverity] = useState<InspectionAssessment['infestationSeverity']>('moderate');
   const [area, setArea] = useState('');
-  const [findings, setFindings] = useState('');
+  const [summary, setSummary] = useState('');
   const [treatment, setTreatment] = useState('');
+  const [rows, setRows] = useState<RiskFinding[]>([]);
+  const [reportTitle, setReportTitle] = useState('');
+  const [siteName, setSiteName] = useState('');
+  const [observedBy, setObservedBy] = useState('');
+  const [showMore, setShowMore] = useState(false);
 
   useEffect(() => {
     if (!lead) return;
     const i = lead.inspection;
+    const site = i?.siteName || [lead.area, lead.city].filter(Boolean).join(', ');
     setPests(i?.pestTypesFound?.length ? i.pestTypesFound : lead.pestIssues || []);
     setSeverity(i?.infestationSeverity || 'moderate');
     setArea(i?.areaSqFt ? String(i.areaSqFt) : '');
-    setFindings(i?.criticalFindings || '');
+    // Older inspections only have the free-text summary; it stays visible and editable
+    setSummary(i?.findings?.length ? '' : i?.criticalFindings || '');
     setTreatment(i?.recommendedTreatment || '');
     setPhotos(i?.photos ?? []);
+    setRows(i?.findings?.length ? i.findings : [newFinding()]);
+    setReportTitle(i?.reportTitle || `Risk Assessment Report - ${lead.companyName || lead.title}${lead.area ? ` ${lead.area}` : ''}`);
+    setSiteName(site);
+    setObservedBy(i?.observedBy || '');
+    setShowMore(Boolean(i?.photos?.length || (!i?.findings?.length && i?.criticalFindings)));
   }, [lead]);
 
   if (!lead) return null;
+  const filled = rows.filter(findingFilled);
   const problems: string[] = [];
   if (!pests.length) problems.push('Select at least one pest found.');
-  if (!findings.trim()) problems.push('Describe what was found.');
+  if (!filled.length && !summary.trim()) problems.push('Add at least one finding (observation and recommendation).');
+  if (rows.some((r) => findingFilled(r) && (!r.observation.trim() || !r.recommendation.trim()))) problems.push('Each finding needs an observation and a recommendation.');
+
+  const scope = { ownerScope: 'client' as const, clientId: lead.existingCustomerId || lead.id, category: 'risk_assessment' as const };
+  const offlineCount = rows.filter((r) => r.photo?.imageUrl.startsWith('data:')).length + photos.filter((p) => p.imageUrl.startsWith('data:')).length;
+  const setRow = (id: string, patch: Partial<RiskFinding>) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const notify = (kind: 'success' | 'warning' | 'error', title: string, message: string) => (kind === 'error' ? error(title, message) : kind === 'warning' ? warning(title, message) : success(title, message));
 
   const save = () => {
     if (problems.length) return;
-    const updated = store.recordInspectionFindings(
-      lead.id,
-      { pestTypesFound: pests, infestationSeverity: severity, areaSqFt: Number(area) || 0, criticalFindings: findings.trim(), recommendedTreatment: treatment.trim(), photos },
-      userProfile?.email
-    );
+    const findings = rows.filter(findingFilled).map((r) => ({ ...r, observation: r.observation.trim(), risk: r.risk.trim(), recommendation: r.recommendation.trim(), location: r.location?.trim() || undefined }));
+    let updated: Lead | undefined;
+    try {
+      updated = store.recordInspectionFindings(
+        lead.id,
+        {
+          pestTypesFound: pests,
+          infestationSeverity: severity,
+          areaSqFt: Number(area) || 0,
+          // Kept for older screens and reports that read the summary text
+          criticalFindings: [summary.trim(), findingsSummary(findings)].filter(Boolean).join('\n'),
+          recommendedTreatment: treatment.trim() || recommendedTreatmentOf({ findings }),
+          photos,
+          findings,
+          reportTitle: reportTitle.trim() || undefined,
+          siteName: siteName.trim() || undefined,
+          observedBy: observedBy.trim() || undefined,
+        },
+        userProfile?.email
+      );
+    } catch (err) {
+      return error('Could not save findings', err instanceof Error ? err.message : String(err));
+    }
     if (updated) {
-      success('Findings saved', `${lead.title} is ready for a proposal.`);
+      success('Findings saved', `${lead.title} is ready for a proposal. The risk assessment report is being filed.`);
       onDone?.(updated);
+      fileInspectionReport(updated, { email: userProfile?.email, displayName: userProfile?.displayName })
+        .then((doc) => !doc && warning('Report not filed', 'File storage is not configured or you are offline. Download the report from the lead instead.'))
+        .catch((err) => warning('Report not filed', err instanceof Error ? err.message : String(err)));
     }
     onClose();
   };
@@ -310,9 +363,9 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
     <Modal
       isOpen
       onClose={onClose}
-      title={`Inspection findings: ${lead.title}`}
+      title={`Risk assessment: ${lead.title}`}
       subtitle={lead.inspection?.scheduledDate ? `Visit on ${new Date(lead.inspection.scheduledDate).toLocaleDateString('en-GB')}${lead.inspection.inspectorName ? ` · ${lead.inspection.inspectorName}` : ''}` : 'Enter the findings manually'}
-      maxWidth="700px"
+      maxWidth="900px"
       footer={
         <>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
@@ -321,6 +374,25 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
       }
     >
       {lead.inspection?.instructions && <div className="info-hint" style={{ marginBottom: '1rem' }}><strong>Instructions:</strong> {lead.inspection.instructions}</div>}
+
+      <div className="form-grid-3">
+        <div className="form-group" style={{ gridColumn: 'span 2' }}>
+          <label className="form-label">Report title</label>
+          <input className="form-input" value={reportTitle} onChange={(e) => setReportTitle(e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Branch / site</label>
+          <input className="form-input" value={siteName} onChange={(e) => setSiteName(e.target.value)} placeholder="e.g. Johar" />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Prepared by</label>
+          <input className="form-input" value={userProfile?.displayName || ''} disabled />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Observed by</label>
+          <input className="form-input" value={observedBy} onChange={(e) => setObservedBy(e.target.value)} placeholder="Inspector / client representative" />
+        </div>
+      </div>
 
       <div className="form-group">
         <label className="form-label">Pests found <span className="required">*</span></label>
@@ -352,28 +424,77 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
         </div>
       </div>
 
-      <div className="form-group">
-        <label className="form-label">What was found <span className="required">*</span></label>
-        <textarea className="form-textarea" rows={4} value={findings} onChange={(e) => setFindings(e.target.value)} placeholder="Activity seen, breeding points, entry points, hygiene issues, areas affected…" />
+      <div className="section-title">Findings</div>
+      <div className="finding-list">
+        {rows.map((r, i) => (
+          <div key={r.id} className="finding-row">
+            <div className="finding-photo">
+              <SinglePhotoField
+                photo={r.photo}
+                onChange={(photo) => setRow(r.id, { photo })}
+                scope={scope}
+                subPath={`${lead.id}/risk-assessment`}
+                fileNamePrefix={`${lead.id}_finding_${i + 1}`}
+                caption={r.location || `Finding ${i + 1}`}
+                offlineCount={offlineCount}
+                onNotify={notify}
+              />
+            </div>
+            <div className="finding-fields">
+              <div className="finding-head">
+                <strong>{i + 1}.</strong>
+                <input className="form-input" value={r.location ?? ''} onChange={(e) => setRow(r.id, { location: e.target.value })} placeholder="Location (e.g. Kitchen back door)" aria-label="Location" />
+                <button type="button" className="icon-btn" onClick={() => setRows((prev) => (prev.length > 1 ? prev.filter((x) => x.id !== r.id) : [newFinding()]))} aria-label="Remove finding"><Trash2 size={15} /></button>
+              </div>
+              <div className="chip-row" style={{ margin: '0.35rem 0' }}>
+                {FINDING_SUGGESTIONS.map((sug) => (
+                  <button key={sug.label} type="button" className="chip chip-sm" onClick={() => setRow(r.id, { observation: sug.observation, risk: sug.risk, recommendation: sug.recommendation })}>
+                    {sug.label}
+                  </button>
+                ))}
+              </div>
+              <textarea className="form-textarea" rows={2} value={r.observation} onChange={(e) => setRow(r.id, { observation: e.target.value })} placeholder="Observation" aria-label="Observation" />
+              <textarea className="form-textarea" rows={2} value={r.risk} onChange={(e) => setRow(r.id, { risk: e.target.value })} placeholder="Risk" aria-label="Risk" />
+              <textarea className="form-textarea" rows={2} value={r.recommendation} onChange={(e) => setRow(r.id, { recommendation: e.target.value })} placeholder="Recommendation" aria-label="Recommendation" />
+            </div>
+          </div>
+        ))}
       </div>
-      <div className="form-group">
-        <label className="form-label">Recommended treatment</label>
-        <textarea className="form-textarea" rows={3} value={treatment} onChange={(e) => setTreatment(e.target.value)} placeholder="e.g. Gel baiting monthly + rodent bait stations, termite drilling & injection" />
+      <button type="button" className="btn btn-sm btn-secondary" onClick={() => setRows((prev) => [...prev, newFinding()])}>
+        <Plus size={14} /> Add finding
+      </button>
+
+      <div className="form-group" style={{ marginTop: '1rem' }}>
+        <label className="form-label">Recommended treatment (for the proposal)</label>
+        <textarea className="form-textarea" rows={2} value={treatment} onChange={(e) => setTreatment(e.target.value)} placeholder="Leave empty to use the findings' recommendations" />
       </div>
 
-      <div className="form-group" style={{ marginBottom: 0 }}>
-        <label className="form-label">Site photos</label>
-        <PhotoCapture<SitePhoto>
-          folder={`lead/${lead.id}/inspection`}
-          idPrefix={lead.inspection?.id || lead.id}
-          categories={INSPECTION_PHOTO_TYPES}
-          photos={photos}
-          onChange={setPhotos}
-          required={['infestation']}
-          onNotify={(kind, title, message) => (kind === 'error' ? error(title, message) : kind === 'warning' ? warning(title, message) : success(title, message))}
-          emptyText="No photos yet. Photos appear in the inspection report sent with the proposal."
-        />
-      </div>
+      <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowMore((v) => !v)}>
+        {showMore ? <ChevronDown size={14} /> : <ChevronRight size={14} />} Summary notes and general site photos
+      </button>
+      {showMore && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <div className="form-group">
+            <label className="form-label">Summary notes</label>
+            <textarea className="form-textarea" rows={3} value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="Anything not covered by the findings above" />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">General site photos</label>
+            <PhotoCapture<SitePhoto>
+              scope={{ ...scope, category: 'inspection_report' }}
+              subPath={`${lead.id}/inspection`}
+              idPrefix={lead.inspection?.id || lead.id}
+              categories={INSPECTION_PHOTO_TYPES}
+              photos={photos}
+              onChange={setPhotos}
+              onNotify={notify}
+              emptyText="Optional. Finding photos are taken in each row above."
+            />
+          </div>
+        </div>
+      )}
+
+      {problems.length > 0 && <ul className="form-problems">{problems.map((p) => <li key={p}>{p}</li>)}</ul>}
     </Modal>
   );
 };

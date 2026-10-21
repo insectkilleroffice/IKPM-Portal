@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
-import { Upload, Send, FolderLock, AlertTriangle, CheckCircle2, Package, Cloud, MessageCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Upload, Send, FolderLock, FolderOpen, AlertTriangle, CheckCircle2, Package, Cloud, MessageCircle } from 'lucide-react';
+import { canEditCompanyFiles, canViewCompanyFiles } from '../../lib/permissions';
+import { COMPANY_ROOT } from '../../lib/folders';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { EmptyState } from '../../components/common/EmptyState';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
@@ -17,9 +20,10 @@ import { OutreachHistory } from '../outreach/OutreachHistory';
 /** IKPM's own company papers (authority letters, NTN/SRB, licenses, profile…) — uploaded once, shared on every pitch. */
 export const DocumentLibraryPage: React.FC = () => {
   const store = useDataStore();
-  const { hasRole, userProfile } = useAuth();
+  const { effectiveRole, userProfile } = useAuth();
   const { success } = useNotification();
-  const canManage = hasRole(['super_admin', 'management', 'sales']);
+  // Library documents live in the Company (IKPM) folder
+  const canManage = canEditCompanyFiles(effectiveRole);
 
   const [category, setCategory] = useState<CompanyDocCategory | 'all'>('all');
   const [showUpload, setShowUpload] = useState(false);
@@ -27,7 +31,7 @@ export const DocumentLibraryPage: React.FC = () => {
   const [toRemove, setToRemove] = useState<PortalDocument | null>(null);
 
   const docs = store.getLibraryDocuments();
-  const packs = store.getDocumentPacks();
+  const packs = store.getLibraryPacks();
   const visible = category === 'all' ? docs : docs.filter((d) => d.category === category);
   const expiring = docs.filter((d) => expiryState(d) === 'expiring');
   const expired = docs.filter((d) => expiryState(d) === 'expired');
@@ -47,6 +51,12 @@ export const DocumentLibraryPage: React.FC = () => {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {canViewCompanyFiles(effectiveRole) && (
+            <Link className="btn btn-secondary" to={`/files?path=${encodeURIComponent(`/${COMPANY_ROOT}`)}`}>
+              <FolderOpen size={15} />
+              <span>Open Company (IKPM) folder</span>
+            </Link>
+          )}
           <button className="btn btn-secondary" onClick={() => setShowSend(true)} disabled={docs.length === 0}>
             <Send size={15} />
             <span>Quick Send</span>

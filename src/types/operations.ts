@@ -2,6 +2,8 @@
 
 import type { CustomerType } from './customer';
 import type { PestType } from './crm';
+import type { FolderMeta, TemplateStamp } from './folders';
+import type { ServicePlanItem } from '../lib/proposalPlan';
 
 export type ContractType = 'one_time' | 'amc_recurring';
 
@@ -78,7 +80,7 @@ export interface SupervisorVerification {
   supervisorNotes?: string;
 }
 
-export interface ServiceJob {
+export interface ServiceJob extends FolderMeta {
   id: string;
   contractId?: string;
   proposalId?: string;
@@ -109,11 +111,17 @@ export interface ServiceJob {
   executionNotes?: string;
   isOfflineDraft?: boolean;
   syncedAt?: string;
+  /** Contract schedule (Step 14): service visit or its follow-up; the pair share pairedJobId links. */
+  visitKind?: 'service' | 'follow_up';
+  pairedJobId?: string;
+  /** Visit window at the branch ("HH:MM"), copied from the branch when scheduled. */
+  windowStart?: string;
+  windowEnd?: string;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface Contract {
+export interface Contract extends FolderMeta, TemplateStamp {
   id: string;
   contractType: ContractType;
   proposalId?: string;
@@ -135,6 +143,24 @@ export interface Contract {
   status: 'active' | 'expired' | 'renewed' | 'cancelled';
   renewalAlertDate: string;
   isRenewalInitiated?: boolean;
+
+  // ---- Copied from the accepted proposal so nothing is retyped (all optional for older contracts)
+  servicePlan?: ServicePlanItem[];
+  serviceVisitsPerMonth?: number;
+  followUpVisitsPerMonth?: number;
+  pcoCountMin?: number;
+  pcoCountMax?: number;
+  documentationIncluded?: string[];
+  monthlyRate?: number;
+  taxMode?: 'exclusive' | 'inclusive';
+  taxPercent?: number;
+  tenureMonths?: number;
+  paymentTermsDays?: number;
+  terms?: string[];
+  exclusions?: string;
+  deviceOwnership?: string;
+  chemicals?: string[];
+
   createdAt: string;
   updatedAt: string;
 }

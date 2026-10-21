@@ -26,3 +26,10 @@ dist-ssr
 
 .vercel
 .env*
+
+# Backfill reports contain client names
+scripts/reports/
+service-account*.json
+
+# Firestore backups made by scripts/resetData.ts (contain client data)
+backups/

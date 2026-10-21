@@ -271,7 +271,8 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
       <div className="form-group" style={{ marginTop: '1rem', marginBottom: 0 }}>
         <label className="form-label">Site photos (optional)</label>
         <PhotoCapture<SitePhoto>
-          folder={`lead/${lead?.id ?? draftKey}/site`}
+          scope={{ ownerScope: 'client', clientId: lead?.existingCustomerId || lead?.id || draftKey, category: 'inspection_report' }}
+          subPath={`${lead?.id ?? draftKey}/site`}
           idPrefix={lead?.id ?? draftKey}
           categories={INSPECTION_PHOTO_TYPES}
           photos={form.sitePhotos}

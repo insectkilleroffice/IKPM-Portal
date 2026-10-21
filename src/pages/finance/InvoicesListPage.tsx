@@ -27,8 +27,11 @@ import { useDataStore } from '../../hooks/useDataStore';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import type { Invoice, PaymentReceipt, TaxJurisdiction, InvoiceLineItem } from '../../types/finance';
 import { provinceToJurisdiction, getStandardTaxRate } from '../../lib/workflow';
+import { taxRateFor } from '../../lib/taxRates';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
+import { fileGenerated } from '../../features/documents/fileGenerated';
+import type { DocumentOwner } from '../../types/document';
 import { Download as DownloadIcon } from 'lucide-react';
 
 export const InvoicesListPage: React.FC = () => {
@@ -93,7 +96,9 @@ export const InvoicesListPage: React.FC = () => {
 
   const initialProvince = getSiteProvince(initialCustomerId, linkedJob?.siteAddress);
   const initialJurisdiction = provinceToJurisdiction(initialProvince);
-  const initialTaxRate = getStandardTaxRate(initialJurisdiction);
+  const initialTaxRate = taxRateFor(dataService.getTaxRules(), initialJurisdiction as TaxJurisdiction).percent;
+  const initialContract = linkedJob?.contractId ? dataService.getContractById(linkedJob.contractId) : undefined;
+  const initialBaseAmount = initialContract?.monthlyRate || 0;
 
   const [newInvoice, setNewInvoice] = useState({
     customerType: initialCustomerType,
@@ -106,7 +111,7 @@ export const InvoicesListPage: React.FC = () => {
     issueDate: new Date().toISOString().split('T')[0],
     dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     serviceDescription: linkedJob?.serviceType || 'Integrated Pest Management (IPM) Professional Service',
-    baseAmount: 45000,
+    baseAmount: initialBaseAmount,
   });
 
   // Check guard rail on mount if fromJob is present
@@ -123,8 +128,10 @@ export const InvoicesListPage: React.FC = () => {
       }
 
       const prov = getSiteProvince(linkedJob.customerId, linkedJob.siteAddress);
-      const jur = provinceToJurisdiction(prov);
-      const rate = getStandardTaxRate(jur);
+      const jur = provinceToJurisdiction(prov) as TaxJurisdiction;
+      const rate = taxRateFor(dataService.getTaxRules(), jur).percent;
+      const contract = linkedJob.contractId ? dataService.getContractById(linkedJob.contractId) : undefined;
+      const baseAmount = contract?.monthlyRate || 0;
 
       setNewInvoice({
         customerType: linkedJob.customerType,
@@ -137,7 +144,7 @@ export const InvoicesListPage: React.FC = () => {
         issueDate: new Date().toISOString().split('T')[0],
         dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
         serviceDescription: `${linkedJob.serviceType} (Job: ${linkedJob.id})`,
-        baseAmount: 45000,
+        baseAmount,
       });
       setShowNewInvoiceModal(true);
     }
@@ -249,9 +256,31 @@ export const InvoicesListPage: React.FC = () => {
     };
 
     dataService.saveInvoice(created, userProfile?.email);
+
+    // Step 15: Auto-file invoice PDF into client's Invoices/{YYYY} folder
+    try {
+      const owner: DocumentOwner = created.branchId
+        ? { kind: 'branch', id: created.branchId }
+        : created.customerType === 'company'
+        ? { kind: 'company', id: created.customerId }
+        : { kind: 'client', id: created.customerId };
+      pdfGenerator.invoicePDFBlob(created).then((blob) => {
+        fileGenerated(blob, {
+          owner,
+          category: 'invoice',
+          title: `Sales Tax Invoice - ${created.invoiceNumber}`,
+          fileName: `Invoice_${created.invoiceNumber}.pdf`,
+          subPath: created.id,
+          user: { email: userProfile?.email, displayName: userProfile?.displayName },
+        }).catch((err) => console.warn('Invoice auto-file error:', err));
+      }).catch((err) => console.warn('Invoice blob error:', err));
+    } catch (err) {
+      console.warn('Auto-filing invoice background error:', err);
+    }
+
     success(
-      'Statutory Sales Tax Invoice Generated',
-      `Invoice ${created.invoiceNumber} posted (${created.jurisdiction.toUpperCase()} tax: ${newInvoice.taxRatePercent}%)`
+      'Statutory Sales Tax Invoice Generated & Filed',
+      `Invoice ${created.invoiceNumber} posted & auto-filed in Invoices folder (${created.jurisdiction.toUpperCase()} tax: ${newInvoice.taxRatePercent}%)`
     );
     setShowNewInvoiceModal(false);
   };
@@ -289,9 +318,31 @@ export const InvoicesListPage: React.FC = () => {
     };
 
     dataService.recordPayment(receipt, userProfile?.email);
+
+    // Step 15: Auto-file payment receipt PDF into client's Payments folder
+    try {
+      const owner: DocumentOwner = selectedInvoice.branchId
+        ? { kind: 'branch', id: selectedInvoice.branchId }
+        : selectedInvoice.customerType === 'company'
+        ? { kind: 'company', id: selectedInvoice.customerId }
+        : { kind: 'client', id: selectedInvoice.customerId };
+      pdfGenerator.receiptPDFBlob(receipt).then((blob) => {
+        fileGenerated(blob, {
+          owner,
+          category: 'payment_receipt',
+          title: `Payment Receipt - ${receipt.receiptNumber}`,
+          fileName: pdfGenerator.receiptFileName(receipt),
+          subPath: receipt.id,
+          user: { email: userProfile?.email, displayName: userProfile?.displayName },
+        }).catch((err) => console.warn('Receipt auto-file error:', err));
+      }).catch((err) => console.warn('Receipt blob error:', err));
+    } catch (err) {
+      console.warn('Auto-filing receipt background error:', err);
+    }
+
     success(
-      'Payment Recorded & Allocated',
-      `Cash: ${formatPKR(receipt.cashAmountReceived)} | Customer WHT: ${formatPKR(receipt.customerWhtDeducted.amountDeducted)}`
+      'Payment Recorded & Receipt Filed',
+      `Cash: ${formatPKR(receipt.cashAmountReceived)} | Customer WHT: ${formatPKR(receipt.customerWhtDeducted.amountDeducted)}. Receipt auto-filed in Payments.`
     );
     setShowPaymentModal(false);
   };

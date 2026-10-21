@@ -53,7 +53,7 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
   {
     title: 'Files',
     items: [
-      { to: '/files', label: 'Client Files', icon: FolderOpen, module: 'files' },
+      { to: '/files', label: 'Files', icon: FolderOpen, module: 'files' },
       { to: '/documents', label: 'Company Documents', icon: FolderLock, module: 'documents' },
     ],
   },

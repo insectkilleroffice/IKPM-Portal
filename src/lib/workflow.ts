@@ -5,6 +5,7 @@ import type { TaxJurisdiction, Invoice } from '../types/finance';
 import type { ServiceJob, Contract, ChemicalUsageRecord } from '../types/operations';
 import type { Lead } from '../types/crm';
 import type { Proposal } from '../types/proposal';
+import { availableActions, nextStep, stageMeta, type LeadActionId } from './leadWorkflow';
 
 export type UnifiedStage =
   | 'scheduled'
@@ -46,7 +47,8 @@ export interface NextAction {
     | 'create_invoice'
     | 'record_payment'
     | 'renew_contract'
-    | 'send_documents';
+    | 'send_documents'
+    | LeadActionId;
 }
 
 /**
@@ -181,52 +183,32 @@ export function getJobWorkflowChain(job: ServiceJob, invoice?: Invoice): { stage
   return { stages, currentStageId };
 }
 
+/** Where each lead next-step leads (target screen and description for dashboards). */
+const LEAD_ACTION_INFO: Partial<Record<LeadActionId, { targetStage: string; description: string }>> = {
+  log_contact: { targetStage: 'Contact', description: 'Call or WhatsApp the contact and record the outcome; an interested client moves to Engaged.' },
+  schedule_inspection: { targetStage: 'Site Inspection', description: 'Assign an inspector or team to assess the infestation at the premises.' },
+  record_findings: { targetStage: 'Inspection Assessment', description: 'Record inspection findings, infestation severity and area.' },
+  create_proposal: { targetStage: 'Proposal', description: 'Carry site, area, pests and scope from the inspection into a proposal draft.' },
+  open_proposal: { targetStage: 'Proposal', description: 'Follow up on the proposal. The lead is won when the client accepts it.' },
+  open_customer: { targetStage: 'Client Profile', description: 'Lead won. Continue with the onboarding pack and contract on the customer account.' },
+  reopen: { targetStage: 'Contacted', description: 'Lead was lost. Reopen it to start contacting again.' },
+};
+
 /**
- * Computes next action for a Lead.
+ * Computes next action for a Lead, from the same stage rules as the Leads page
+ * (leadWorkflow.nextStep / STAGE_ACTIONS). Legacy stage names are mapped inside stageOf().
  */
 export function getLeadNextAction(lead: Lead): NextAction {
-  if (lead.stage === 'won') {
-    return {
-      label: 'Create Client Account',
-      targetStage: 'Client Profile',
-      description: 'Lead won. Transfer contact, address, and duplicate-checked credentials into customer master.',
-      isBlocked: false,
-      actionType: 'create_client',
-    };
-  }
-  if (lead.stage === 'inspection_completed' || lead.stage === 'qualified') {
-    return {
-      label: 'Create Proposal',
-      targetStage: 'Proposal',
-      description: 'Inspection done. Carry over site, area, pests, and estimated scope into proposal draft.',
-      isBlocked: false,
-      actionType: 'create_proposal',
-    };
-  }
-  if (lead.stage === 'inspection_scheduled') {
-    return {
-      label: 'Complete Inspection',
-      targetStage: 'Inspection Assessment',
-      description: 'Record inspection findings, pest infestation severity, and area measurements.',
-      isBlocked: false,
-      actionType: 'complete_inspection',
-    };
-  }
-  if (lead.stage === 'proposal_drafted') {
-    return {
-      label: 'Send Documents / Proposal',
-      targetStage: 'Client Outreach',
-      description: 'Share proposal PDF and company credentials with client via WhatsApp / Email.',
-      isBlocked: false,
-      actionType: 'send_documents',
-    };
-  }
+  const step = nextStep(lead);
+  const blocked = availableActions(lead).find((a) => a.id === step.action && !a.enabled);
+  const info = LEAD_ACTION_INFO[step.action] ?? { targetStage: stageMeta(lead.stage).label, description: step.label };
   return {
-    label: 'Schedule Inspection',
-    targetStage: 'Site Inspection',
-    description: 'Dispatch inspector or technician to assess infestation at premises.',
-    isBlocked: false,
-    actionType: 'schedule_inspection',
+    label: step.label,
+    targetStage: info.targetStage,
+    description: info.description,
+    isBlocked: Boolean(blocked),
+    blockerReason: blocked?.disabledReason,
+    actionType: step.action,
   };
 }
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   User,
   MapPin,
@@ -15,6 +15,7 @@ import {
   Paperclip,
   History,
   CreditCard,
+  ClipboardList,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -23,6 +24,8 @@ import { formatPKR, formatCNIC, formatDate, formatDateTime } from '../../lib/for
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { EntityDocumentsPanel } from '../../features/documents/EntityDocumentsPanel';
+import { OnboardingPackPanel } from '../../features/onboarding/OnboardingPackPanel';
+import { packStatus, PACK_STATUS_LABEL } from '../../lib/onboarding';
 import { EmptyState } from '../../components/common/EmptyState';
 
 export const IndividualDetailPage: React.FC = () => {
@@ -30,9 +33,11 @@ export const IndividualDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const { hasRole } = useAuth();
   useDataStore();
+  const [searchParams] = useSearchParams();
 
-  const [activeTab, setActiveTab] = useState<
+  type ClientTab =
     | 'overview'
+    | 'onboarding'
     | 'sites'
     | 'leads'
     | 'proposals'
@@ -41,10 +46,11 @@ export const IndividualDetailPage: React.FC = () => {
     | 'invoices'
     | 'statements'
     | 'documents'
-    | 'audit'
-  >('overview');
+    | 'audit';
+  const [activeTab, setActiveTab] = useState<ClientTab>((searchParams.get('tab') as ClientTab) || 'overview');
 
   const client = dataService.getClientById(id || '');
+  const onboardingPack = client ? dataService.getOnboardingPack(client.id) : undefined;
   const sites = dataService.getSites(id);
   const leads = dataService.getLeads().filter((l) => l.existingCustomerId === id);
   const proposals = dataService.getProposals(id);
@@ -201,8 +207,11 @@ export const IndividualDetailPage: React.FC = () => {
             </button>
           </>
         )}
+        <button className={`tab-btn ${activeTab === 'onboarding' ? 'active' : ''}`} onClick={() => setActiveTab('onboarding')}>
+          <ClipboardList size={14} /> Onboarding{onboardingPack ? ` (${PACK_STATUS_LABEL[packStatus(onboardingPack)]})` : ''}
+        </button>
         <button className={`tab-btn ${activeTab === 'documents' ? 'active' : ''}`} onClick={() => setActiveTab('documents')}>
-          <Paperclip size={14} /> Documents & ID
+          <Paperclip size={14} /> Files
         </button>
         <button className={`tab-btn ${activeTab === 'audit' ? 'active' : ''}`} onClick={() => setActiveTab('audit')}>
           <History size={14} /> Audit Trail ({auditLogs.length})
@@ -655,6 +664,17 @@ export const IndividualDetailPage: React.FC = () => {
             </table>
           </div>
         ))}
+
+      {activeTab === 'onboarding' && (
+        <OnboardingPackPanel
+          clientId={client.id}
+          clientType="individual"
+          clientName={client.fullName}
+          city={client.city}
+          address={client.residentialAddress}
+          recipient={{ name: client.fullName, phone: client.primaryPhone, email: client.email }}
+        />
+      )}
 
       {activeTab === 'documents' && (
         <EntityDocumentsPanel

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Plus,
@@ -8,13 +8,13 @@ import {
   Phone,
   MessageCircle,
   Mail,
-  MoreVertical,
   Pencil,
   CalendarClock,
   ClipboardCheck,
   FileSpreadsheet,
-  Trophy,
   XCircle,
+  SkipForward,
+  ExternalLink,
   Send,
   RotateCcw,
   Star,
@@ -29,6 +29,7 @@ import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { Modal } from '../../components/common/Modal';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { EmptyState } from '../../components/common/EmptyState';
+import { RowMenu, type RowMenuItem } from '../../components/common/RowMenu';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -42,6 +43,7 @@ import { usePdfAction } from '../../hooks/usePdfAction';
 import { formatDate, formatDateTime } from '../../lib/formatters';
 import { toWhatsAppNumber } from '../../services/outreachService';
 import {
+  availableActions,
   CHANNELS,
   contactsOf,
   exportLeadsToExcel,
@@ -55,6 +57,8 @@ import {
   SOURCES,
   stageMeta,
   stageOf,
+  READ_ONLY_ACTIONS,
+  type LeadActionId,
   type PipelineStage,
 } from '../../lib/leadWorkflow';
 import type { Lead, LeadActivity } from '../../types/crm';
@@ -68,6 +72,22 @@ const StagePill: React.FC<{ lead: Lead }> = ({ lead }) => {
       {m.short}
     </span>
   );
+};
+
+const ACTION_ICONS: Record<LeadActionId, React.ComponentType<{ size?: number }>> = {
+  edit: Pencil,
+  log_contact: Phone,
+  schedule_inspection: CalendarClock,
+  reschedule_inspection: CalendarClock,
+  record_findings: ClipboardCheck,
+  create_proposal: FileSpreadsheet,
+  open_proposal: FileSpreadsheet,
+  skip_inspection: SkipForward,
+  send_documents: Send,
+  mark_won: Star,
+  mark_lost: XCircle,
+  open_customer: ExternalLink,
+  reopen: RotateCcw,
 };
 
 const ownerOf = (l: Lead) => (l as Lead & { ownerName?: string }).ownerName || l.assignedToName || l.createdBy || '—';
@@ -93,7 +113,7 @@ export const LeadsListPage: React.FC = () => {
   const [scheduleLead, setScheduleLead] = useState<Lead | null>(null);
   const [findingsLead, setFindingsLead] = useState<Lead | null>(null);
   const [lostLead, setLostLead] = useState<Lead | null>(null);
-  const [wonLead, setWonLead] = useState<Lead | null>(null);
+  const [skipLead, setSkipLead] = useState<Lead | null>(null);
   const [sendLead, setSendLead] = useState<Lead | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
 
@@ -148,6 +168,7 @@ export const LeadsListPage: React.FC = () => {
   };
 
   const createProposal = (lead: Lead) => {
+    if (lead.proposalId) return navigate(`/proposals?view=${lead.proposalId}`);
     try {
       const { customerId, customerType } = store.ensureLeadCustomer(lead.id, userProfile?.email);
       const params = new URLSearchParams({
@@ -166,24 +187,52 @@ export const LeadsListPage: React.FC = () => {
     }
   };
 
-  const runNext = (lead: Lead) => {
-    const step = nextStep(lead);
-    if (!canEdit && step.action !== 'open_proposal' && step.action !== 'open_customer') return openDetail(lead.id);
-    switch (step.action) {
+  /** Runs one of the actions allowed by the lead's stage (see STAGE_ACTIONS). */
+  const runAction = (lead: Lead, id: LeadActionId) => {
+    const action = availableActions(lead).find((a) => a.id === id);
+    if (!action) return;
+    if (!action.enabled) return warning('Not available', action.disabledReason || 'This step is not allowed at the current stage.');
+    if (!canEdit && !READ_ONLY_ACTIONS.includes(id)) return openDetail(lead.id);
+    switch (id) {
+      case 'edit': return setFormLead(lead);
       case 'log_contact': return setContactLead(lead);
-      case 'schedule_inspection': return setScheduleLead(lead);
+      case 'schedule_inspection':
+      case 'reschedule_inspection': return setScheduleLead(lead);
       case 'record_findings': return setFindingsLead(lead);
       case 'create_proposal': return createProposal(lead);
+      case 'skip_inspection': return lead.inspectionSkipped ? createProposal(lead) : setSkipLead(lead);
+      case 'send_documents': return setSendLead(lead);
+      case 'mark_lost': return setLostLead(lead);
+      case 'mark_won': return; // Won happens when the proposal is accepted
       case 'open_proposal': return navigate(lead.proposalId ? `/proposals?view=${lead.proposalId}` : '/proposals');
       case 'open_customer':
         return lead.existingCustomerId
           ? navigate(`/customers/${lead.customerType === 'individual' ? 'individual' : 'company'}/${lead.existingCustomerId}`)
           : openDetail(lead.id);
       case 'reopen':
-        store.setLeadStage(lead.id, 'contacted', 'Reopened', userProfile?.email);
-        return success('Lead reopened', `${lead.title} is back in Contacted.`);
+        try {
+          store.setLeadStage(lead.id, 'contacted', 'Reopened', userProfile?.email);
+          return success('Lead reopened', `${lead.title} is back in Contacted.`);
+        } catch (err) {
+          return error('Could not reopen', err instanceof Error ? err.message : String(err));
+        }
     }
   };
+
+  const runNext = (lead: Lead) => runAction(lead, nextStep(lead).action);
+
+  /** "⋮" menu items: every allowed action except the one already on the primary button. */
+  const menuItems = (lead: Lead, exclude?: LeadActionId): RowMenuItem[] =>
+    availableActions(lead)
+      .filter((a) => a.id !== exclude && (canEdit || READ_ONLY_ACTIONS.includes(a.id)))
+      .map((a) => ({
+        icon: ACTION_ICONS[a.id],
+        label: a.label,
+        run: () => runAction(lead, a.id),
+        disabled: !a.enabled,
+        disabledReason: a.disabledReason,
+        danger: a.id === 'mark_lost',
+      }));
 
   const doExport = async () => {
     if (!visible.length) return warning('Nothing to export', 'No leads match the current tab and filters.');
@@ -328,29 +377,16 @@ export const LeadsListPage: React.FC = () => {
                     <td className="cell-sub">{ownerOf(l)}</td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="cell-actions" style={{ position: 'relative' }}>
-                        {(canEdit || step.action === 'open_proposal' || step.action === 'open_customer') && (
+                        {(canEdit || READ_ONLY_ACTIONS.includes(step.action)) && (
                           <button className="btn btn-sm btn-secondary" onClick={() => runNext(l)}>
                             {step.label} <ArrowRight size={13} />
                           </button>
                         )}
-                        {canEdit && (
-                          <RowMenu
-                            open={menuFor === l.id}
-                            onToggle={() => setMenuFor(menuFor === l.id ? null : l.id)}
-                            onClose={() => setMenuFor(null)}
-                            items={[
-                              { icon: Pencil, label: 'Edit details', run: () => setFormLead(l) },
-                              { icon: Phone, label: 'Log contact', run: () => setContactLead(l), hide: ['won', 'lost'].includes(st) },
-                              { icon: CalendarClock, label: l.inspection?.status === 'scheduled' ? 'Reschedule inspection' : 'Schedule inspection', run: () => setScheduleLead(l), hide: ['won', 'lost', 'new'].includes(st) },
-                              { icon: ClipboardCheck, label: 'Enter inspection findings', run: () => setFindingsLead(l), hide: ['won', 'lost', 'new', 'contacted'].includes(st) },
-                              { icon: FileSpreadsheet, label: 'Create proposal', run: () => createProposal(l), hide: ['won', 'lost', 'new', 'contacted'].includes(st) },
-                              { icon: Send, label: 'Send company documents', run: () => setSendLead(l) },
-                              { icon: Trophy, label: 'Mark as won', run: () => setWonLead(l), hide: ['won', 'lost', 'new'].includes(st) },
-                              { icon: XCircle, label: 'Mark as lost', run: () => setLostLead(l), hide: ['won', 'lost'].includes(st), danger: true },
-                              { icon: RotateCcw, label: 'Reopen', run: () => { store.setLeadStage(l.id, 'contacted', 'Reopened', userProfile?.email); success('Lead reopened', l.title); }, hide: st !== 'lost' },
-                            ]}
-                          />
-                        )}
+                        <RowMenu
+                          open={menuFor === l.id}
+                          onOpenChange={(o) => setMenuFor(o ? l.id : null)}
+                          items={menuItems(l, step.action)}
+                        />
                       </div>
                     </td>
                   </tr>
@@ -367,15 +403,8 @@ export const LeadsListPage: React.FC = () => {
           lead={detail}
           canEdit={canEdit}
           onClose={() => openDetail(null)}
-          onEdit={() => setFormLead(detail)}
-          onLogContact={() => setContactLead(detail)}
-          onSchedule={() => setScheduleLead(detail)}
-          onFindings={() => setFindingsLead(detail)}
-          onProposal={() => createProposal(detail)}
-          onWon={() => setWonLead(detail)}
-          onLost={() => setLostLead(detail)}
-          onSend={() => setSendLead(detail)}
-          onNext={() => runNext(detail)}
+          onAction={(id) => runAction(detail, id)}
+          menuItems={menuItems(detail, nextStep(detail).action)}
         />
       )}
 
@@ -390,8 +419,12 @@ export const LeadsListPage: React.FC = () => {
         onClose={() => setLostLead(null)}
         onConfirm={(reason) => {
           if (!lostLead) return;
-          store.setLeadStage(lostLead.id, 'lost', reason, userProfile?.email);
-          warning('Moved to Lost', lostLead.title);
+          try {
+            store.setLeadStage(lostLead.id, 'lost', reason, userProfile?.email);
+            warning('Moved to Lost', lostLead.title);
+          } catch (err) {
+            error('Could not mark as lost', err instanceof Error ? err.message : String(err));
+          }
           setLostLead(null);
         }}
         title="Mark lead as lost?"
@@ -403,24 +436,23 @@ export const LeadsListPage: React.FC = () => {
       />
 
       <ConfirmDialog
-        isOpen={Boolean(wonLead)}
-        onClose={() => setWonLead(null)}
-        onConfirm={() => {
-          if (!wonLead) return;
+        isOpen={Boolean(skipLead)}
+        onClose={() => setSkipLead(null)}
+        onConfirm={(reason) => {
+          if (!skipLead) return;
           try {
-            const updated = store.markLeadWon(wonLead.id, undefined, userProfile?.email);
-            success('Won!', `${wonLead.title} is now an active customer account.`);
-            if (updated?.existingCustomerId) {
-              navigate(`/customers/${updated.customerType === 'individual' ? 'individual' : 'company'}/${updated.existingCustomerId}`);
-            }
+            const updated = store.skipLeadInspection(skipLead.id, reason || '', userProfile?.email);
+            setSkipLead(null);
+            createProposal(updated);
           } catch (err) {
-            error('Could not mark as won', err instanceof Error ? err.message : String(err));
+            error('Could not skip inspection', err instanceof Error ? err.message : String(err));
           }
-          setWonLead(null);
         }}
-        title="Mark lead as won?"
-        message={`${wonLead?.title} becomes an active customer account with its company details and contacts. Next you can create the contract or schedule service.`}
-        confirmLabel="Mark as won"
+        title="Skip the site inspection?"
+        message={`${skipLead?.title} will go straight to a proposal without a recorded inspection. This is logged on the lead and in the audit log.`}
+        confirmLabel="Skip and create proposal"
+        requireReason
+        reasonLabel="Why is no inspection needed? (e.g. repeat client, site already known)"
       />
 
       {sendLead && (() => {
@@ -432,7 +464,8 @@ export const LeadsListPage: React.FC = () => {
             recipient={{ name: p?.name || sendLead.title, phone: p?.phone, email: p?.email || sendLead.companyEmail }}
             related={{ kind: 'lead', id: sendLead.id, title: sendLead.title }}
             onSent={(results) => {
-              if (results.some((r) => r.ok) && stageOf(sendLead) === 'new') {
+              const current = store.getLeadById(sendLead.id) ?? sendLead;
+              if (results.some((r) => r.ok) && stageOf(current) === 'new') {
                 store.logLeadContact(sendLead.id, { channel: results.some((r) => r.channel === 'whatsapp') ? 'whatsapp' : 'email', note: 'Sent company documents' }, userProfile?.email);
               }
             }}
@@ -444,61 +477,20 @@ export const LeadsListPage: React.FC = () => {
 };
 
 // ---------------------------------------------------------------------------
-// Row "more" menu
-// ---------------------------------------------------------------------------
-interface MenuItem {
-  icon: React.ComponentType<{ size?: number }>;
-  label: string;
-  run: () => void;
-  hide?: boolean;
-  danger?: boolean;
-}
-
-const RowMenu: React.FC<{ open: boolean; onToggle: () => void; onClose: () => void; items: MenuItem[] }> = ({ open, onToggle, onClose, items }) => {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && onClose();
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open, onClose]);
-  return (
-    <div ref={ref} style={{ position: 'relative' }}>
-      <button className="icon-btn" onClick={onToggle} title="More actions" aria-expanded={open}><MoreVertical size={16} /></button>
-      {open && (
-        <div className="dropdown-panel" style={{ minWidth: 220 }}>
-          {items.filter((i) => !i.hide).map((i) => (
-            <button key={i.label} type="button" className={`dropdown-item ${i.danger ? 'danger' : ''}`} onClick={() => { onClose(); i.run(); }}>
-              <i.icon size={15} /> {i.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-// ---------------------------------------------------------------------------
 // Lead detail
 // ---------------------------------------------------------------------------
 interface DetailProps {
   lead: Lead;
   canEdit: boolean;
   onClose: () => void;
-  onEdit: () => void;
-  onLogContact: () => void;
-  onSchedule: () => void;
-  onFindings: () => void;
-  onProposal: () => void;
-  onWon: () => void;
-  onLost: () => void;
-  onSend: () => void;
-  onNext: () => void;
+  onAction: (id: LeadActionId) => void;
+  /** Allowed actions other than the primary next step. */
+  menuItems: RowMenuItem[];
 }
 
 const channelLabel = (a: LeadActivity) => CHANNELS.find((c) => c.value === a.channel)?.label || a.channel;
 
-const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onEdit, onLogContact, onSchedule, onFindings, onProposal, onWon, onLost, onSend, onNext }) => {
+const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onAction, menuItems }) => {
   const st = stageOf(lead);
   const contacts = contactsOf(lead);
   const step = nextStep(lead);
@@ -506,6 +498,9 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onEdit, onL
   const pdfAction = usePdfAction();
   const sitePhotos = [...(lead.inspection?.photos ?? []), ...(lead.sitePhotos ?? [])];
   const stageIndex = PIPELINE.findIndex((p) => p.stage === st);
+  const actions = availableActions(lead);
+  const allowed = (id: LeadActionId) => canEdit && actions.some((a) => a.id === id && a.enabled);
+  const stepAllowed = canEdit || READ_ONLY_ACTIONS.includes(step.action);
 
   return (
     <Modal
@@ -515,17 +510,11 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onEdit, onL
       subtitle={`${lead.id} · ${[lead.industry, lead.area, lead.city].filter(Boolean).join(' · ')} · Source: ${sourceLabel(lead.source)}`}
       maxWidth="940px"
       footer={
-        canEdit ? (
-          <>
-            <button className="btn btn-ghost" onClick={onEdit} style={{ marginRight: 'auto' }}><Pencil size={15} /> Edit</button>
-            {!['won', 'lost'].includes(st) && <button className="btn btn-secondary" onClick={onLost}><XCircle size={15} /> Lost</button>}
-            {!['won', 'lost', 'new'].includes(st) && <button className="btn btn-secondary" onClick={onWon}><Trophy size={15} /> Won</button>}
-            <button className="btn btn-secondary" onClick={onSend}><Send size={15} /> Send documents</button>
-            <button className="btn btn-primary" onClick={onNext}>{step.label} <ArrowRight size={15} /></button>
-          </>
-        ) : (
-          <button className="btn btn-secondary" onClick={onClose}>Close</button>
-        )
+        <>
+          <button className="btn btn-secondary" onClick={onClose} style={{ marginRight: 'auto' }}>Close</button>
+          <RowMenu items={menuItems} />
+          {stepAllowed && <button className="btn btn-primary" onClick={() => onAction(step.action)}>{step.label} <ArrowRight size={15} /></button>}
+        </>
       }
     >
       {/* Stage progress */}
@@ -540,6 +529,11 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onEdit, onL
           );
         })}
       </div>
+      {lead.inspectionSkipped && (
+        <div className="info-hint" style={{ marginBottom: '1rem' }}>
+          <SkipForward size={14} style={{ verticalAlign: '-2px' }} /> Inspection skipped by {lead.inspectionSkipped.by} on {formatDate(lead.inspectionSkipped.at)}: {lead.inspectionSkipped.reason}
+        </div>
+      )}
       {st === 'lost' && <div className="error-hint" style={{ marginBottom: '1rem' }}><strong>Lost</strong>{lead.lostReason ? `: ${lead.lostReason}` : ''}{lead.lostAt ? ` (${formatDate(lead.lostAt)})` : ''}</div>}
 
       <div className="lead-detail-grid">
@@ -591,20 +585,36 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onEdit, onL
                   <>
                     <dt>Pests</dt><dd>{lead.inspection.pestTypesFound.map((x) => PEST_OPTIONS.find((o) => o.value === x)?.label || x).join(', ')}</dd>
                     <dt>Severity</dt><dd style={{ textTransform: 'capitalize' }}>{lead.inspection.infestationSeverity}{lead.inspection.areaSqFt ? ` · ${lead.inspection.areaSqFt.toLocaleString()} sq ft` : ''}</dd>
-                    <dt>Findings</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.criticalFindings}</dd>
+                    {!lead.inspection.findings?.length && (<><dt>Findings</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.criticalFindings}</dd></>)}
                     {lead.inspection.recommendedTreatment && (<><dt>Treatment</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.recommendedTreatment}</dd></>)}
                   </>
                 )}
               </dl>
-              {canEdit && (
+              {lead.inspection.findings?.length ? (
+                <div className="table-container" style={{ marginTop: '0.5rem' }}>
+                  <table className="data-table finding-table">
+                    <thead><tr><th>Evidence</th><th>Observation</th><th>Risk</th><th>Recommendation</th></tr></thead>
+                    <tbody>
+                      {lead.inspection.findings.map((f) => (
+                        <tr key={f.id}>
+                          <td>{f.photo ? <a href={f.photo.imageUrl} target="_blank" rel="noreferrer"><img className="finding-thumb" src={f.photo.imageUrl} alt={f.photo.caption} loading="lazy" /></a> : <span className="cell-sub">—</span>}</td>
+                          <td>{f.location && <div className="cell-sub">{f.location}</div>}{f.observation}</td>
+                          <td>{f.risk}</td>
+                          <td>{f.recommendation}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+              {(allowed('reschedule_inspection') || allowed('record_findings')) && (
                 <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-                  {!['won', 'lost'].includes(st) && <button className="btn btn-sm btn-secondary" onClick={onSchedule}><CalendarClock size={14} /> Reschedule</button>}
-                  <button className="btn btn-sm btn-secondary" onClick={onFindings}><ClipboardCheck size={14} /> {lead.inspection.status === 'completed' ? 'Edit findings' : 'Enter findings'}</button>
-                  {st === 'inspection_completed' && <button className="btn btn-sm btn-primary" onClick={onProposal}><FileSpreadsheet size={14} /> Create proposal</button>}
+                  {allowed('reschedule_inspection') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('reschedule_inspection')}><CalendarClock size={14} /> Reschedule</button>}
+                  {allowed('record_findings') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('record_findings')}><ClipboardCheck size={14} /> {lead.inspection.status === 'completed' ? 'Edit findings' : 'Enter findings'}</button>}
                 </div>
               )}
               <button className="btn btn-sm btn-ghost" style={{ marginTop: '0.4rem' }} onClick={() => pdfAction.run(lead.id, () => pdfGenerator.generateInspectionReportPDF(lead))} disabled={pdfAction.busy === lead.id}>
-                <Download size={14} /> Inspection report PDF
+                <Download size={14} /> {lead.inspection.findings?.length ? 'Risk assessment PDF' : 'Inspection report PDF'}
               </button>
             </>
           )}
@@ -627,8 +637,8 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onEdit, onL
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div className="section-title" style={{ marginTop: 0 }}>Activity</div>
-            {canEdit && !['won', 'lost'].includes(st) && (
-              <button className="btn btn-sm btn-secondary" onClick={onLogContact}><Phone size={14} /> Log contact</button>
+            {allowed('log_contact') && (
+              <button className="btn btn-sm btn-secondary" onClick={() => onAction('log_contact')}><Phone size={14} /> Log contact</button>
             )}
           </div>
           {lead.nextFollowUp && !['won', 'lost'].includes(st) && (

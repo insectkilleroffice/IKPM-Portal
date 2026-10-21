@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
   Building2,
   GitFork,
@@ -15,6 +15,7 @@ import {
   FileCheck2,
   Paperclip,
   History,
+  ClipboardList,
   ChevronRight,
   AlertCircle,
   Filter,
@@ -28,6 +29,9 @@ import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { EntityDocumentsPanel } from '../../features/documents/EntityDocumentsPanel';
+import { OnboardingPackPanel } from '../../features/onboarding/OnboardingPackPanel';
+import { DeviceRegisterPanel } from '../../features/devices/DeviceRegisterPanel';
+import { packStatus, PACK_STATUS_LABEL } from '../../lib/onboarding';
 import type { CompanyBranch, SiteAddress } from '../../types/customer';
 
 export const CompanyDetailPage: React.FC = () => {
@@ -36,11 +40,14 @@ export const CompanyDetailPage: React.FC = () => {
   const { success } = useNotification();
   const { userProfile, hasRole } = useAuth();
   useDataStore();
+  const [searchParams] = useSearchParams();
 
-  const [activeTab, setActiveTab] = useState<
+  type CompanyTab =
     | 'overview'
     | 'branches'
     | 'documents'
+    | 'onboarding'
+    | 'devices'
     | 'sites'
     | 'leads'
     | 'proposals'
@@ -48,8 +55,9 @@ export const CompanyDetailPage: React.FC = () => {
     | 'jobs'
     | 'invoices'
     | 'statements'
-    | 'audit'
-  >('overview');
+    | 'audit';
+  // ?tab=onboarding opens a tab directly (e.g. right after the lead is won)
+  const [activeTab, setActiveTab] = useState<CompanyTab>((searchParams.get('tab') as CompanyTab) || 'overview');
 
   const [branchFilter, setBranchFilter] = useState<string>('all');
   const [showAddBranchModal, setShowAddBranchModal] = useState(false);
@@ -85,6 +93,7 @@ export const CompanyDetailPage: React.FC = () => {
   });
 
   const company = dataService.getCompanyById(id || '');
+  const onboardingPack = company ? dataService.getOnboardingPack(company.id) : undefined;
   const branches = dataService.getBranches(id);
   const sites = dataService.getSites(id);
   const leads = dataService.getLeads().filter((l) => l.existingCustomerId === id);
@@ -374,7 +383,20 @@ export const CompanyDetailPage: React.FC = () => {
           onClick={() => setActiveTab('documents')}
         >
           <Paperclip size={14} />
-          Documents & MSDS
+          Files
+        </button>
+
+        <button className={`tab-btn ${activeTab === 'devices' ? 'active' : ''}`} onClick={() => setActiveTab('devices')}>
+          <MapPin size={14} />
+          Devices
+        </button>
+
+        <button
+          className={`tab-btn ${activeTab === 'onboarding' ? 'active' : ''}`}
+          onClick={() => setActiveTab('onboarding')}
+        >
+          <ClipboardList size={14} />
+          Onboarding{onboardingPack ? ` (${PACK_STATUS_LABEL[packStatus(onboardingPack)]})` : ''}
         </button>
 
         <button
@@ -754,6 +776,32 @@ export const CompanyDetailPage: React.FC = () => {
         <EntityDocumentsPanel
           owner={{ kind: 'company', id: company.id }}
           title={company.legalCompanyName}
+          recipient={{
+            name: company.primaryContact.fullName,
+            phone: company.primaryContact.mobile || company.primaryContact.phone,
+            email: company.primaryContact.email,
+          }}
+        />
+      )}
+
+      {activeTab === 'devices' && (
+        <DeviceRegisterPanel
+          clientId={company.id}
+          clientType="company"
+          clientName={company.legalCompanyName}
+          address={company.headOfficeAddress}
+          floorPlan={company.floorPlan}
+          onFloorPlanSaved={(file) => dataService.saveCompany({ ...company, floorPlan: file }, userProfile?.email)}
+        />
+      )}
+
+      {activeTab === 'onboarding' && (
+        <OnboardingPackPanel
+          clientId={company.id}
+          clientType="company"
+          clientName={company.legalCompanyName}
+          city={company.city}
+          address={company.headOfficeAddress}
           recipient={{
             name: company.primaryContact.fullName,
             phone: company.primaryContact.mobile || company.primaryContact.phone,

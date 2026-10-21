@@ -72,6 +72,17 @@ export type PestType =
   | 'snake_reptile'
   | 'other';
 
+/** One row of the risk assessment report: picture evidence, observation, risk, recommendation. */
+export interface RiskFinding {
+  id: string;
+  photo?: SitePhoto;
+  /** Where it was seen (e.g. "Kitchen back door"). */
+  location?: string;
+  observation: string;
+  risk: string;
+  recommendation: string;
+}
+
 export interface InspectionAssessment {
   id: string;
   leadId: string;
@@ -95,6 +106,14 @@ export interface InspectionAssessment {
   /** Kept in step with `photos` for older screens that only read URLs. */
   photoEvidenceUrls: string[];
   photos?: SitePhoto[];
+  /** Risk assessment rows. Older inspections only have criticalFindings / recommendedTreatment. */
+  findings?: RiskFinding[];
+  /** Report heading, e.g. "Risk Assessment Report - Dunkin Johar". */
+  reportTitle?: string;
+  /** Branch / site the report is for. */
+  siteName?: string;
+  /** Who observed on the client's side (or alongside the inspector). */
+  observedBy?: string;
   status: 'scheduled' | 'completed' | 'cancelled';
 }
 
@@ -116,6 +135,8 @@ export interface Lead {
   /** Mirrors inspection.inspectorIds at the top level so firestore.rules can match assigned inspectors. */
   inspectorIds?: string[];
   proposalId?: string;
+  /** Set when the team went from Engaged straight to a proposal without a site inspection. */
+  inspectionSkipped?: { reason: string; at: string; by: string };
   wonAt?: string;
   lostAt?: string;
   lostAtStage?: LeadStage;

@@ -6,13 +6,8 @@ import {
   Search,
   Calendar,
   AlertTriangle,
-  CheckCircle,
   Truck,
   RotateCw,
-  ArrowRight,
-  Clock,
-  Building2,
-  User,
   ShieldCheck,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
@@ -25,6 +20,56 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import type { Contract, ContractType, ServiceFrequency } from '../../types/operations';
 import { getContractNextAction } from '../../lib/workflow';
+import { frequencyForVisits } from '../../lib/proposalPlan';
+import { packStatus } from '../../lib/onboarding';
+import { ScheduleGeneratorModal } from '../../features/schedule/ScheduleGeneratorModal';
+import type { Proposal } from '../../types/proposal';
+
+const isoDay = (d: Date) => d.toISOString().split('T')[0];
+
+/** Contract form values from a proposal (plan proposals carry tenure, visits and pricing). */
+function fromProposal(p: Proposal) {
+  const plan = Boolean(p.servicePlan?.length);
+  const start = p.tenureStart || isoDay(new Date());
+  return {
+    contractType: 'amc_recurring' as ContractType,
+    proposalId: p.id,
+    customerType: p.customerType,
+    customerId: p.customerId,
+    branchId: p.branchId || '',
+    startDate: start,
+    endDate: p.tenureEnd || isoDay(new Date(new Date(start).getTime() + 365 * 86400000)),
+    frequency: (plan ? frequencyForVisits(p.serviceVisitsPerMonth) : 'monthly') as ServiceFrequency,
+    totalContractValue: p.totalAmount,
+    billingTerm: 'monthly_billing' as const,
+    serviceScope: plan ? (p.scopeSections ?? []).map((s) => `${s.key}. ${s.title}`).join(' · ') || p.scopeOfWork : p.scopeOfWork,
+    warrantyPeriodMonths: p.warrantyPeriodMonths || 0,
+  };
+}
+
+/** Plan fields copied from the accepted proposal onto the contract, so nothing is retyped. */
+function planFieldsFrom(p: Proposal | undefined): Partial<Contract> {
+  if (!p) return {};
+  return {
+    servicePlan: p.servicePlan,
+    serviceVisitsPerMonth: p.serviceVisitsPerMonth,
+    followUpVisitsPerMonth: p.followUpVisitsPerMonth,
+    pcoCountMin: p.pcoCountMin,
+    pcoCountMax: p.pcoCountMax,
+    documentationIncluded: p.documentationIncluded,
+    monthlyRate: p.monthlyRate,
+    taxMode: p.taxMode,
+    taxPercent: p.taxPercent,
+    tenureMonths: p.tenureMonths,
+    paymentTermsDays: p.paymentTermsDays,
+    terms: p.terms,
+    exclusions: p.exclusions,
+    deviceOwnership: p.deviceOwnership,
+    chemicals: p.chemicals,
+    templateVersion: p.templateVersion,
+    templateSnapshot: p.templateSnapshot,
+  };
+}
 
 export const ContractsListPage: React.FC = () => {
   const navigate = useNavigate();
@@ -35,6 +80,7 @@ export const ContractsListPage: React.FC = () => {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedContract, setSelectedContract] = useState<Contract | null>(null);
+  const [scheduleFor, setScheduleFor] = useState<Contract | null>(null);
   const [showNewContractModal, setShowNewContractModal] = useState(
     searchParams.get('action') === 'new_contract' || Boolean(searchParams.get('fromProposal'))
   );
@@ -47,49 +93,44 @@ export const ContractsListPage: React.FC = () => {
   const fromPropId = searchParams.get('fromProposal');
   const linkedProposal = fromPropId ? dataService.getProposalById(fromPropId) : undefined;
 
-  const [newContract, setNewContract] = useState({
-    contractType: (linkedProposal ? 'amc_recurring' : 'amc_recurring') as ContractType,
-    proposalId: linkedProposal?.id || '',
-    customerType: linkedProposal?.customerType || ('company' as const),
-    customerId: linkedProposal?.customerId || companies[0]?.id || '',
-    branchId: linkedProposal?.branchId || '',
-    startDate: new Date().toISOString().split('T')[0],
-    endDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    frequency: 'monthly' as ServiceFrequency,
-    totalContractValue: linkedProposal?.totalAmount || 150000,
-    billingTerm: 'monthly_billing' as const,
-    serviceScope: linkedProposal?.scopeOfWork || 'Annual Comprehensive Integrated Pest Management (IPM) Maintenance',
-    warrantyPeriodMonths: linkedProposal?.warrantyPeriodMonths || 12,
-  });
+  const [newContract, setNewContract] = useState(() =>
+    linkedProposal
+      ? fromProposal(linkedProposal)
+      : {
+          contractType: 'amc_recurring' as ContractType,
+          proposalId: '',
+          customerType: 'company' as 'company' | 'individual',
+          customerId: companies[0]?.id || '',
+          branchId: '',
+          startDate: isoDay(new Date()),
+          endDate: isoDay(new Date(Date.now() + 365 * 86400000)),
+          frequency: 'monthly' as ServiceFrequency,
+          totalContractValue: 0,
+          billingTerm: 'monthly_billing' as const,
+          serviceScope: 'Integrated Pest Management (IPM) maintenance',
+          warrantyPeriodMonths: 0,
+        }
+  );
 
+  // The proposal may arrive from Firestore after the first render
+  const linkedId = linkedProposal?.id;
   useEffect(() => {
-    if (linkedProposal) {
-      setNewContract({
-        contractType: 'amc_recurring',
-        proposalId: linkedProposal.id,
-        customerType: linkedProposal.customerType,
-        customerId: linkedProposal.customerId,
-        branchId: linkedProposal.branchId || '',
-        startDate: new Date().toISOString().split('T')[0],
-        endDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        frequency: 'monthly',
-        totalContractValue: linkedProposal.totalAmount,
-        billingTerm: 'monthly_billing',
-        serviceScope: linkedProposal.scopeOfWork,
-        warrantyPeriodMonths: linkedProposal.warrantyPeriodMonths || 12,
-      });
+    if (!linkedId) return;
+    const p = dataService.getProposalById(linkedId);
+    if (p) {
+      setNewContract(fromProposal(p));
       setShowNewContractModal(true);
     }
-  }, [linkedProposal]);
+  }, [linkedId]);
 
   const contracts = dataService.getContracts();
 
-  // Check 30-day AMC expiry warnings
+  // Check 60-day AMC expiry warnings (Step 15)
   const expiringContracts = contracts.filter((c) => {
     if (c.status !== 'active') return false;
     const end = new Date(c.endDate);
     const diffDays = Math.ceil((end.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-    return diffDays <= 30 && diffDays >= 0;
+    return diffDays <= 60 && diffDays >= 0;
   });
 
   const filtered = contracts.filter((c) => {
@@ -121,7 +162,9 @@ export const ContractsListPage: React.FC = () => {
     const sites = dataService.getSites(newContract.customerId, newContract.branchId || undefined);
     const nextId = generatePermanentId('CT', contracts.length + 1);
 
+    const sourceProposal = newContract.proposalId ? dataService.getProposalById(newContract.proposalId) : undefined;
     const created: Contract = {
+      ...planFieldsFrom(sourceProposal),
       id: nextId,
       contractType: newContract.contractType,
       proposalId: newContract.proposalId || undefined,
@@ -141,41 +184,101 @@ export const ContractsListPage: React.FC = () => {
       totalJobsScheduled: 0,
       totalJobsCompleted: 0,
       status: 'active',
-      renewalAlertDate: new Date(new Date(newContract.endDate).getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      renewalAlertDate: new Date(new Date(newContract.endDate).getTime() - 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     dataService.saveContract(created, userProfile?.email);
     success('Contract Registered & Activated', `Contract ${created.id} created for ${created.customerName}`);
+    const pack = dataService.getOnboardingPack(created.customerId);
+    if (!pack || packStatus(pack) !== 'sent') warning('Onboarding pack not sent', `Send ${created.customerName} their SOP, MSDS, certificates and layout from the customer's Onboarding tab.`);
     setShowNewContractModal(false);
   };
 
-  const handleGenerateSchedule = (contract: Contract) => {
-    try {
-      const tech = dataService.getStaff(['technician'])[0];
-      const jobs = dataService.generateVisitScheduleForContract(
-        contract.id,
-        tech ? { uid: tech.uid, name: tech.displayName } : undefined,
-        userProfile?.email
-      );
-      success(
-        'Visit Schedule Generated',
-        `Created ${jobs.length} scheduled visits for ${contract.customerName}${tech ? `, assigned to ${tech.displayName}` : ' (unassigned: add a technician under Team & Access)'}.`
-      );
-    } catch (err: any) {
-      warning('Schedule Generation Error', err.message || 'Failed to generate visit schedule.');
-    }
-  };
+  // Opens the schedule planner (Step 14): review and edit visits before jobs are created
+  const handleGenerateSchedule = (contract: Contract) => setScheduleFor(contract);
 
+  // Step 15: 60 days before tenureEnd: clone contract and create renewal proposal
   const handleRenewContract = (contract: Contract) => {
-    const updated: Contract = {
+    const prevStart = new Date(contract.startDate);
+    const prevEnd = new Date(contract.endDate);
+    const durationMs = Math.max(30 * 86400000, prevEnd.getTime() - prevStart.getTime());
+    const newStart = contract.endDate;
+    const newEnd = isoDay(new Date(new Date(newStart).getTime() + durationMs));
+
+    // 1. Create a renewal proposal carrying forward the service plan, scope, and rates
+    const origProp = contract.proposalId ? dataService.getProposalById(contract.proposalId) : undefined;
+    const propId = generatePermanentId('P', proposals.length + 1);
+    const subtotal = contract.monthlyRate ? contract.monthlyRate * (contract.tenureMonths || 12) : contract.totalContractValue;
+    const taxPercent = contract.taxPercent ?? 13;
+    const taxAmount = (subtotal * taxPercent) / 100;
+
+    const renewalProposal: Proposal = {
+      ...(origProp || {}),
+      id: propId,
+      revisionNumber: 1,
+      templateType: origProp?.templateType || 'general_ipm',
+      customerType: contract.customerType,
+      customerId: contract.customerId,
+      customerName: contract.customerName,
+      branchId: contract.branchId,
+      branchName: contract.branchName,
+      preparedByUserId: userProfile?.uid || 'admin',
+      preparedByName: userProfile?.displayName || 'Admin',
+      scopeOfWork: contract.serviceScope,
+      lineItems: origProp?.lineItems || [],
+      subtotal,
+      discountPercent: 0,
+      discountAmount: 0,
+      taxPercent,
+      taxAmount,
+      totalAmount: subtotal + taxAmount,
+      validityDays: 30,
+      paymentTerms: 'Within 15 days of invoice date',
+      servicePlan: contract.servicePlan,
+      serviceVisitsPerMonth: contract.serviceVisitsPerMonth,
+      followUpVisitsPerMonth: contract.followUpVisitsPerMonth,
+      monthlyRate: contract.monthlyRate,
+      taxMode: contract.taxMode,
+      tenureStart: newStart,
+      tenureEnd: newEnd,
+      status: 'draft',
+      revisionsHistory: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    dataService.saveProposal(renewalProposal, userProfile?.email);
+
+    // 2. Clone the contract for the new tenure
+    const nextContractId = generatePermanentId('CT', contracts.length + 1);
+    const clonedContract: Contract = {
+      ...contract,
+      id: nextContractId,
+      proposalId: propId,
+      startDate: newStart,
+      endDate: newEnd,
+      status: 'active',
+      totalJobsScheduled: 0,
+      totalJobsCompleted: 0,
+      isRenewalInitiated: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    dataService.saveContract(clonedContract, userProfile?.email);
+
+    // 3. Mark original contract as renewal initiated
+    const updatedOriginal: Contract = {
       ...contract,
       isRenewalInitiated: true,
       status: 'renewed',
     };
-    dataService.saveContract(updated, userProfile?.email);
-    success('AMC Renewal Initiated', `Renewal process started for contract ${contract.id}.`);
+    dataService.saveContract(updatedOriginal, userProfile?.email);
+
+    success(
+      'AMC Renewal Completed',
+      `Cloned as Contract ${clonedContract.id} & generated Renewal Proposal ${renewalProposal.id} for term ${formatDate(newStart)} to ${formatDate(newEnd)}.`
+    );
   };
 
   return (
@@ -186,7 +289,7 @@ export const ContractsListPage: React.FC = () => {
         <div className="page-title-wrap">
           <h1>Contracts & AMC Maintenance Agreements</h1>
           <p className="page-subtitle">
-            Target pipeline: Proposal ─► Contract ─► Generate Visit Schedule. Single-click schedule dispatch & 30-day renewal alerts.
+            Target pipeline: Proposal ─► Contract ─► Generate Visit Schedule. Single-click schedule dispatch & 60-day renewal alerts.
           </p>
         </div>
 
@@ -196,7 +299,7 @@ export const ContractsListPage: React.FC = () => {
         </button>
       </div>
 
-      {/* 30-Day AMC Expiry Warning Banner (Step 6 Follow-ups) */}
+      {/* 60-Day AMC Expiry Warning Banner (Step 15) */}
       {expiringContracts.length > 0 && (
         <div
           style={{
@@ -215,14 +318,14 @@ export const ContractsListPage: React.FC = () => {
             <AlertTriangle size={22} color="#92400E" />
             <div>
               <strong style={{ color: '#92400E' }}>
-                {expiringContracts.length} AMC Contract(s) Expiring within 30 Days
+                {expiringContracts.length} AMC Contract(s) Expiring within 60 Days
               </strong>
               <div style={{ fontSize: '0.8rem', color: '#B45309' }}>
                 Automated follow-up: Send AMC renewal quotations or initiate renewal terms before coverage lapses.
               </div>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             {expiringContracts.map((ec) => (
               <button
                 key={ec.id}
@@ -230,6 +333,7 @@ export const ContractsListPage: React.FC = () => {
                 style={{ backgroundColor: '#92400E', padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
                 onClick={() => handleRenewContract(ec)}
               >
+                <RotateCw size={12} />
                 <span>Renew {ec.id}</span>
               </button>
             ))}
@@ -367,6 +471,20 @@ export const ContractsListPage: React.FC = () => {
         maxWidth="680px"
       >
         <form onSubmit={handleCreateContract}>
+          {newContract.customerId && (() => {
+            const pack = dataService.getOnboardingPack(newContract.customerId);
+            if (pack && packStatus(pack) === 'sent') return null;
+            const path = `/customers/${newContract.customerType === 'company' ? 'company' : 'individual'}/${newContract.customerId}?tab=onboarding`;
+            return (
+              <div className="error-hint" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <AlertTriangle size={16} />
+                <span style={{ flex: 1 }}>
+                  The onboarding pack (SOP, MSDS, certificates, layout) {pack ? 'has not been sent' : 'has not been started'} for this client. You can still activate the contract.
+                </span>
+                <button type="button" className="btn btn-sm btn-primary" onClick={() => navigate(path)}>Send pack now</button>
+              </div>
+            );
+          })()}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '1rem' }}>
             <div className="form-group">
               <label className="form-label">Client Type</label>
@@ -528,6 +646,25 @@ export const ContractsListPage: React.FC = () => {
           }
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', fontSize: '0.85rem' }}>
+            {selectedContract.servicePlan?.length ? (
+              <div>
+                <div className="section-title" style={{ marginTop: 0 }}>Monthly IPM service plan</div>
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead><tr><th style={{ width: 36 }}>#</th><th>Service</th><th>Frequency</th></tr></thead>
+                    <tbody>
+                      {selectedContract.servicePlan.map((r, i) => <tr key={r.id}><td>{i + 1}</td><td>{r.service}</td><td>{r.frequency}</td></tr>)}
+                    </tbody>
+                  </table>
+                </div>
+                <dl className="detail-list" style={{ marginTop: '0.75rem' }}>
+                  <dt>Visits / month</dt><dd>{selectedContract.serviceVisitsPerMonth ?? '—'} service · {selectedContract.followUpVisitsPerMonth ?? 0} follow-up</dd>
+                  {selectedContract.monthlyRate ? (<><dt>Monthly rate</dt><dd>{formatPKR(selectedContract.monthlyRate)} ({selectedContract.taxMode === 'inclusive' ? 'incl.' : 'excl.'} {selectedContract.taxPercent ?? 0}% tax)</dd></>) : null}
+                  {selectedContract.paymentTermsDays ? (<><dt>Payment</dt><dd>Within {selectedContract.paymentTermsDays} days of invoice</dd></>) : null}
+                  {selectedContract.exclusions && (<><dt>Exclusions</dt><dd>{selectedContract.exclusions}</dd></>)}
+                </dl>
+              </div>
+            ) : null}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
               <div>
                 <span style={{ color: 'var(--text-muted)' }}>Customer:</span>
@@ -560,6 +697,7 @@ export const ContractsListPage: React.FC = () => {
           </div>
         </Modal>
       )}
+      {scheduleFor && <ScheduleGeneratorModal contract={scheduleFor} onClose={() => setScheduleFor(null)} />}
     </div>
   );
 };

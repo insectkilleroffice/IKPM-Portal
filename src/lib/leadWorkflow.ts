@@ -100,26 +100,203 @@ export function syncLeadFields(lead: Lead): Lead {
   };
 }
 
-/** The single recommended next step shown on each row. */
-export function nextStep(lead: Lead): { label: string; action: 'log_contact' | 'schedule_inspection' | 'record_findings' | 'create_proposal' | 'open_proposal' | 'open_customer' | 'reopen' } {
-  switch (stageOf(lead)) {
-    case 'new':
-      return { label: 'Log first contact', action: 'log_contact' };
-    case 'contacted':
-      return { label: 'Log follow-up', action: 'log_contact' };
-    case 'engaged':
-      return { label: 'Schedule inspection', action: 'schedule_inspection' };
-    case 'inspection_scheduled':
-      return { label: 'Record findings', action: 'record_findings' };
-    case 'inspection_completed':
-      return { label: 'Create proposal', action: 'create_proposal' };
-    case 'proposal_sent':
-      return { label: 'Open proposal', action: 'open_proposal' };
-    case 'won':
-      return { label: 'Open customer', action: 'open_customer' };
-    default:
-      return { label: 'Reopen lead', action: 'reopen' };
+// ---------------------------------------------------------------------------
+// Stage rules: which actions each stage allows (one source of truth for the
+// row "⋮" menu, the lead detail footer and the primary next-step button)
+// ---------------------------------------------------------------------------
+
+export type LeadActionId =
+  | 'edit'
+  | 'log_contact'
+  | 'schedule_inspection'
+  | 'reschedule_inspection'
+  | 'record_findings'
+  | 'create_proposal'
+  | 'open_proposal'
+  | 'skip_inspection'
+  | 'send_documents'
+  | 'mark_won'
+  | 'mark_lost'
+  | 'open_customer'
+  | 'reopen';
+
+/**
+ * Actions offered at each stage, in menu order. 'mark_won' is in no stage on purpose:
+ * a lead becomes won when its proposal is accepted.
+ */
+export const STAGE_ACTIONS: Record<PipelineStage, LeadActionId[]> = {
+  new: ['edit', 'log_contact', 'send_documents', 'mark_lost'],
+  contacted: ['edit', 'log_contact', 'send_documents', 'mark_lost'],
+  engaged: ['edit', 'log_contact', 'schedule_inspection', 'skip_inspection', 'send_documents', 'mark_lost'],
+  inspection_scheduled: ['edit', 'reschedule_inspection', 'record_findings', 'send_documents', 'mark_lost'],
+  inspection_completed: ['edit', 'record_findings', 'create_proposal', 'open_proposal', 'send_documents', 'mark_lost'],
+  proposal_sent: ['edit', 'open_proposal', 'send_documents', 'mark_lost'],
+  won: ['open_customer', 'send_documents'],
+  lost: ['reopen'],
+};
+
+export const ACTION_LABELS: Record<LeadActionId, string> = {
+  edit: 'Edit details',
+  log_contact: 'Log contact',
+  schedule_inspection: 'Schedule inspection',
+  reschedule_inspection: 'Reschedule inspection',
+  record_findings: 'Enter inspection findings',
+  create_proposal: 'Create proposal',
+  open_proposal: 'Open proposal',
+  skip_inspection: 'Skip inspection → proposal',
+  send_documents: 'Send company documents',
+  mark_won: 'Mark as won',
+  mark_lost: 'Mark as lost',
+  open_customer: 'Open customer',
+  reopen: 'Reopen lead',
+};
+
+/** Actions that only open existing records, so view-only users may use them. */
+export const READ_ONLY_ACTIONS: LeadActionId[] = ['open_proposal', 'open_customer'];
+
+export interface AvailableAction {
+  id: LeadActionId;
+  label: string;
+  enabled: boolean;
+  disabledReason?: string;
+}
+
+/** Actions for a lead's current stage, with the reason when one can't be used yet. */
+export function availableActions(lead: Lead): AvailableAction[] {
+  const stage = stageOf(lead);
+  const out: AvailableAction[] = [];
+  for (const id of STAGE_ACTIONS[stage] ?? []) {
+    let label = ACTION_LABELS[id];
+    let enabled = true;
+    let disabledReason: string | undefined;
+    switch (id) {
+      case 'record_findings':
+        if (lead.inspection?.status === 'completed') label = 'Edit inspection findings';
+        break;
+      case 'create_proposal':
+        if (lead.proposalId) {
+          enabled = false;
+          disabledReason = `Proposal ${lead.proposalId} already exists: open it instead`;
+        }
+        break;
+      case 'skip_inspection':
+        if (lead.proposalId) {
+          enabled = false;
+          disabledReason = `Proposal ${lead.proposalId} already exists`;
+        } else if (lead.inspectionSkipped) {
+          label = 'Continue to proposal (inspection skipped)';
+        }
+        break;
+      case 'open_proposal':
+        // At "inspection done" this only appears once a proposal exists.
+        if (!lead.proposalId) {
+          if (stage === 'inspection_completed') continue;
+          enabled = false;
+          disabledReason = 'No proposal is linked to this lead yet';
+        }
+        break;
+      case 'open_customer':
+        if (!lead.existingCustomerId) {
+          enabled = false;
+          disabledReason = 'No customer account is linked to this lead';
+        }
+        break;
+      case 'reschedule_inspection':
+        if (!lead.inspection) {
+          enabled = false;
+          disabledReason = 'Schedule the inspection first';
+        }
+        break;
+    }
+    out.push({ id, label, enabled, ...(disabledReason ? { disabledReason } : {}) });
   }
+  return out;
+}
+
+export const isActionAllowed = (lead: Lead, id: LeadActionId) => availableActions(lead).some((a) => a.id === id && a.enabled);
+
+/**
+ * Stage changes the data layer accepts. Staying on the same stage (e.g. rescheduling an
+ * inspection, editing findings) is always allowed. engaged → proposal_sent is only allowed
+ * when the inspection was skipped with a reason (see `inspectionSkipped`).
+ */
+export const ALLOWED_TRANSITIONS: Record<PipelineStage, PipelineStage[]> = {
+  new: ['contacted', 'lost'],
+  contacted: ['engaged', 'lost'],
+  engaged: ['inspection_scheduled', 'proposal_sent', 'lost'],
+  inspection_scheduled: ['inspection_completed', 'lost'],
+  inspection_completed: ['proposal_sent', 'lost'],
+  proposal_sent: ['won', 'lost'],
+  won: [],
+  lost: ['contacted'],
+};
+
+export class StageTransitionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StageTransitionError';
+  }
+}
+
+const stageLabel = (s: PipelineStage) => PIPELINE.find((p) => p.stage === s)?.label ?? s;
+
+/**
+ * Throws a StageTransitionError when `lead` may not move to `to`.
+ * `next` is the lead as it will be saved (used to check the skip-inspection reason).
+ */
+export function assertStageTransition(lead: Pick<Lead, 'stage'>, to: LeadStage, next?: Pick<Lead, 'inspectionSkipped'>): void {
+  const from = stageOf(lead);
+  const target = stageOf({ stage: to });
+  if (from === target) return;
+  if (!(ALLOWED_TRANSITIONS[from] ?? []).includes(target)) {
+    throw new StageTransitionError(`A lead cannot move from ${stageLabel(from)} to ${stageLabel(target)}.`);
+  }
+  if (from === 'engaged' && target === 'proposal_sent' && !next?.inspectionSkipped?.reason?.trim()) {
+    throw new StageTransitionError('Schedule and record the inspection first, or skip it with a reason.');
+  }
+}
+
+export const canTransition = (lead: Pick<Lead, 'stage'>, to: LeadStage, next?: Pick<Lead, 'inspectionSkipped'>) => {
+  try {
+    assertStageTransition(lead, to, next);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Throws when a new proposal may not be created for this lead (wrong stage or one already exists). */
+export function assertCanCreateProposal(lead: Lead): void {
+  if (lead.proposalId) throw new StageTransitionError(`Lead ${lead.id} already has proposal ${lead.proposalId}. Open it instead of creating another.`);
+  const stage = stageOf(lead);
+  if (stage === 'inspection_completed') return;
+  if (stage === 'engaged' && lead.inspectionSkipped?.reason?.trim()) return;
+  if (stage === 'engaged') throw new StageTransitionError('Record the inspection findings first, or skip the inspection with a reason.');
+  throw new StageTransitionError(`A proposal cannot be created while the lead is ${stageLabel(stage)}.`);
+}
+
+/** The primary next step per stage; always one of the stage's enabled actions. */
+const NEXT_ACTION: Record<PipelineStage, { action: LeadActionId; label: string }> = {
+  new: { action: 'log_contact', label: 'Log first contact' },
+  contacted: { action: 'log_contact', label: 'Log follow-up' },
+  engaged: { action: 'schedule_inspection', label: 'Schedule inspection' },
+  inspection_scheduled: { action: 'record_findings', label: 'Record findings' },
+  inspection_completed: { action: 'create_proposal', label: 'Create proposal' },
+  proposal_sent: { action: 'open_proposal', label: 'Open proposal' },
+  won: { action: 'open_customer', label: 'Open customer' },
+  lost: { action: 'reopen', label: 'Reopen lead' },
+};
+
+/** The single recommended next step shown on each row. */
+export function nextStep(lead: Lead): { label: string; action: LeadActionId } {
+  const stage = stageOf(lead);
+  const actions = availableActions(lead);
+  const preferred = NEXT_ACTION[stage] ?? NEXT_ACTION.new;
+  if (actions.some((a) => a.id === preferred.action && a.enabled)) return preferred;
+  // e.g. inspection done but a proposal already exists → open it rather than create another
+  if (actions.some((a) => a.id === 'open_proposal' && a.enabled)) return { action: 'open_proposal', label: 'Open proposal' };
+  const first = actions.find((a) => a.enabled && a.id !== 'edit') ?? actions.find((a) => a.enabled);
+  return first ? { action: first.id, label: first.label } : preferred;
 }
 
 export const isFollowUpDue = (lead: Lead) =>
