@@ -281,3 +281,27 @@ Routes are lazy-loaded (main bundle ~1.5 MB → ~315 KB).
  #   I K P M - P o r t a l  
  #   I K P M - P o r t a l  
  
+## Cloud database, staff & access (v1.1)
+
+All data now lives in **Cloud Firestore** (live sync, offline cache). The security rules in
+`firestore.rules` must be deployed once, or Firestore stays locked and nothing saves:
+
+```bash
+npx firebase-tools login
+npx firebase-tools deploy --only firestore
+```
+
+Then:
+
+1. **First admin** – sign in. If the portal says "account hasn't been set up", open
+   `/setup-first-admin` with the same email and password to become super admin.
+2. **Old browser data** – Settings → *Cloud database* → *Upload records* moves anything
+   that was saved only in this browser into Firestore.
+3. **Staff & teams** – *Team & Access* (super admin only): add people (each gets a login and a
+   password-set email), set role, team, data access (own / team / company) and business email.
+   Roles control which modules appear; data access controls whose records they see. Both are
+   enforced by the Firestore rules, not just hidden in the UI.
+4. **Client emails** are sent from the signed-in person's business email:
+   - automatic (portal API): set `RESEND_API_KEY`, `EMAIL_SENDER_DOMAINS=insectkiller.pk`
+     (domain verified in Resend), `FIREBASE_PROJECT_ID`, optional `EMAIL_FROM` fallback;
+   - or opened as a draft in their own Gmail / Google Workspace, Outlook 365 or desktop mail app.

@@ -35,6 +35,54 @@ export async function requirePortalUser(req: Req): Promise<{ uid: string; email:
   return { uid: user.localId, email: user.email };
 }
 
+export interface PortalProfile {
+  displayName: string;
+  businessEmail: string;
+  role: string;
+  isActive: boolean;
+}
+
+/**
+ * Reads the caller's staff profile from Firestore using their own ID token, so the security rules
+ * decide what is visible and nobody can claim someone else's sender address.
+ */
+export async function getPortalProfile(req: Req, uid: string, loginEmail: string): Promise<PortalProfile> {
+  const header = String(req.headers.authorization || '');
+  const projectId = env('FIREBASE_PROJECT_ID') || env('VITE_FIREBASE_PROJECT_ID');
+  if (!projectId) throw new HttpError(500, 'FIREBASE_PROJECT_ID is not configured on the server.');
+
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${encodeURIComponent(uid)}`,
+    { headers: { Authorization: header } }
+  );
+  if (res.status === 404) throw new HttpError(403, 'Your staff profile was not found. Ask the super admin to add you.');
+  if (!res.ok) throw new HttpError(403, `Could not read your staff profile (HTTP ${res.status}).`);
+  const data = (await res.json()) as { fields?: Record<string, { stringValue?: string; booleanValue?: boolean }> };
+  const f = data.fields || {};
+  const profile: PortalProfile = {
+    displayName: f.displayName?.stringValue || loginEmail,
+    businessEmail: (f.businessEmail?.stringValue || loginEmail).toLowerCase(),
+    role: f.role?.stringValue || '',
+    isActive: f.isActive?.booleanValue === true,
+  };
+  if (!profile.isActive) throw new HttpError(403, 'Your portal access is paused.');
+  return profile;
+}
+
+/** Module access levels of the caller's role (read with their own token; super admin = everything). */
+export async function getRoleModules(req: Req, role: string): Promise<Record<string, string> | 'all'> {
+  if (role === 'super_admin') return 'all';
+  const projectId = env('FIREBASE_PROJECT_ID') || env('VITE_FIREBASE_PROJECT_ID');
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/roles/${encodeURIComponent(role)}`,
+    { headers: { Authorization: String(req.headers.authorization || '') } }
+  );
+  if (!res.ok) throw new HttpError(403, 'Your role could not be verified.');
+  const data = (await res.json()) as { fields?: { modules?: { mapValue?: { fields?: Record<string, { stringValue?: string }> } } } };
+  const fields = data.fields?.modules?.mapValue?.fields || {};
+  return Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, v.stringValue || 'none']));
+}
+
 /** Only allow attachments hosted in our own Cloudinary account, so the API can't be used to relay arbitrary links. */
 export function assertOwnCloudinaryUrl(url: string) {
   const cloud = env('CLOUDINARY_CLOUD_NAME') || env('VITE_CLOUDINARY_CLOUD_NAME');

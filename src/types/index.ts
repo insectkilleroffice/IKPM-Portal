@@ -1,13 +1,11 @@
 // Core shared types for IKPM Portal
 
-export type UserRole =
-  | 'super_admin'
-  | 'management'
-  | 'sales'
-  | 'operations'
-  | 'finance'
-  | 'technician'
-  | 'auditor';
+/**
+ * A role id: one of the built-in roles ('super_admin', 'management', 'sales', 'operations',
+ * 'finance', 'technician', 'auditor') or a custom role created by the super admin.
+ * Definitions live in src/lib/permissions.ts and the Firestore `roles` collection.
+ */
+export type UserRole = string;
 
 export type DataScope = 'own' | 'team' | 'area' | 'branch' | 'department' | 'company';
 
@@ -25,11 +23,37 @@ export interface UserProfile {
   branchId?: string;
   branchName?: string;
   area?: string;
+  /** Team this user belongs to (managed by the super admin). Drives "team" data scope. */
+  teamId?: string;
+  teamName?: string;
+  /** Address client emails are sent from. Defaults to the login email. */
+  businessEmail?: string;
   isActive: boolean;
   avatarUrl?: string;
   createdAt: string;
   updatedAt: string;
   lastLoginAt?: string;
+}
+
+export interface Team {
+  id: string;
+  name: string;
+  department?: string;
+  description?: string;
+  leadUid?: string;
+  leadName?: string;
+  color?: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Stamped on every business record when it's first created; firestore.rules uses it to scope access. */
+export interface RecordOwnership {
+  ownerUid?: string;
+  ownerName?: string;
+  ownerEmail?: string;
+  teamId?: string;
 }
 
 export interface Department {

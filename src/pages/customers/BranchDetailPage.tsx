@@ -110,7 +110,16 @@ export const BranchDetailPage: React.FC = () => {
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '1rem' }}>
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => navigate(`/operations/jobs?action=new_job&customerId=${company.id}&customerType=company&branchId=${branch.id}`)}
+              title="Schedule new pest control service with this branch pre-selected"
+            >
+              <Truck size={15} />
+              <span>+ New Service</span>
+            </button>
+
             <div style={{ padding: '0.75rem 1.25rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)', textAlign: 'right' }}>
               <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Branch Balance</div>
               <div style={{ fontSize: '1.35rem', fontWeight: 800, color: branch.balance > 0 ? 'var(--ikpm-rose-500)' : 'var(--ikpm-emerald-600)' }}>

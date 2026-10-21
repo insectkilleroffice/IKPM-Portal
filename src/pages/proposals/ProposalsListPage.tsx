@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useDataStore } from '../../hooks/useDataStore';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import { OutreachHistory } from '../../features/outreach/OutreachHistory';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Plus,
   Search,
@@ -10,6 +10,9 @@ import {
   CheckCircle2,
   History,
   Send,
+  ArrowRight,
+  FileSignature,
+  Truck,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -18,13 +21,18 @@ import { Modal } from '../../components/common/Modal';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { formatPKR, generatePermanentId } from '../../lib/formatters';
 import { pdfGenerator } from '../../lib/pdfGenerator';
+import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import type { Proposal, ProposalLineItem, TemplateType } from '../../types/proposal';
+import { getProposalNextAction, provinceToJurisdiction, getStandardTaxRate, CHEMICAL_PRESETS } from '../../lib/workflow';
+import type { PestType } from '../../types/crm';
 
 export const ProposalsListPage: React.FC = () => {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { success, error, warning } = useNotification();
+  const pdfAction = usePdfAction();
   const { userProfile, canApproveProposals } = useAuth();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -35,6 +43,15 @@ export const ProposalsListPage: React.FC = () => {
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [sendTarget, setSendTarget] = useState<Proposal | null>(null);
   useDataStore();
+
+  // Deep link from a lead: /proposals?view=P-2026-0001
+  const viewId = searchParams.get('view');
+  useEffect(() => {
+    if (!viewId || selectedProposal) return;
+    const p = dataService.getProposalById(viewId);
+    if (p) setSelectedProposal(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewId, dataService.getProposals().length]);
 
   const canSend = (p: Proposal) => ['approved', 'draft', 'sent_to_client', 'negotiation'].includes(p.status);
 
@@ -60,31 +77,75 @@ export const ProposalsListPage: React.FC = () => {
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
 
-  const [selectedCustomerType, setSelectedCustomerType] = useState<'company' | 'individual'>('company');
-  const [selectedCustomerId, setSelectedCustomerId] = useState(companies[0]?.id || '');
-  const [selectedBranchId] = useState('');
-  const [templateType, setTemplateType] = useState<TemplateType>('commercial_kitchen');
+  const paramCustType = (searchParams.get('customerType') as 'company' | 'individual') || 'company';
+  const paramCustId = searchParams.get('customerId') || (paramCustType === 'company' ? companies[0]?.id || '' : clients[0]?.id || '');
+  const paramCity = searchParams.get('city') || 'Karachi';
+  const paramAddress = searchParams.get('address') || '';
+  const paramPests = searchParams.get('pests') ? searchParams.get('pests')!.split(',') : ['cockroaches'];
+
+  // Automatically determine provincial tax rate from city
+  const initialJurisdiction = provinceToJurisdiction(paramCity);
+  const initialTaxRate = getStandardTaxRate(initialJurisdiction);
+
+  const [selectedCustomerType, setSelectedCustomerType] = useState<'company' | 'individual'>(paramCustType);
+  const [selectedCustomerId, setSelectedCustomerId] = useState(paramCustId);
+  const [selectedBranchId, setSelectedBranchId] = useState('');
+  const [templateType, setTemplateType] = useState<TemplateType>(
+    paramPests.includes('termites')
+      ? 'termite_proofing'
+      : paramPests.includes('bedbugs')
+      ? 'bedbug_eradication'
+      : 'commercial_kitchen'
+  );
   const [scopeOfWork, setScopeOfWork] = useState(
-    'Complete Integrated Pest Management (IPM) for facility perimeter, kitchen storage, and production floor.'
+    paramAddress
+      ? `Integrated Pest Management (IPM) service at ${paramAddress}, ${paramCity}. Target pests: ${paramPests.join(', ')}.`
+      : 'Complete Integrated Pest Management (IPM) for facility perimeter, kitchen storage, and production floor.'
   );
   const [discountPercent, setDiscountPercent] = useState<number>(5);
-  const [taxPercent, setTaxPercent] = useState<number>(13);
+  const [taxPercent, setTaxPercent] = useState<number>(initialTaxRate);
   const [paymentTerms] = useState('30 Days Net from date of monthly tax invoice');
   const [warrantyMonths] = useState(12);
 
-  const [lineItems, setLineItems] = useState<ProposalLineItem[]>([
-    {
-      id: 'li_1',
-      serviceName: 'German Cockroach Gel Matrix Treatment',
-      targetPest: 'cockroaches',
-      chemicalsSuggested: 'Maxforce FC Magnum Gel (Hydramethylnon)',
-      treatmentMethod: 'Precision Micro-Dot Application',
-      quantity: 1,
-      unitPrice: 35000,
-      totalPrice: 35000,
-      frequency: 'Monthly',
-    },
-  ]);
+  // Build pre-filled line items from carried-over pests
+  const buildInitialLineItems = (): ProposalLineItem[] => {
+    if (searchParams.get('pests')) {
+      const items: ProposalLineItem[] = [];
+      const pests = searchParams.get('pests')!.split(',') as PestType[];
+      pests.forEach((pst, i) => {
+        const preset = CHEMICAL_PRESETS[pst];
+        if (preset) {
+          items.push({
+            id: `li_${Date.now()}_${i}`,
+            serviceName: `${pst.replace('_', ' ').toUpperCase()} Treatment & Barrier`,
+            targetPest: pst,
+            chemicalsSuggested: `${preset.chemicalName} (${preset.activeIngredient})`,
+            treatmentMethod: preset.applicationMethod.replace(/_/g, ' '),
+            quantity: 1,
+            unitPrice: pst === 'termites' ? 45000 : pst === 'bedbugs' ? 30000 : 25000,
+            totalPrice: pst === 'termites' ? 45000 : pst === 'bedbugs' ? 30000 : 25000,
+            frequency: pst === 'termites' ? 'One-Time with Warranty' : 'Monthly',
+          });
+        }
+      });
+      if (items.length > 0) return items;
+    }
+    return [
+      {
+        id: 'li_1',
+        serviceName: 'German Cockroach Gel Matrix Treatment',
+        targetPest: 'cockroaches',
+        chemicalsSuggested: 'Maxforce FC Magnum Gel (Hydramethylnon)',
+        treatmentMethod: 'Precision Micro-Dot Application',
+        quantity: 1,
+        unitPrice: 35000,
+        totalPrice: 35000,
+        frequency: 'Monthly',
+      },
+    ];
+  };
+
+  const [lineItems, setLineItems] = useState<ProposalLineItem[]>(buildInitialLineItems());
 
   const proposals = dataService.getProposals();
 
@@ -147,6 +208,7 @@ export const ProposalsListPage: React.FC = () => {
       customerType: selectedCustomerType,
       customerId: selectedCustomerId,
       customerName,
+      leadId: searchParams.get('fromLead') || undefined,
       branchId: selectedBranchId || undefined,
       branchName,
       preparedByUserId: userProfile?.uid || 'admin',
@@ -322,7 +384,18 @@ export const ProposalsListPage: React.FC = () => {
                 <td style={{ fontWeight: 700 }}>{formatPKR(p.totalAmount)}</td>
                 <td><StatusBadge status={p.status} /></td>
                 <td>
-                  <div style={{ display: 'flex', gap: '0.4rem' }}>
+                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                    {['approved', 'accepted'].includes(p.status) && (
+                      <button
+                        className="btn btn-primary"
+                        style={{ padding: '0.25rem 0.55rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
+                        title="Handoff: Create Contract from this proposal"
+                        onClick={() => navigate(`/contracts?action=new_contract&fromProposal=${p.id}`)}
+                      >
+                        <FileSignature size={12} />
+                        <span>+ Contract</span>
+                      </button>
+                    )}
                     <button
                       className="btn btn-outline-emerald"
                       style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
@@ -334,13 +407,14 @@ export const ProposalsListPage: React.FC = () => {
                       className="btn btn-secondary"
                       style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
                       title="Download Official Proposal PDF"
-                      onClick={() => pdfGenerator.generateProposalPDF(p)}
+                      onClick={() => pdfAction.run(p.id, () => pdfGenerator.generateProposalPDF(p))}
+                      disabled={pdfAction.busy === p.id}
                     >
                       <Download size={13} />
                     </button>
                     {canSend(p) && (
                       <button
-                        className="btn btn-primary"
+                        className="btn btn-secondary"
                         style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
                         title="Send proposal + company documents via WhatsApp / Email"
                         onClick={() => setSendTarget(p)}
@@ -579,7 +653,8 @@ export const ProposalsListPage: React.FC = () => {
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
               <button
                 className="btn btn-secondary"
-                onClick={() => pdfGenerator.generateProposalPDF(selectedProposal)}
+                onClick={() => pdfAction.run(selectedProposal.id, () => pdfGenerator.generateProposalPDF(selectedProposal))}
+                disabled={pdfAction.busy === selectedProposal.id}
               >
                 <Download size={14} />
                 <span>Export PDF</span>
@@ -603,8 +678,62 @@ export const ProposalsListPage: React.FC = () => {
                     </button>
                   </>
                 )}
+                {['approved', 'sent_to_client', 'negotiation'].includes(selectedProposal.status) && (
+                  <>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        const updated: Proposal = { ...selectedProposal, status: 'declined' };
+                        dataService.saveProposal(updated, userProfile?.email);
+                        setSelectedProposal(updated);
+                        warning('Marked as lost', selectedProposal.leadId ? `Lead ${selectedProposal.leadId} was moved to Lost.` : 'Proposal declined by client.');
+                      }}
+                    >
+                      Client declined (Lost)
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        const updated: Proposal = { ...selectedProposal, status: 'accepted' };
+                        dataService.saveProposal(updated, userProfile?.email);
+                        setSelectedProposal(updated);
+                        success('Won', selectedProposal.leadId ? `Lead ${selectedProposal.leadId} is now Won and the customer account is active.` : 'Proposal accepted by client.');
+                      }}
+                    >
+                      <CheckCircle2 size={15} />
+                      <span>Client accepted (Won)</span>
+                    </button>
+                  </>
+                )}
+                {['approved', 'accepted', 'sent_to_client'].includes(selectedProposal.status) && (
+                  <>
+                    <button
+                      className="btn btn-outline-emerald"
+                      onClick={() => {
+                        setSelectedProposal(null);
+                        navigate(`/operations/jobs?action=new_job&fromProposal=${selectedProposal.id}`);
+                      }}
+                      title="Create One-off Scheduled Service Job from this proposal"
+                    >
+                      <Truck size={14} />
+                      <span>Create One-off Job</span>
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        setSelectedProposal(null);
+                        navigate(`/contracts?action=new_contract&fromProposal=${selectedProposal.id}`);
+                      }}
+                      title="Create Recurring AMC Contract from this proposal"
+                    >
+                      <FileSignature size={14} />
+                      <span>Create Contract</span>
+                      <ArrowRight size={13} />
+                    </button>
+                  </>
+                )}
                 {canSend(selectedProposal) && (
-                  <button className="btn btn-primary" onClick={() => setSendTarget(selectedProposal)}>
+                  <button className="btn btn-secondary" onClick={() => setSendTarget(selectedProposal)}>
                     <Send size={14} />
                     <span>Send to Client</span>
                   </button>

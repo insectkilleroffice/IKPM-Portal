@@ -50,6 +50,15 @@ export interface PhotoEvidence {
   capturedAt: string;
 }
 
+/** A photo taken on site (inspection, lead visit); `type` is one of the capturing screen's categories. */
+export interface SitePhoto {
+  id: string;
+  caption: string;
+  type: string;
+  imageUrl: string;
+  capturedAt: string;
+}
+
 export interface CustomerSignOff {
   acknowledgedByName: string;
   customerDesignation?: string;

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Receipt,
   Plus,
@@ -11,6 +11,9 @@ import {
   AlertTriangle,
   RotateCcw,
   CheckCircle,
+  Send,
+  ArrowRight,
+  ShieldAlert,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -20,12 +23,21 @@ import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { formatPKR, formatDate, formatNTN, generatePermanentId } from '../../lib/formatters';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { Invoice, PaymentReceipt, TaxJurisdiction } from '../../types/finance';
+import { useDataStore } from '../../hooks/useDataStore';
+import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
+import type { Invoice, PaymentReceipt, TaxJurisdiction, InvoiceLineItem } from '../../types/finance';
+import { provinceToJurisdiction, getStandardTaxRate } from '../../lib/workflow';
+import { pdfGenerator } from '../../lib/pdfGenerator';
+import { usePdfAction } from '../../hooks/usePdfAction';
+import { Download as DownloadIcon } from 'lucide-react';
 
 export const InvoicesListPage: React.FC = () => {
   const navigate = useNavigate();
-  const { success, error, warning } = useNotification();
+  const [searchParams] = useSearchParams();
+  const pdfAction = usePdfAction();
+  const { success, warning } = useNotification();
   const { userProfile, effectiveRole } = useAuth();
+  useDataStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -33,7 +45,10 @@ export const InvoicesListPage: React.FC = () => {
 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showVoidDialog, setShowVoidDialog] = useState(false);
-  const [showNewInvoiceModal, setShowNewInvoiceModal] = useState(false);
+  const [showNewInvoiceModal, setShowNewInvoiceModal] = useState(
+    searchParams.get('action') === 'new_invoice' || Boolean(searchParams.get('fromJob'))
+  );
+  const [sendReminderInvoice, setSendReminderInvoice] = useState<Invoice | null>(null);
 
   // Payment Form State
   const [paymentForm, setPaymentForm] = useState({
@@ -41,9 +56,8 @@ export const InvoicesListPage: React.FC = () => {
     paymentMode: 'bank_transfer' as const,
     bankReferenceNo: '',
     bankName: 'Meezan Bank Ltd',
-    // Customer Withholding Tax (WHT) Certificate details (Receivable Asset)
     hasWhtDeduction: false,
-    whtRatePercent: 3, // e.g. 3% active filer WHT Section 153
+    whtRatePercent: 3,
     whtAmount: 0,
     whtCertificateNumber: '',
   });
@@ -51,6 +65,83 @@ export const InvoicesListPage: React.FC = () => {
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const invoices = dataService.getInvoices();
+
+  // If fromJob is provided, verify and pre-fill
+  const fromJobId = searchParams.get('fromJob');
+  const linkedJob = fromJobId ? dataService.getJobById(fromJobId) : undefined;
+
+  // New Invoice Form State
+  const initialCustomerType = linkedJob?.customerType || ('company' as const);
+  const initialCustomerId = linkedJob?.customerId || companies[0]?.id || '';
+
+  // Determine site province to auto-select provincial tax
+  const getSiteProvince = (custId: string, jobSiteAddr?: string): string => {
+    if (jobSiteAddr) {
+      if (jobSiteAddr.toLowerCase().includes('lahore') || jobSiteAddr.toLowerCase().includes('punjab')) return 'Punjab';
+      if (jobSiteAddr.toLowerCase().includes('islamabad')) return 'Islamabad_ICT';
+      if (jobSiteAddr.toLowerCase().includes('peshawar') || jobSiteAddr.toLowerCase().includes('kpk')) return 'KPK';
+      if (jobSiteAddr.toLowerCase().includes('quetta')) return 'Balochistan';
+    }
+    const sites = dataService.getSites(custId);
+    if (sites[0]?.province) return sites[0].province;
+    const client = dataService.getClientById(custId);
+    if (client?.province) return client.province;
+    const company = dataService.getCompanyById(custId);
+    if (company?.province) return company.province;
+    return 'Sindh';
+  };
+
+  const initialProvince = getSiteProvince(initialCustomerId, linkedJob?.siteAddress);
+  const initialJurisdiction = provinceToJurisdiction(initialProvince);
+  const initialTaxRate = getStandardTaxRate(initialJurisdiction);
+
+  const [newInvoice, setNewInvoice] = useState({
+    customerType: initialCustomerType,
+    customerId: initialCustomerId,
+    branchId: linkedJob?.branchId || '',
+    jobId: linkedJob?.id || '',
+    contractId: linkedJob?.contractId || '',
+    jurisdiction: initialJurisdiction as TaxJurisdiction,
+    taxRatePercent: initialTaxRate,
+    issueDate: new Date().toISOString().split('T')[0],
+    dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    serviceDescription: linkedJob?.serviceType || 'Integrated Pest Management (IPM) Professional Service',
+    baseAmount: 45000,
+  });
+
+  // Check guard rail on mount if fromJob is present
+  useEffect(() => {
+    if (linkedJob) {
+      // Guard Rail 1: No invoice before a verified report
+      if (!linkedJob.supervisorVerification?.isVerified) {
+        warning(
+          'Invoice Blocked by Guard Rail Policy',
+          `Job ${linkedJob.id} cannot be invoiced because its service report has not yet been verified by an operations supervisor.`
+        );
+        setShowNewInvoiceModal(false);
+        return;
+      }
+
+      const prov = getSiteProvince(linkedJob.customerId, linkedJob.siteAddress);
+      const jur = provinceToJurisdiction(prov);
+      const rate = getStandardTaxRate(jur);
+
+      setNewInvoice({
+        customerType: linkedJob.customerType,
+        customerId: linkedJob.customerId,
+        branchId: linkedJob.branchId || '',
+        jobId: linkedJob.id,
+        contractId: linkedJob.contractId || '',
+        jurisdiction: jur,
+        taxRatePercent: rate,
+        issueDate: new Date().toISOString().split('T')[0],
+        dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        serviceDescription: `${linkedJob.serviceType} (Job: ${linkedJob.id})`,
+        baseAmount: 45000,
+      });
+      setShowNewInvoiceModal(true);
+    }
+  }, [linkedJob]);
 
   const filteredInvoices = invoices.filter((i) => {
     const q = searchQuery.toLowerCase();
@@ -76,6 +167,93 @@ export const InvoicesListPage: React.FC = () => {
       whtCertificateNumber: '',
     });
     setShowPaymentModal(true);
+  };
+
+  const handleCreateInvoice = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    let customerName = '';
+    let customerNtn: string | undefined = undefined;
+    let customerStrn: string | undefined = undefined;
+    let billingAddress = 'City Facility';
+    let branchName: string | undefined = undefined;
+
+    if (newInvoice.customerType === 'company') {
+      const co = dataService.getCompanyById(newInvoice.customerId);
+      customerName = co?.legalCompanyName || 'Corporate Customer';
+      customerNtn = co?.ntn;
+      customerStrn = co?.strn;
+      billingAddress = co?.headOfficeAddress || 'Karachi HQ';
+      if (newInvoice.branchId) {
+        const br = dataService.getBranchById(newInvoice.branchId);
+        branchName = br?.branchName;
+        if (br?.physicalAddress) billingAddress = br.physicalAddress;
+      }
+    } else {
+      const cl = dataService.getClientById(newInvoice.customerId);
+      customerName = cl?.fullName || 'Individual Client';
+      billingAddress = cl?.residentialAddress || 'Residence';
+    }
+
+    const subtotal = Number(newInvoice.baseAmount);
+    const taxAmount = (subtotal * newInvoice.taxRatePercent) / 100;
+    const grossPayable = subtotal + taxAmount;
+
+    const lineItems: InvoiceLineItem[] = [
+      {
+        id: `li_${Date.now()}`,
+        description: newInvoice.serviceDescription,
+        serviceCategory: 'Pest Control Services (Tariff 9822.3000)',
+        quantity: 1,
+        unitPrice: subtotal,
+        amount: subtotal,
+        taxRatePercent: newInvoice.taxRatePercent,
+        taxAmount,
+        totalWithTax: grossPayable,
+      },
+    ];
+
+    const nextId = generatePermanentId('INV', invoices.length + 1);
+    const invoiceNum = `IKPM-${new Date().getFullYear()}-${String(invoices.length + 1).padStart(4, '0')}`;
+
+    const created: Invoice = {
+      id: nextId,
+      invoiceNumber: invoiceNum,
+      invoiceType: 'statutory_sales_tax_invoice',
+      jobId: newInvoice.jobId || undefined,
+      contractId: newInvoice.contractId || undefined,
+      customerType: newInvoice.customerType,
+      customerId: newInvoice.customerId,
+      customerName,
+      customerNtn,
+      customerStrn,
+      branchId: newInvoice.branchId || undefined,
+      branchName,
+      billingAddress,
+      issueDate: newInvoice.issueDate,
+      dueDate: newInvoice.dueDate,
+      jurisdiction: newInvoice.jurisdiction,
+      lineItems,
+      subtotal,
+      taxTotal: taxAmount,
+      grossPayable,
+      amountPaid: 0,
+      customerWhtTotal: 0,
+      balanceDue: grossPayable,
+      status: 'posted',
+      isPosted: true,
+      postedAt: new Date().toISOString(),
+      postedBy: userProfile?.displayName || 'Finance Department',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    dataService.saveInvoice(created, userProfile?.email);
+    success(
+      'Statutory Sales Tax Invoice Generated',
+      `Invoice ${created.invoiceNumber} posted (${created.jurisdiction.toUpperCase()} tax: ${newInvoice.taxRatePercent}%)`
+    );
+    setShowNewInvoiceModal(false);
   };
 
   const handleRecordPayment = (e: React.FormEvent) => {
@@ -131,48 +309,53 @@ export const InvoicesListPage: React.FC = () => {
     setSelectedInvoice(voided);
   };
 
+  const downloadInvoice = (inv: Invoice) => pdfAction.run(inv.id, () => pdfGenerator.generateInvoicePDF(inv));
+  const downloadReceipt = (r: PaymentReceipt) => pdfAction.run(r.id, () => pdfGenerator.generateReceiptPDF(r));
+
+  /** Real contact for payment reminders (branch manager, company primary contact or individual client). */
+  const reminderRecipient = (inv: Invoice) => {
+    if (inv.customerType === 'company') {
+      const br = inv.branchId ? dataService.getBranchById(inv.branchId) : undefined;
+      if (br) return { name: br.branchManagerName || inv.customerName, phone: br.branchManagerPhone || br.branchPhone, email: br.branchEmail };
+      const co = dataService.getCompanyById(inv.customerId);
+      return { name: co?.primaryContact.fullName || inv.customerName, phone: co?.primaryContact.mobile, email: co?.primaryContact.email };
+    }
+    const cl = dataService.getClientById(inv.customerId);
+    return { name: cl?.fullName || inv.customerName, phone: cl?.primaryPhone, email: cl?.email };
+  };
+
   return (
     <div className="animate-fade-in">
       <Breadcrumbs items={[{ label: 'Invoices, Receivables & Tax' }]} />
 
-      {/* Statutory Disclaimer Notice Banner (Section 5 Requirement) */}
       <div
         style={{
-          padding: '0.9rem 1.25rem',
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--border-subtle)',
-          borderLeft: '4px solid var(--ikpm-navy-700)',
-          borderRadius: 'var(--radius-md)',
+          padding: '0.85rem 1.25rem',
+          backgroundColor: 'var(--ikpm-navy-900)',
+          color: '#FFFFFF',
+          borderRadius: 'var(--radius-lg)',
           marginBottom: '1.5rem',
           display: 'flex',
-          alignItems: 'flex-start',
-          gap: '0.75rem',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '1rem',
         }}
       >
-        <AlertCircle size={20} color="var(--ikpm-navy-700)" style={{ flexShrink: 0, marginTop: '2px' }} />
-        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-          <strong>Statutory Accounting & Tax Integrity Notice:</strong> This module manages operational customer billing,
-          receivables, provincial sales tax calculations (SRB / PRA / FBR), and customer withholding tax certificates (Section 153).
-          Customer WHT deducted from IKPM invoices is tracked strictly as an advance tax receivable and kept separate from supplier WHT payables.
-          Formal statutory accounts require validation by a certified chartered accountant.
-        </div>
-      </div>
-
-      <div className="page-header">
-        <div className="page-title-wrap">
-          <h1>Invoices & Receivables Management</h1>
-          <p className="page-subtitle">
-            Sales tax invoices, payment allocation, WHT deduction tracking, and immutable audit logs.
-          </p>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: '0.95rem' }}>Statutory Provincial Sales Tax Compliance</div>
+          <div style={{ fontSize: '0.75rem', color: '#CBD5E1', marginTop: '2px' }}>
+            Automatic provincial jurisdiction mapping: SRB 13% (Sindh), PRA 16% (Punjab), ICT 16% (Islamabad), KPRA 15% (KPK), BRA 15% (Balochistan).
+          </div>
         </div>
 
-        <button className="btn btn-primary" onClick={() => navigate('/finance/tax-rules')}>
-          <FileCheck2 size={16} />
-          <span>Configurable Tax Rules</span>
+        <button className="btn btn-primary" onClick={() => setShowNewInvoiceModal(true)}>
+          <Plus size={16} />
+          <span>+ Create Sales Tax Invoice</span>
         </button>
       </div>
 
-      {/* Filter Tabs */}
+      {/* Filter and Search Bar */}
       <div className="card" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
           {['all', 'posted', 'partially_paid', 'paid', 'void_reversed'].map((st) => (
@@ -215,60 +398,259 @@ export const InvoicesListPage: React.FC = () => {
               <th>WHT Deducted</th>
               <th>Balance Due</th>
               <th>Status</th>
-              <th>Action</th>
+              <th>Next Action</th>
             </tr>
           </thead>
           <tbody>
-            {filteredInvoices.map((inv) => (
-              <tr key={inv.id}>
-                <td>
-                  <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{inv.invoiceNumber}</div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)', fontFamily: 'monospace' }}>
-                    {inv.id}
-                  </div>
-                </td>
-                <td>
-                  <div style={{ fontWeight: 600 }}>{inv.customerName}</div>
-                  {inv.customerNtn && <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>NTN: {formatNTN(inv.customerNtn)}</div>}
-                </td>
-                <td>{inv.branchName || 'Company HQ'}</td>
-                <td style={{ fontSize: '0.8rem' }}>
-                  <div>{formatDate(inv.issueDate)}</div>
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>Due: {formatDate(inv.dueDate)}</div>
-                </td>
-                <td><span className="badge-status badge-slate">{inv.jurisdiction.toUpperCase()}</span></td>
-                <td style={{ fontWeight: 700 }}>{formatPKR(inv.grossPayable)}</td>
-                <td style={{ color: 'var(--ikpm-emerald-600)', fontWeight: 600 }}>{formatPKR(inv.amountPaid)}</td>
-                <td style={{ color: '#92400E' }}>{formatPKR(inv.customerWhtTotal || 0)}</td>
-                <td style={{ fontWeight: 800, color: inv.balanceDue > 0 ? 'var(--ikpm-rose-500)' : 'var(--ikpm-emerald-600)' }}>
-                  {formatPKR(inv.balanceDue)}
-                </td>
-                <td><StatusBadge status={inv.status} /></td>
-                <td>
-                  <div style={{ display: 'flex', gap: '0.4rem' }}>
-                    {inv.balanceDue > 0 && inv.status !== 'void_reversed' && (
-                      <button
-                        className="btn btn-primary"
-                        style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem' }}
-                        onClick={() => handleOpenPayment(inv)}
-                      >
-                        Receive Payment
+            {filteredInvoices.map((inv) => {
+              const isOverdue = new Date(inv.dueDate) < new Date() && inv.balanceDue > 0 && inv.status !== 'void_reversed';
+
+              return (
+                <tr key={inv.id}>
+                  <td>
+                    <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{inv.invoiceNumber}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)', fontFamily: 'monospace' }}>
+                      {inv.id} {inv.jobId ? `• Job: ${inv.jobId}` : ''}
+                    </div>
+                  </td>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{inv.customerName}</div>
+                    {inv.customerNtn && <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>NTN: {formatNTN(inv.customerNtn)}</div>}
+                  </td>
+                  <td>{inv.branchName || 'Company HQ'}</td>
+                  <td style={{ fontSize: '0.8rem' }}>
+                    <div>{formatDate(inv.issueDate)}</div>
+                    <div style={{ color: isOverdue ? 'var(--ikpm-rose-500)' : 'var(--text-muted)', fontSize: '0.72rem', fontWeight: isOverdue ? 700 : 400 }}>
+                      Due: {formatDate(inv.dueDate)} {isOverdue ? '(OVERDUE)' : ''}
+                    </div>
+                  </td>
+                  <td><span className="badge-status badge-slate">{inv.jurisdiction.toUpperCase()}</span></td>
+                  <td style={{ fontWeight: 700 }}>{formatPKR(inv.grossPayable)}</td>
+                  <td style={{ color: 'var(--ikpm-emerald-600)', fontWeight: 600 }}>{formatPKR(inv.amountPaid)}</td>
+                  <td style={{ color: '#92400E' }}>{formatPKR(inv.customerWhtTotal || 0)}</td>
+                  <td style={{ fontWeight: 800, color: inv.balanceDue > 0 ? 'var(--ikpm-rose-500)' : 'var(--ikpm-emerald-600)' }}>
+                    {formatPKR(inv.balanceDue)}
+                  </td>
+                  <td><StatusBadge status={inv.status} /></td>
+                  <td>
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                      {inv.balanceDue > 0 && inv.status !== 'void_reversed' ? (
+                        <button
+                          className="btn btn-primary"
+                          style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+                          onClick={() => handleOpenPayment(inv)}
+                        >
+                          <DollarSign size={12} />
+                          <span>Record Receipt</span>
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--ikpm-emerald-600)', fontWeight: 600 }}>
+                          Settled ✓
+                        </span>
+                      )}
+
+                      {isOverdue && (
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.3rem 0.5rem', fontSize: '0.75rem' }}
+                          title="1-Tap: Send Overdue Invoice Reminder via WhatsApp / Email"
+                          onClick={() => setSendReminderInvoice(inv)}
+                        >
+                          <Send size={12} />
+                        </button>
+                      )}
+
+                      <button className="icon-btn" title="Download invoice PDF" onClick={() => downloadInvoice(inv)}>
+                        <DownloadIcon size={15} />
                       </button>
-                    )}
-                    <button
-                      className="btn btn-secondary"
-                      style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem' }}
-                      onClick={() => setSelectedInvoice(inv)}
-                    >
-                      Details
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                      <button
+                        className="btn btn-secondary"
+                        style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem' }}
+                        onClick={() => setSelectedInvoice(inv)}
+                      >
+                        Details
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+
+      {/* Modal: Create Sales Tax Invoice (Pre-filled from Verified Job) */}
+      <Modal
+        isOpen={showNewInvoiceModal}
+        onClose={() => setShowNewInvoiceModal(false)}
+        title="Generate Statutory Sales Tax Invoice"
+        subtitle={linkedJob ? `Pre-filled from Verified Service Report ${linkedJob.id}` : 'Automatic Provincial Tax Jurisdiction Allocation'}
+        maxWidth="680px"
+      >
+        <form onSubmit={handleCreateInvoice}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '1rem' }}>
+            <div className="form-group">
+              <label className="form-label">Client Type</label>
+              <select
+                className="form-select"
+                value={newInvoice.customerType}
+                onChange={(e) => {
+                  const val = e.target.value as any;
+                  setNewInvoice({
+                    ...newInvoice,
+                    customerType: val,
+                    customerId: val === 'company' ? companies[0]?.id || '' : clients[0]?.id || '',
+                  });
+                }}
+              >
+                <option value="company">Corporate Company</option>
+                <option value="individual">Individual Client</option>
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Customer Account <span className="required">*</span></label>
+              <select
+                className="form-select"
+                value={newInvoice.customerId}
+                onChange={(e) => {
+                  const cId = e.target.value;
+                  const prov = getSiteProvince(cId);
+                  const jur = provinceToJurisdiction(prov);
+                  const rate = getStandardTaxRate(jur);
+                  setNewInvoice({
+                    ...newInvoice,
+                    customerId: cId,
+                    jurisdiction: jur,
+                    taxRatePercent: rate,
+                  });
+                }}
+              >
+                {newInvoice.customerType === 'company'
+                  ? companies.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.legalCompanyName} ({c.id})
+                      </option>
+                    ))
+                  : clients.map((cl) => (
+                      <option key={cl.id} value={cl.id}>
+                        {cl.fullName} ({cl.id})
+                      </option>
+                    ))}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '1rem' }}>
+            <div className="form-group">
+              <label className="form-label">Provincial Tax Jurisdiction (Auto-mapped) <span className="required">*</span></label>
+              <select
+                className="form-select"
+                value={newInvoice.jurisdiction}
+                onChange={(e) => {
+                  const jur = e.target.value as TaxJurisdiction;
+                  setNewInvoice({
+                    ...newInvoice,
+                    jurisdiction: jur,
+                    taxRatePercent: getStandardTaxRate(jur),
+                  });
+                }}
+              >
+                <option value="sindh_srb">Sindh (SRB — 13%)</option>
+                <option value="punjab_pra">Punjab (PRA — 16%)</option>
+                <option value="islamabad_ict">Islamabad ICT (16%)</option>
+                <option value="kpk_kpra">KPK (KPRA — 15%)</option>
+                <option value="balochistan_bra">Balochistan (BRA — 15%)</option>
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Sales Tax Rate (%)</label>
+              <input
+                type="number"
+                className="form-input"
+                value={newInvoice.taxRatePercent}
+                onChange={(e) => setNewInvoice({ ...newInvoice, taxRatePercent: Number(e.target.value) })}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <div className="form-group">
+              <label className="form-label">Issue Date</label>
+              <input
+                type="date"
+                required
+                className="form-input"
+                value={newInvoice.issueDate}
+                onChange={(e) => setNewInvoice({ ...newInvoice, issueDate: e.target.value })}
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Due Date</label>
+              <input
+                type="date"
+                required
+                className="form-input"
+                value={newInvoice.dueDate}
+                onChange={(e) => setNewInvoice({ ...newInvoice, dueDate: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Service Description</label>
+            <input
+              type="text"
+              required
+              className="form-input"
+              value={newInvoice.serviceDescription}
+              onChange={(e) => setNewInvoice({ ...newInvoice, serviceDescription: e.target.value })}
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Base Service Amount Excl. Tax (PKR)</label>
+            <input
+              type="number"
+              required
+              className="form-input"
+              value={newInvoice.baseAmount}
+              onChange={(e) => setNewInvoice({ ...newInvoice, baseAmount: Number(e.target.value) })}
+            />
+          </div>
+
+          <div
+            style={{
+              padding: '0.75rem',
+              backgroundColor: 'var(--bg-surface-alt)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '0.825rem',
+              textAlign: 'right',
+            }}
+          >
+            <div>Taxable Subtotal: <strong>{formatPKR(Number(newInvoice.baseAmount))}</strong></div>
+            <div>
+              {newInvoice.jurisdiction.toUpperCase()} Sales Tax ({newInvoice.taxRatePercent}%):{' '}
+              <strong>{formatPKR((Number(newInvoice.baseAmount) * newInvoice.taxRatePercent) / 100)}</strong>
+            </div>
+            <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', marginTop: '4px' }}>
+              Total Gross Payable: {formatPKR(Number(newInvoice.baseAmount) * (1 + newInvoice.taxRatePercent / 100))}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+            <button type="button" className="btn btn-secondary" onClick={() => setShowNewInvoiceModal(false)}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary">
+              <Receipt size={15} />
+              <span>Post Statutory Sales Tax Invoice</span>
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Modal: Record Payment & Withholding Tax Certificate */}
       {selectedInvoice && showPaymentModal && (
@@ -299,8 +681,8 @@ export const InvoicesListPage: React.FC = () => {
                   value={paymentForm.paymentMode}
                   onChange={(e) => setPaymentForm({ ...paymentForm, paymentMode: e.target.value as any })}
                 >
-                  <option value="bank_transfer">Online Bank Transfer / RTGS</option>
-                  <option value="cross_cheque">Cross Cheque</option>
+                  <option value="bank_transfer">Direct Online Bank Transfer</option>
+                  <option value="cross_cheque">Crossed Cheque</option>
                   <option value="pay_order">Bank Pay Order</option>
                   <option value="cash">Direct Cash Collection</option>
                 </select>
@@ -313,14 +695,13 @@ export const InvoicesListPage: React.FC = () => {
                 <input
                   type="text"
                   className="form-input"
-                  placeholder="e.g. FT-202609012"
                   value={paymentForm.bankReferenceNo}
                   onChange={(e) => setPaymentForm({ ...paymentForm, bankReferenceNo: e.target.value })}
                 />
               </div>
 
               <div className="form-group">
-                <label className="form-label">Deposited Bank Account</label>
+                <label className="form-label">Depository Bank</label>
                 <input
                   type="text"
                   className="form-input"
@@ -330,78 +711,51 @@ export const InvoicesListPage: React.FC = () => {
               </div>
             </div>
 
-            {/* Customer Withholding Tax (WHT) Deduction Section */}
-            <div
-              style={{
-                backgroundColor: 'var(--ikpm-amber-50)',
-                border: '1px solid #FCD34D',
-                borderRadius: 'var(--radius-md)',
-                padding: '1rem',
-                marginTop: '0.75rem',
-                marginBottom: '1rem',
-              }}
-            >
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '1rem', marginTop: '0.5rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
                 <input
                   type="checkbox"
-                  id="whtCheck"
+                  id="wht_checkbox"
                   checked={paymentForm.hasWhtDeduction}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    const calculatedWht = checked ? (selectedInvoice.subtotal * paymentForm.whtRatePercent) / 100 : 0;
-                    setPaymentForm({
-                      ...paymentForm,
-                      hasWhtDeduction: checked,
-                      whtAmount: calculatedWht,
-                      amountReceived: Math.max(0, selectedInvoice.balanceDue - calculatedWht),
-                    });
-                  }}
+                  onChange={(e) => setPaymentForm({ ...paymentForm, hasWhtDeduction: e.target.checked })}
                 />
-                <label htmlFor="whtCheck" style={{ fontWeight: 700, fontSize: '0.85rem', color: '#92400E', cursor: 'pointer' }}>
-                  Customer Deducted Withholding Tax (Section 153 WHT Certificate)
+                <label htmlFor="wht_checkbox" style={{ fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}>
+                  Customer Withheld Income Tax at Source (Section 153 WHT Certificate)
                 </label>
               </div>
 
               {paymentForm.hasWhtDeduction && (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr 1.5fr', gap: '0.75rem' }}>
-                  <div>
-                    <label className="form-label" style={{ fontSize: '0.75rem' }}>WHT Rate %</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.2fr', gap: '1rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">WHT Rate (%)</label>
                     <input
                       type="number"
                       className="form-input"
-                      style={{ height: '32px', fontSize: '0.8rem' }}
                       value={paymentForm.whtRatePercent}
                       onChange={(e) => {
-                        const rate = Number(e.target.value);
-                        const calculatedWht = (selectedInvoice.subtotal * rate) / 100;
-                        setPaymentForm({
-                          ...paymentForm,
-                          whtRatePercent: rate,
-                          whtAmount: calculatedWht,
-                          amountReceived: Math.max(0, selectedInvoice.balanceDue - calculatedWht),
-                        });
+                        const r = Number(e.target.value);
+                        const autoAmt = (selectedInvoice.subtotal * r) / 100;
+                        setPaymentForm({ ...paymentForm, whtRatePercent: r, whtAmount: autoAmt });
                       }}
                     />
                   </div>
 
-                  <div>
-                    <label className="form-label" style={{ fontSize: '0.75rem' }}>WHT Amount (PKR)</label>
+                  <div className="form-group">
+                    <label className="form-label">WHT Deducted (PKR)</label>
                     <input
                       type="number"
                       className="form-input"
-                      style={{ height: '32px', fontSize: '0.8rem' }}
                       value={paymentForm.whtAmount}
                       onChange={(e) => setPaymentForm({ ...paymentForm, whtAmount: Number(e.target.value) })}
                     />
                   </div>
 
-                  <div>
-                    <label className="form-label" style={{ fontSize: '0.75rem' }}>WHT CPR / Cert #</label>
+                  <div className="form-group">
+                    <label className="form-label">FBR CPR / Cert Number</label>
                     <input
                       type="text"
                       className="form-input"
-                      style={{ height: '32px', fontSize: '0.8rem' }}
-                      placeholder="e.g. IT-2026-90812"
+                      placeholder="CPR-2026-XXXX"
                       value={paymentForm.whtCertificateNumber}
                       onChange={(e) => setPaymentForm({ ...paymentForm, whtCertificateNumber: e.target.value })}
                     />
@@ -410,42 +764,46 @@ export const InvoicesListPage: React.FC = () => {
               )}
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.25rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
               <button type="button" className="btn btn-secondary" onClick={() => setShowPaymentModal(false)}>
                 Cancel
               </button>
               <button type="submit" className="btn btn-primary">
-                Record Authorized Receipt
+                Record Payment & Issue Receipt
               </button>
             </div>
           </form>
         </Modal>
       )}
 
-      {/* Modal: View Invoice Details & Authorized Reversal */}
+      {/* Modal: View Invoice Details */}
       {selectedInvoice && !showPaymentModal && (
         <Modal
           isOpen={Boolean(selectedInvoice)}
           onClose={() => setSelectedInvoice(null)}
-          title={`Invoice ${selectedInvoice.invoiceNumber}`}
-          subtitle={`Client: ${selectedInvoice.customerName} • Jurisdiction: ${selectedInvoice.jurisdiction.toUpperCase()}`}
+          title={`Invoice: ${selectedInvoice.invoiceNumber}`}
+          subtitle={`Statutory Tax Invoice • Jurisdiction: ${selectedInvoice.jurisdiction.toUpperCase()}`}
           maxWidth="680px"
           footer={
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-              {selectedInvoice.status !== 'void_reversed' && (
-                <button
-                  className="btn btn-danger"
-                  style={{ fontSize: '0.8rem' }}
-                  onClick={() => setShowVoidDialog(true)}
-                >
+              {selectedInvoice.status !== 'void_reversed' && ['super_admin', 'management'].includes(effectiveRole || '') && (
+                <button className="btn btn-danger" onClick={() => setShowVoidDialog(true)}>
                   <RotateCcw size={14} />
-                  <span>Reverse / Void via Credit Note</span>
+                  <span>Void / Issue Credit Note</span>
                 </button>
               )}
+
               <div style={{ display: 'flex', gap: '0.5rem', marginLeft: 'auto' }}>
-                <button className="btn btn-secondary" onClick={() => setSelectedInvoice(null)}>
-                  Close
+                <button className="btn btn-secondary" onClick={() => downloadInvoice(selectedInvoice)}>
+                  <DownloadIcon size={14} />
+                  <span>Download PDF</span>
                 </button>
+                {selectedInvoice.balanceDue > 0 && selectedInvoice.status !== 'void_reversed' && (
+                  <button className="btn btn-primary" onClick={() => handleOpenPayment(selectedInvoice)}>
+                    <DollarSign size={14} />
+                    <span>Record Receipt</span>
+                  </button>
+                )}
               </div>
             </div>
           }
@@ -510,8 +868,55 @@ export const InvoicesListPage: React.FC = () => {
                 Balance Due: {formatPKR(selectedInvoice.balanceDue)}
               </div>
             </div>
+
+            {(() => {
+              const receipts = dataService.getPayments().filter((p) => p.invoiceId === selectedInvoice.id);
+              if (!receipts.length) return null;
+              return (
+                <div>
+                  <div className="section-title" style={{ marginTop: 0 }}>Receipts</div>
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead>
+                        <tr><th>Receipt</th><th>Date</th><th>Mode</th><th style={{ textAlign: 'right' }}>Amount</th><th /></tr>
+                      </thead>
+                      <tbody>
+                        {receipts.map((r) => (
+                          <tr key={r.id}>
+                            <td className="cell-title">{r.receiptNumber}</td>
+                            <td>{formatDate(r.paymentDate)}</td>
+                            <td style={{ textTransform: 'capitalize' }}>{r.paymentMode.replace(/_/g, ' ')}</td>
+                            <td style={{ textAlign: 'right' }}>{formatPKR(r.cashAmountReceived)}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button className="icon-btn" title="Download receipt PDF" onClick={() => downloadReceipt(r)}><DownloadIcon size={15} /></button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </Modal>
+      )}
+
+      {/* 1-Tap Send Overdue Reminder Modal */}
+      {sendReminderInvoice && (
+        <SendDocumentsModal
+          isOpen={Boolean(sendReminderInvoice)}
+          onClose={() => setSendReminderInvoice(null)}
+          recipient={reminderRecipient(sendReminderInvoice)}
+          related={{
+            kind: 'proposal',
+            id: sendReminderInvoice.id,
+            title: `Payment Reminder for Invoice ${sendReminderInvoice.invoiceNumber} (Balance: ${formatPKR(sendReminderInvoice.balanceDue)})`,
+          }}
+          onSent={() => {
+            success('Payment Reminder Dispatched', `Reminder sent to ${sendReminderInvoice.customerName} via WhatsApp / Email.`);
+          }}
+        />
       )}
 
       {/* Reversal Confirmation Dialog */}

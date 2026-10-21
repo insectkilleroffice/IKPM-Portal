@@ -70,6 +70,8 @@ export interface Proposal {
   customerType: CustomerType;
   customerId: string;
   customerName: string;
+  /** Lead this proposal was created from; accepting / declining it closes the lead as won / lost. */
+  leadId?: string;
   branchId?: string;
   branchName?: string;
   siteId?: string;

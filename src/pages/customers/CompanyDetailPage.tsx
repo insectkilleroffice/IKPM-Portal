@@ -243,8 +243,17 @@ export const CompanyDetailPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Quick Metrics */}
-          <div style={{ display: 'flex', gap: '1rem' }}>
+          {/* Quick Actions & Metrics */}
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => navigate(`/operations/jobs?action=new_job&customerId=${company.id}&customerType=company`)}
+              title="Schedule new pest control service with this company pre-selected"
+            >
+              <Truck size={15} />
+              <span>+ New Service</span>
+            </button>
+
             <div style={{ padding: '0.75rem 1.25rem', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', textAlign: 'right' }}>
               <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Active Branches</div>
               <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--ikpm-navy-700)' }}>

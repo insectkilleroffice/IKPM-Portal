@@ -15,6 +15,39 @@ export interface Attachment {
   url: string;
 }
 
+/** How an email leaves the portal. Every option sends from the signed-in person's business address. */
+export type EmailVia = 'api' | 'gmail' | 'outlook' | 'mailto';
+
+export const EMAIL_VIA_LABELS: Record<EmailVia, string> = {
+  api: 'Send automatically from the portal',
+  gmail: 'Gmail / Google Workspace',
+  outlook: 'Outlook / Microsoft 365',
+  mailto: 'Desktop mail app',
+};
+
+const EMAIL_VIA_KEY = 'ikpm_email_via';
+
+export function getPreferredEmailVia(): EmailVia {
+  try {
+    const v = localStorage.getItem(EMAIL_VIA_KEY) as EmailVia | null;
+    if (v && (v !== 'api' || integrations.outreachApi)) return v;
+  } catch {
+    // Storage blocked: use the default
+  }
+  return integrations.outreachApi ? 'api' : 'gmail';
+}
+
+export function setPreferredEmailVia(v: EmailVia) {
+  try {
+    localStorage.setItem(EMAIL_VIA_KEY, v);
+  } catch {
+    // Storage blocked: preference just isn't remembered
+  }
+}
+
+/** Link-based modes open a new tab, which must be opened synchronously inside the click handler. */
+export const emailOpensWindow = (v: EmailVia) => v === 'gmail' || v === 'outlook';
+
 export interface OutreachRequest {
   channels: OutreachChannel[];
   recipientName: string;
@@ -25,9 +58,12 @@ export interface OutreachRequest {
   documents: PortalDocument[];
   extraAttachments?: Attachment[]; // e.g. generated proposal PDF
   related: OutreachLog['related'];
-  sender: { email: string; name: string };
-  /** Window opened synchronously in the click handler, so the wa.me link isn't popup-blocked after async work. */
+  /** The signed-in staff member. `businessEmail` is the address the client sees the email from. */
+  sender: { email: string; name: string; businessEmail: string };
+  emailVia: EmailVia;
+  /** Windows opened synchronously in the click handler, so links aren't popup-blocked after async work. */
   linkWindow?: Window | null;
+  emailWindow?: Window | null;
 }
 
 export interface OutreachResult {
@@ -54,6 +90,7 @@ export function collectAttachments(documents: PortalDocument[], extra: Attachmen
 export function buildPitchMessage(opts: {
   recipientName: string;
   senderName: string;
+  senderEmail?: string;
   purpose: 'documents' | 'proposal';
   proposalRef?: string;
 }): { subject: string; message: string } {
@@ -79,7 +116,7 @@ export function buildPitchMessage(opts: {
     'Regards,',
     opts.senderName,
     `${outreachEnv.companyName}`,
-    `${outreachEnv.companyPhone} | ${outreachEnv.companyWebsite}`,
+    [opts.senderEmail, outreachEnv.companyPhone, outreachEnv.companyWebsite].filter(Boolean).join(' | '),
   ].join('\n');
 
   return { subject, message };
@@ -119,29 +156,47 @@ async function sendWhatsApp(req: OutreachRequest, attachments: Attachment[]): Pr
       console.warn('WhatsApp API failed, falling back to wa.me link', err);
     }
   }
-  const url = `https://wa.me/${to}?text=${encodeURIComponent(withLinks(req.message, attachments))}`;
-  if (req.linkWindow && !req.linkWindow.closed) req.linkWindow.location.href = url;
-  else window.open(url, '_blank', 'noopener');
+  openIn(req.linkWindow, `https://wa.me/${to}?text=${encodeURIComponent(withLinks(req.message, attachments))}`);
   return { channel: 'whatsapp', mode: 'link', ok: true };
 }
 
-async function sendEmail(req: OutreachRequest, attachments: Attachment[]): Promise<OutreachResult> {
-  if (integrations.outreachApi) {
-    try {
-      await callApi('send-email', {
-        to: req.email,
-        subject: req.subject,
-        text: withLinks(req.message, attachments),
-        attachments: attachments.map((a) => ({ filename: a.fileName, path: a.url })),
-        replyTo: req.sender.email,
-      });
-      return { channel: 'email', mode: 'api', ok: true };
-    } catch (err) {
-      console.warn('Email API failed, falling back to mailto link', err);
-    }
+function openIn(win: Window | null | undefined, url: string) {
+  if (win && !win.closed) win.location.href = url;
+  else window.open(url, '_blank', 'noopener');
+}
+
+function composeUrl(via: EmailVia, req: OutreachRequest, body: string): string {
+  const to = req.email || '';
+  if (via === 'gmail') {
+    // authuser picks the matching signed-in Google account, so the draft opens in the sender's own mailbox
+    return `https://mail.google.com/mail/?authuser=${encodeURIComponent(req.sender.businessEmail)}&view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(req.subject)}&body=${encodeURIComponent(body)}`;
   }
+  if (via === 'outlook') {
+    return `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(to)}&subject=${encodeURIComponent(req.subject)}&body=${encodeURIComponent(body)}`;
+  }
+  return `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(req.subject)}&body=${encodeURIComponent(body)}`;
+}
+
+async function sendEmail(req: OutreachRequest, attachments: Attachment[]): Promise<OutreachResult> {
   const body = withLinks(req.message, attachments);
-  window.location.href = `mailto:${encodeURIComponent(req.email || '')}?subject=${encodeURIComponent(req.subject)}&body=${encodeURIComponent(body)}`;
+  if (req.emailVia === 'api' && integrations.outreachApi) {
+    const data = await callApi('send-email', {
+      to: req.email,
+      subject: req.subject,
+      text: body,
+      attachments: attachments.map((a) => ({ filename: a.fileName, path: a.url })),
+    });
+    return {
+      channel: 'email',
+      mode: 'api',
+      ok: true,
+      note: data.sentAsSelf === false ? `Sent as "${req.sender.name} via IKPM". Replies go to ${req.sender.businessEmail}.` : undefined,
+    };
+  }
+  const via = req.emailVia === 'api' ? 'gmail' : req.emailVia;
+  const url = composeUrl(via, req, body);
+  if (via === 'mailto') window.location.href = url;
+  else openIn(req.emailWindow, url);
   return { channel: 'email', mode: 'link', ok: true };
 }
 
@@ -166,6 +221,7 @@ export async function sendOutreach(req: OutreachRequest): Promise<OutreachResult
       error: result.error,
       recipientName: req.recipientName,
       recipient: channel === 'whatsapp' ? req.phone || '' : req.email || '',
+      senderEmail: channel === 'email' ? req.sender.businessEmail : undefined,
       subject: channel === 'email' ? req.subject : undefined,
       message: req.message,
       documentIds: req.documents.map((d) => d.id),

@@ -1,21 +1,48 @@
-// Unified Data Service for IKPM Portal (local cache + best-effort Firestore mirror).
+// Unified Data Service for IKPM Portal.
+// Cloud Firestore is the source of truth: after sign-in we open live, role-scoped subscriptions
+// (see src/lib/permissions.ts + firestore.rules) and every save is written straight to Firestore.
+// Firestore's persistent cache keeps the portal usable offline and syncs queued writes later.
 // Components subscribe through `useDataStore()` so they re-render whenever data changes.
 
-import { doc, setDoc } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  setDoc,
+  where,
+  writeBatch,
+  type Query,
+  type Unsubscribe,
+} from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import {
+  accessLevel,
+  canAccessModule,
+  DEFAULT_ROLES,
+  getRole,
+  seesAllRecords,
+  setRoleDefinitions,
+  type ModuleKey,
+  type RoleDefinition,
+} from '../lib/permissions';
 import type {
   IndividualClient,
   CompanyMaster,
   CompanyBranch,
   SiteAddress,
 } from '../types/customer';
-import type { Lead } from '../types/crm';
+import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadActivity, LeadContact, LeadStage } from '../types/crm';
 import type { Proposal, ProposalRevision } from '../types/proposal';
-import type { Contract, ServiceJob } from '../types/operations';
+import type { Contract, PhotoEvidence, ServiceJob } from '../types/operations';
 import type { Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
-import type { AuditLogEntry } from '../types';
+import type { AuditLogEntry, DataScope, RecordOwnership, Team, UserProfile, UserRole } from '../types';
 import type { DocumentOwner, DocumentPack, OutreachLog, PortalDocument } from '../types/document';
-import { normalizePakistaniPhone } from '../lib/formatters';
+import { formatDate, generatePermanentId, normalizePakistaniPhone } from '../lib/formatters';
+import { contactsOf, outcomeLabel, stageMeta, stageOf, syncLeadFields } from '../lib/leadWorkflow';
+import { deleteFromCloudinary } from '../lib/cloudinary';
 import {
   SEED_COMPANIES,
   SEED_BRANCHES,
@@ -30,7 +57,8 @@ import {
   SEED_DOCUMENT_PACKS,
 } from './seedData';
 
-const STORAGE_KEY = 'ikpm_portal_db_v1';
+/** Where the portal kept data before it was connected to Firestore (used only for the one-time upload). */
+const LEGACY_STORAGE_KEY = 'ikpm_portal_db_v1';
 
 interface DbState {
   companies: CompanyMaster[];
@@ -48,91 +76,419 @@ interface DbState {
   documents: PortalDocument[];
   documentPacks: DocumentPack[];
   outreachLogs: OutreachLog[];
+  users: UserProfile[];
+  teams: Team[];
+  roles: RoleDefinition[];
 }
 
-const seedState = (): DbState => ({
-  companies: [...SEED_COMPANIES],
-  branches: [...SEED_BRANCHES],
-  clients: [...SEED_INDIVIDUAL_CLIENTS],
-  sites: [...SEED_SITES],
-  leads: [...SEED_LEADS],
-  proposals: [...SEED_PROPOSALS],
-  contracts: [...SEED_CONTRACTS],
-  jobs: [...SEED_SERVICE_JOBS],
-  invoices: [...SEED_INVOICES],
+type StateKey = keyof DbState;
+
+/** State key → Firestore collection. */
+const COLLECTIONS: Record<StateKey, string> = {
+  companies: 'companies',
+  branches: 'branches',
+  clients: 'clients',
+  sites: 'sites',
+  leads: 'leads',
+  proposals: 'proposals',
+  contracts: 'contracts',
+  jobs: 'service_jobs',
+  invoices: 'invoices',
+  payments: 'payments',
+  taxRules: 'tax_rules',
+  auditLogs: 'audit_logs',
+  documents: 'documents',
+  documentPacks: 'document_packs',
+  outreachLogs: 'outreach_logs',
+  users: 'users',
+  teams: 'teams',
+  roles: 'roles',
+};
+
+/** Business records that are scoped to their owner / team. */
+const SCOPED: StateKey[] = ['companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs', 'outreachLogs'];
+
+/** Everything except staff/teams/roles, which are loaded for every signed-in person. */
+const BUSINESS_KEYS: StateKey[] = [
+  'companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs',
+  'invoices', 'payments', 'taxRules', 'auditLogs', 'documents', 'documentPacks', 'outreachLogs',
+];
+
+/** Module that grants read access to each business collection (mirrors firestore.rules). */
+const MODULE_FOR: Partial<Record<StateKey, ModuleKey>> = {
+  companies: 'customers',
+  branches: 'customers',
+  clients: 'customers',
+  sites: 'customers',
+  leads: 'crm',
+  proposals: 'proposals',
+  contracts: 'contracts',
+  jobs: 'jobs',
+  invoices: 'invoices',
+  payments: 'invoices',
+  auditLogs: 'settings',
+};
+
+/** Records uploaded by the one-time local → cloud migration (users/teams/audit are never migrated). */
+const MIGRATABLE: StateKey[] = [
+  'companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs',
+  'invoices', 'payments', 'taxRules', 'documents', 'documentPacks', 'outreachLogs',
+];
+
+const SEEDS: Partial<Record<StateKey, { id: string }[]>> = {
+  companies: SEED_COMPANIES,
+  branches: SEED_BRANCHES,
+  clients: SEED_INDIVIDUAL_CLIENTS,
+  sites: SEED_SITES,
+  leads: SEED_LEADS,
+  proposals: SEED_PROPOSALS,
+  contracts: SEED_CONTRACTS,
+  jobs: SEED_SERVICE_JOBS,
+  invoices: SEED_INVOICES,
+  taxRules: SEED_TAX_RULES,
+  documentPacks: SEED_DOCUMENT_PACKS,
+};
+
+const emptyState = (): DbState => ({
+  companies: [],
+  branches: [],
+  clients: [],
+  sites: [],
+  leads: [],
+  proposals: [],
+  contracts: [],
+  jobs: [],
+  invoices: [],
   payments: [],
+  // Shared configuration shows the built-in defaults until Firestore has its own copy
   taxRules: [...SEED_TAX_RULES],
   auditLogs: [],
   documents: [],
   documentPacks: [...SEED_DOCUMENT_PACKS],
   outreachLogs: [],
+  users: [],
+  teams: [],
+  roles: [...DEFAULT_ROLES],
 });
 
 const now = () => new Date().toISOString();
 
-/** Firestore rejects `undefined` values — drop them before mirroring. */
+/** Firestore rejects `undefined` values — drop them before writing. */
 const toFirestore = <T,>(data: T): T => JSON.parse(JSON.stringify(data));
+
+/** Newest first, using whichever timestamp the record type carries. */
+const recordTime = (r: Record<string, unknown>) =>
+  String(r.createdAt ?? r.timestamp ?? r.uploadedAt ?? r.sentAt ?? r.issueDate ?? r.updatedAt ?? '');
+
+export interface DataSession {
+  uid: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  dataScope: DataScope;
+  teamId?: string;
+}
+
+export type CloudStatus = 'signed_out' | 'connecting' | 'live' | 'error';
+
+export interface CloudState {
+  status: CloudStatus;
+  pendingWrites: number;
+  /** Collections whose subscription was refused (usually: rules not deployed). */
+  blocked: string[];
+  lastError?: { collection: string; message: string; at: string };
+}
+
+export interface WriteError {
+  collection: string;
+  id: string;
+  code: string;
+  message: string;
+}
+
+const friendlyError = (code: string, message: string) => {
+  if (code === 'permission-denied') {
+    return 'Permission denied by Firestore. Either your role is not allowed to change this record, or the security rules have not been deployed yet (npx firebase-tools deploy --only firestore).';
+  }
+  if (code === 'unavailable') return 'Firestore is unreachable. The change is kept on this device and will sync when the connection returns.';
+  return message;
+};
 
 type Listener = () => void;
 
 class DataService {
-  private s: DbState = seedState();
+  private s: DbState = emptyState();
   private listeners = new Set<Listener>();
+  private errorListeners = new Set<(e: WriteError) => void>();
   private version = 0;
-
-  constructor() {
-    this.load();
-  }
+  private session: DataSession | null = null;
+  private unsubs: Unsubscribe[] = [];
+  /** Business-data subscriptions; reopened when the person's role permissions change. */
+  private scopedUnsubs: Unsubscribe[] = [];
+  private accessSignature = '';
+  /** Per-collection, per-query result sets; a collection's state is the union of its queries. */
+  private partials = new Map<StateKey, Map<string, Map<string, unknown>>>();
+  private cloud: CloudState = { status: 'signed_out', pendingWrites: 0, blocked: [] };
+  private loadedKeys = new Set<StateKey>();
 
   // --- Store plumbing ---
 
-  private load() {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored) as Partial<DbState>;
-        const seeded = seedState();
-        this.s = { ...seeded, ...Object.fromEntries(Object.entries(parsed).filter(([, v]) => Array.isArray(v))) };
-        return;
-      }
-    } catch {
-      // Corrupt cache — fall back to seed data
-    }
-    this.s = seedState();
-    this.persist();
-  }
-
-  private persist() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.s));
-    } catch (err) {
-      console.warn('Failed to persist to localStorage', err);
-    }
-  }
-
-  /** Persist locally, then notify subscribed components. */
+  /** Notify subscribed components. */
   private commit() {
-    this.persist();
     this.version++;
     this.listeners.forEach((l) => l());
   }
 
-  private mirror(collection: string, id: string, data: unknown) {
-    try {
-      setDoc(doc(db, collection, id), toFirestore(data) as Record<string, unknown>, { merge: true }).catch(() => {});
-    } catch {
-      // Offline or Firebase not configured — local cache remains the source of truth
+  private setCloud(patch: Partial<CloudState>) {
+    this.cloud = { ...this.cloud, ...patch };
+    this.commit();
+  }
+
+  /**
+   * Called by AuthContext whenever the signed-in user (or their role/team) changes.
+   * Tears down old subscriptions and opens only the ones this user is allowed to read.
+   */
+  public setSession(session: DataSession | null) {
+    const same =
+      session && this.session &&
+      session.uid === this.session.uid && session.role === this.session.role &&
+      session.dataScope === this.session.dataScope && session.teamId === this.session.teamId;
+    if (same || (!session && !this.session)) return;
+
+    this.unsubs.forEach((u) => u());
+    this.unsubs = [];
+    this.closeScoped();
+    this.partials.clear();
+    this.loadedKeys.clear();
+    this.s = emptyState();
+    this.session = session;
+
+    if (!session) {
+      this.cloud = { status: 'signed_out', pendingWrites: 0, blocked: [] };
+      this.commit();
+      return;
+    }
+
+    this.cloud = { status: 'connecting', pendingWrites: 0, blocked: [] };
+    // Staff, teams and role definitions are needed by everyone and decide what else to load
+    (['users', 'teams', 'roles'] as StateKey[]).forEach((key) => this.listen(key, `${key}#0`, collection(db, COLLECTIONS[key]), this.unsubs));
+    this.openScoped();
+    this.commit();
+  }
+
+  private closeScoped() {
+    this.scopedUnsubs.forEach((u) => u());
+    this.scopedUnsubs = [];
+    BUSINESS_KEYS.forEach((k) => this.partials.delete(k));
+  }
+
+  /** (Re)opens business-data subscriptions for the current role's module access. */
+  private openScoped() {
+    const se = this.session;
+    if (!se) return;
+    const role = getRole(se.role);
+    this.accessSignature = JSON.stringify(role?.modules ?? {});
+    BUSINESS_KEYS.forEach((key) => {
+      this.queriesFor(key, se).forEach((q, i) => this.listen(key, `${key}#${i}`, q, this.scopedUnsubs));
+    });
+  }
+
+  /** Role documents changed: refresh the registry and reload data if this person's access changed. */
+  private onRolesUpdated() {
+    setRoleDefinitions(this.s.roles);
+    const se = this.session;
+    if (!se) return;
+    if (se.role === 'super_admin') this.backfillRoleModules();
+    const sig = JSON.stringify(getRole(se.role)?.modules ?? {});
+    if (sig !== this.accessSignature) {
+      this.closeScoped();
+      BUSINESS_KEYS.forEach((k) => this.rebuild(k));
+      this.openScoped();
     }
   }
 
-  /** Insert-or-replace by id. Returns whether the record was newly created. */
+  /**
+   * Built-in roles saved before a module existed don't mention it, and firestore.rules treats a
+   * missing module as "none". The super admin's session fills in the default level once.
+   */
+  private backfillRoleModules() {
+    const cloud = new Map<string, Record<string, unknown>>();
+    this.partials.get('roles')?.forEach((docs) => docs.forEach((v, id) => cloud.set(id, v as Record<string, unknown>)));
+    DEFAULT_ROLES.filter((r) => r.id !== 'super_admin').forEach((def) => {
+      const saved = cloud.get(def.id);
+      if (!saved) return; // Not seeded yet; maybeSeedDefaults writes the full role
+      const savedModules = (saved.modules ?? {}) as Record<string, unknown>;
+      const missing = Object.fromEntries(Object.entries(def.modules).filter(([k]) => !(k in savedModules)));
+      if (Object.keys(missing).length) this.write('roles', def.id, { modules: missing });
+    });
+  }
+
+  /** Queries this person may run for a collection; each must be provable by firestore.rules. */
+  private queriesFor(key: StateKey, se: DataSession): Query[] {
+    const col = collection(db, COLLECTIONS[key]);
+    const all = seesAllRecords(se.role, se.dataScope);
+    const can = (m: ModuleKey) => canAccessModule(se.role, m);
+    const ownAndTeam = (): Query[] => {
+      const qs: Query[] = [query(col, where('ownerUid', '==', se.uid))];
+      if (se.dataScope === 'team' && se.teamId) qs.push(query(col, where('teamId', '==', se.teamId)));
+      return qs;
+    };
+
+    // Shared configuration: readable by every active person
+    if (key === 'taxRules' || key === 'documentPacks') return [col];
+
+    if (key === 'auditLogs') return can('settings') ? [query(col, orderBy('timestamp', 'desc'), limit(500))] : [];
+
+    // Finance records aren't owner-scoped
+    if (key === 'invoices' || key === 'payments') return can('invoices') ? [col] : [];
+
+    if (key === 'jobs') {
+      const qs: Query[] = [];
+      if (can('jobs')) qs.push(...(all ? [col] : ownAndTeam()));
+      // Field app: jobs assigned to this person
+      if (can('pco') && !(can('jobs') && all)) qs.push(query(col, where('assignedTechnicianIds', 'array-contains', se.uid)));
+      return qs;
+    }
+
+    if (key === 'documents') {
+      if (can('files') && all) return [col];
+      const qs: Query[] = can('files') ? ownAndTeam() : [query(col, where('ownerUid', '==', se.uid))];
+      if (can('documents')) qs.push(query(col, where('owner.kind', '==', 'library')));
+      return qs;
+    }
+
+    if (key === 'leads') {
+      const qs: Query[] = can('crm') ? (all ? [col] : ownAndTeam()) : [];
+      // Inspectors see the leads they were assigned to inspect
+      if (can('inspections') && !(can('crm') && all)) qs.push(query(col, where('inspectorIds', 'array-contains', se.uid)));
+      return qs;
+    }
+
+    if (key === 'outreachLogs') {
+      if (!(can('crm') || can('proposals') || can('documents'))) return [];
+      return all ? [col] : ownAndTeam();
+    }
+
+    const module = MODULE_FOR[key];
+    if (!module || accessLevel(se.role, module) === 'none') return [];
+    return all ? [col] : ownAndTeam();
+  }
+
+  private listen(key: StateKey, queryKey: string, q: Query, bucket: Unsubscribe[]) {
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const docs = new Map<string, unknown>();
+        snap.forEach((d) => {
+          const data = d.data() as Record<string, unknown>;
+          if (data.removed) return; // soft-deleted
+          docs.set(d.id, key === 'users' ? { uid: d.id, ...data } : { id: d.id, ...data });
+        });
+        if (!this.partials.has(key)) this.partials.set(key, new Map());
+        this.partials.get(key)!.set(queryKey, docs);
+        this.rebuild(key);
+        this.loadedKeys.add(key);
+        if (this.cloud.status === 'connecting') this.cloud = { ...this.cloud, status: 'live' };
+        if (key === 'roles') this.onRolesUpdated();
+        this.commit();
+        this.maybeSeedDefaults(key, snap.empty && !snap.metadata.fromCache);
+      },
+      (err) => {
+        console.error(`[Firestore] subscription to "${COLLECTIONS[key]}" failed:`, err);
+        const blocked = Array.from(new Set([...this.cloud.blocked, COLLECTIONS[key]]));
+        this.setCloud({
+          status: 'error',
+          blocked,
+          lastError: { collection: COLLECTIONS[key], message: friendlyError(err.code, err.message), at: now() },
+        });
+      }
+    );
+    bucket.push(unsub);
+  }
+
+  private rebuild(key: StateKey) {
+    const merged = new Map<string, unknown>();
+    this.partials.get(key)?.forEach((docs) => docs.forEach((v, id) => merged.set(id, v)));
+    let list = Array.from(merged.values()) as Record<string, unknown>[];
+    list.sort((a, b) => recordTime(b).localeCompare(recordTime(a)));
+    // Shared config keeps showing defaults until someone saves real values
+    if (key === 'roles') {
+      // Built-in roles always exist; cloud copies override them
+      const byId = new Map(DEFAULT_ROLES.map((r) => [r.id, r as unknown as Record<string, unknown>]));
+      list.forEach((r) => byId.set(String(r.id), { ...byId.get(String(r.id)), ...r }));
+      list = Array.from(byId.values());
+    } else if (list.length === 0 && (key === 'taxRules' || key === 'documentPacks')) {
+      list = [...(SEEDS[key] as unknown as Record<string, unknown>[])];
+    }
+    (this.s as unknown as Record<StateKey, unknown[]>)[key] = list;
+  }
+
+  /** First super-admin login on an empty project: store the default tax rules & document packs. */
+  private maybeSeedDefaults(key: StateKey, empty: boolean) {
+    if (!empty || this.session?.role !== 'super_admin') return;
+    if (key === 'roles') {
+      // The rules read role documents, so the built-in roles must exist in Firestore
+      DEFAULT_ROLES.filter((r) => r.id !== 'super_admin').forEach((r) => this.write('roles', r.id, { ...r, createdAt: now(), updatedAt: now() }));
+      return;
+    }
+    if (key !== 'taxRules' && key !== 'documentPacks') return;
+    (SEEDS[key] ?? []).forEach((item) => this.write(COLLECTIONS[key], item.id, item));
+  }
+
+  /** Writes to Firestore and reports failures to the UI instead of failing silently. */
+  private write(collectionName: string, id: string, data: unknown) {
+    if (!this.session) {
+      this.emitError({ collection: collectionName, id, code: 'unauthenticated', message: 'You are signed out. Sign in again to save changes.' });
+      return;
+    }
+    this.cloud = { ...this.cloud, pendingWrites: this.cloud.pendingWrites + 1 };
+    this.commit();
+    setDoc(doc(db, collectionName, id), toFirestore(data) as Record<string, unknown>, { merge: true })
+      .catch((err: { code?: string; message?: string }) => {
+        const code = err?.code || 'unknown';
+        const message = friendlyError(code, err?.message || String(err));
+        console.error(`[Firestore] write to ${collectionName}/${id} failed:`, err);
+        this.cloud = { ...this.cloud, lastError: { collection: collectionName, message, at: now() } };
+        this.emitError({ collection: collectionName, id, code, message });
+      })
+      .finally(() => {
+        this.cloud = { ...this.cloud, pendingWrites: Math.max(0, this.cloud.pendingWrites - 1) };
+        this.commit();
+      });
+  }
+
+  private emitError(e: WriteError) {
+    this.errorListeners.forEach((l) => l(e));
+  }
+
+  /** Ownership stamp for brand-new records (drives own/team scoping in firestore.rules). */
+  private ownership(): RecordOwnership {
+    const se = this.session;
+    if (!se) return {};
+    return { ownerUid: se.uid, ownerName: se.name, ownerEmail: se.email, ...(se.teamId ? { teamId: se.teamId } : {}) };
+  }
+
+  /** Insert-or-replace by id. Returns whether the record was newly created. Mutates `item` to the saved shape. */
   private upsert<T extends { id: string }>(list: T[], item: T, stamp = true): boolean {
     const idx = list.findIndex((x) => x.id === item.id);
     if (idx !== -1) {
-      list[idx] = stamp ? { ...item, updatedAt: now() } : item;
+      // An edit never drops the original owner
+      const prev = list[idx] as T & RecordOwnership;
+      const kept: RecordOwnership = {};
+      if (prev.ownerUid) Object.assign(kept, { ownerUid: prev.ownerUid, ownerName: prev.ownerName, ownerEmail: prev.ownerEmail });
+      if (prev.teamId) kept.teamId = prev.teamId;
+      list[idx] = { ...item, ...kept, ...(stamp ? { updatedAt: now() } : {}) };
+      Object.assign(item, list[idx]);
       return false;
     }
-    list.unshift(stamp ? { ...item, createdAt: now(), updatedAt: now() } : item);
+    const owned = item as T & RecordOwnership;
+    const created = {
+      ...item,
+      ...(owned.ownerUid ? {} : this.ownership()),
+      ...(stamp ? { createdAt: (item as { createdAt?: string }).createdAt || now(), updatedAt: now() } : {}),
+    } as T;
+    Object.assign(item, created);
+    list.unshift(created);
     return true;
   }
 
@@ -144,7 +500,7 @@ class DataService {
     entityTitle: string,
     details: string
   ) {
-    this.logAudit({ userId: userEmail, userEmail, action, entityType, entityId, entityTitle, details });
+    this.logAudit({ userId: this.session?.uid || '', userEmail, action, entityType, entityId, entityTitle, details });
   }
 
   public subscribe = (listener: Listener) => {
@@ -154,16 +510,118 @@ class DataService {
 
   public getVersion = () => this.version;
 
+  /** Subscribe to failed cloud writes (used to show a toast). */
+  public onWriteError(listener: (e: WriteError) => void) {
+    this.errorListeners.add(listener);
+    return () => {
+      this.errorListeners.delete(listener);
+    };
+  }
+
+  public getCloudState(): CloudState {
+    return this.cloud;
+  }
+
+  public getSession() {
+    return this.session;
+  }
+
+  // --- Staff & teams (read side; writes live in staffService) ---
+  public getUsers(): UserProfile[] {
+    return [...this.s.users].sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
+  }
+
+  public getStaff(roles?: UserRole[]): UserProfile[] {
+    return this.getUsers().filter((u) => u.isActive && (!roles || roles.includes(u.role)));
+  }
+
+  public getRoles(): RoleDefinition[] {
+    return [...this.s.roles];
+  }
+
+  public getTeams(): Team[] {
+    return [...this.s.teams].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // --- One-time upload of data that was only saved in this browser ---
+  private readLegacy(): Partial<DbState> | null {
+    try {
+      const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as Partial<DbState>) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Records saved locally before Firestore worked, excluding untouched demo/sample records. */
+  public getLocalOnlyRecords(includeSamples = false): { collection: string; count: number }[] {
+    return this.localGroups(includeSamples).map((g) => ({ collection: g.collection, count: g.items.length }));
+  }
+
+  private localGroups(includeSamples: boolean) {
+    const legacy = this.readLegacy();
+    if (!legacy) return [];
+    return MIGRATABLE.map((key) => {
+      const seedById = new Map((SEEDS[key] ?? []).map((x) => [x.id, JSON.stringify(x)]));
+      const raw = legacy[key];
+      const items = (Array.isArray(raw) ? (raw as { id: string }[]) : []).filter(
+        (x) => x && x.id && (includeSamples || seedById.get(x.id) !== JSON.stringify(x))
+      );
+      return { key, collection: COLLECTIONS[key], items };
+    }).filter((g) => g.items.length > 0);
+  }
+
+  public async uploadLocalRecords(includeSamples = false): Promise<number> {
+    if (!this.session) throw new Error('Sign in first.');
+    const groups = this.localGroups(includeSamples);
+    const owner = this.ownership();
+    let count = 0;
+    let batch = writeBatch(db);
+    let inBatch = 0;
+    for (const g of groups) {
+      for (const item of g.items) {
+        const data = SCOPED.includes(g.key) || g.key === 'documents' ? { ...owner, ...item } : item;
+        batch.set(doc(db, g.collection, item.id), toFirestore(data) as Record<string, unknown>, { merge: true });
+        count++;
+        if (++inBatch >= 400) {
+          await batch.commit();
+          batch = writeBatch(db);
+          inBatch = 0;
+        }
+      }
+    }
+    if (inBatch > 0) await batch.commit();
+    try {
+      localStorage.setItem(`${LEGACY_STORAGE_KEY}_uploaded`, localStorage.getItem(LEGACY_STORAGE_KEY) || '');
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      // Storage blocked: the upload itself already succeeded
+    }
+    this.logAudit({
+      userId: this.session.uid,
+      userEmail: this.session.email,
+      action: 'create',
+      entityType: 'user',
+      entityId: this.session.uid,
+      entityTitle: 'Local data upload',
+      details: `Uploaded ${count} record(s) saved in this browser to Cloud Firestore`,
+    });
+    return count;
+  }
+
   // --- Audit Logging ---
   public logAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>) {
     const log: AuditLogEntry = {
       ...entry,
+      userId: this.session?.uid || entry.userId,
+      userEmail: this.session?.email || entry.userEmail,
       id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       timestamp: now(),
     };
+    if (!this.session) return; // Nothing is recorded while signed out
     this.s.auditLogs.unshift(log);
     this.commit();
-    this.mirror('audit_logs', log.id, log);
+    this.write('audit_logs', log.id, log);
   }
 
   public getAuditLogs(entityType?: string, entityId?: string): AuditLogEntry[] {
@@ -222,7 +680,7 @@ class DataService {
     const created = this.upsert(this.s.clients, client);
     this.audit(userEmail, created ? 'create' : 'update', 'client', client.id, client.fullName,
       created ? `Created new individual client ${client.fullName}` : `Updated client profile ${client.fullName}`);
-    this.mirror('clients', client.id, client);
+    this.write('clients', client.id, client);
     return client;
   }
 
@@ -239,7 +697,7 @@ class DataService {
     const created = this.upsert(this.s.companies, company);
     this.audit(userEmail, created ? 'create' : 'update', 'company', company.id, company.legalCompanyName,
       created ? `Created new master company ${company.legalCompanyName}` : `Updated company master ${company.legalCompanyName}`);
-    this.mirror('companies', company.id, company);
+    this.write('companies', company.id, company);
     return company;
   }
 
@@ -264,7 +722,7 @@ class DataService {
       created
         ? `Created new branch ${branch.branchName} for ${branch.companyName}`
         : `Updated branch ${branch.branchName} of ${branch.companyName}`);
-    this.mirror('branches', branch.id, branch);
+    this.write('branches', branch.id, branch);
     return branch;
   }
 
@@ -280,7 +738,7 @@ class DataService {
   public saveSite(site: SiteAddress): SiteAddress {
     this.upsert(this.s.sites, site, false);
     this.commit();
-    this.mirror('sites', site.id, site);
+    this.write('sites', site.id, site);
     return site;
   }
 
@@ -304,8 +762,316 @@ class DataService {
     const created = this.upsert(this.s.leads, lead);
     this.audit(userEmail, created ? 'create' : 'update', 'lead', lead.id, lead.title,
       created ? `Created new lead inquiry: ${lead.title}` : `Updated lead ${lead.title} stage to ${lead.stage}`);
-    this.mirror('leads', lead.id, lead);
+    this.write('leads', lead.id, lead);
     return lead;
+  }
+
+  // --- Lead workflow (see src/lib/leadWorkflow.ts) ---
+
+  /** Existing leads (and customers) with the same phone or email. */
+  public findLeadDuplicates(phone: string, email?: string, excludeLeadId?: string): string[] {
+    const p = normalizePakistaniPhone(phone);
+    const e = email?.toLowerCase().trim();
+    const hits = this.s.leads
+      .filter((l) => l.id !== excludeLeadId)
+      .filter((l) => contactsOf(l).some((c) => (p && normalizePakistaniPhone(c.phone) === p) || (e && c.email?.toLowerCase() === e)))
+      .map((l) => `Matches existing lead ${l.title} (${l.id}, ${stageMeta(l.stage).label})`);
+    return [...hits, ...this.checkDuplicates(phone, email)];
+  }
+
+  private activity(entry: Omit<LeadActivity, 'id' | 'at' | 'byName' | 'byUid'>): LeadActivity {
+    return {
+      id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      at: now(),
+      byUid: this.session?.uid,
+      byName: this.session?.name || 'Staff',
+      ...entry,
+    };
+  }
+
+  private nextLeadId(): string {
+    const year = new Date().getFullYear();
+    const max = this.s.leads.reduce((m, l) => {
+      const n = Number(l.id.match(/(\d+)$/)?.[1] || 0);
+      return l.id.includes(String(year)) ? Math.max(m, n) : m;
+    }, 0);
+    return `LD-${year}-${String(max + 1).padStart(4, '0')}`;
+  }
+
+  /** Creates a lead from the new-lead form or an import row. */
+  public createLead(data: Omit<Lead, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>, userEmail = 'admin'): Lead {
+    const lead = syncLeadFields({
+      ...data,
+      id: this.nextLeadId(),
+      stage: 'new',
+      activities: [this.activity({ kind: 'system', channel: 'note', note: 'Lead created' })],
+      assignedToUserId: data.assignedToUserId || this.session?.uid,
+      assignedToName: data.assignedToName || this.session?.name,
+      createdAt: now(),
+      createdBy: this.session?.name || userEmail,
+      updatedAt: now(),
+    } as Lead);
+    return this.saveLead(lead, userEmail);
+  }
+
+  /** Imports many leads at once (Excel). Returns how many were created. */
+  public importLeads(rows: Omit<Lead, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>[], userEmail = 'admin'): number {
+    rows.forEach((r) => {
+      const lead = this.createLead({ ...r, activities: undefined }, userEmail);
+      lead.activities = [this.activity({ kind: 'system', channel: 'note', note: 'Imported from Excel' })];
+      this.write('leads', lead.id, { activities: lead.activities });
+    });
+    return rows.length;
+  }
+
+  /** Records a call / WhatsApp / meeting and moves the lead according to the outcome. */
+  public logLeadContact(
+    leadId: string,
+    entry: { channel: ActivityChannel; outcome?: ContactOutcome; note?: string; contactId?: string; nextFollowUp?: string; lostReason?: string },
+    userEmail = 'admin'
+  ): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const contact = contactsOf(lead).find((c) => c.id === entry.contactId);
+    const act = this.activity({ kind: 'contact', channel: entry.channel, outcome: entry.outcome, note: entry.note, contactId: entry.contactId, contactName: contact?.name, nextFollowUp: entry.nextFollowUp });
+
+    const stage = stageOf(lead);
+    let nextStage: LeadStage = lead.stage;
+    if (entry.outcome === 'engaged' && ['new', 'contacted'].includes(stage)) nextStage = 'engaged';
+    else if (entry.outcome === 'not_interested' || entry.outcome === 'wrong_contact') nextStage = 'lost';
+    else if (stage === 'new' && entry.channel !== 'note') nextStage = 'contacted';
+
+    const updated: Lead = {
+      ...lead,
+      stage: nextStage,
+      contactOutcome: entry.outcome ?? lead.contactOutcome,
+      lastContactedAt: entry.channel === 'note' ? lead.lastContactedAt : act.at,
+      nextFollowUp: entry.nextFollowUp || (nextStage === 'lost' ? undefined : lead.nextFollowUp),
+      activities: [act, ...(lead.activities ?? [])],
+      ...(nextStage === 'lost' && lead.stage !== 'lost'
+        ? { lostAt: now(), lostAtStage: lead.stage, lostReason: entry.lostReason || outcomeLabel(entry.outcome) }
+        : {}),
+    };
+    return this.saveLead(updated, userEmail);
+  }
+
+  /** Moves a lead to any stage manually (with a timeline entry). */
+  public setLeadStage(leadId: string, stage: LeadStage, note?: string, userEmail = 'admin'): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const updated: Lead = {
+      ...lead,
+      stage,
+      activities: [this.activity({ kind: 'stage', channel: 'note', note: `Moved to ${stageMeta(stage).label}${note ? `: ${note}` : ''}` }), ...(lead.activities ?? [])],
+      ...(stage === 'lost' ? { lostAt: now(), lostAtStage: lead.stage, lostReason: note || lead.lostReason } : {}),
+      ...(stage === 'won' ? { wonAt: now() } : {}),
+    };
+    return this.saveLead(updated, userEmail);
+  }
+
+  public scheduleLeadInspection(
+    leadId: string,
+    plan: { date: string; timeSlot: 'morning' | 'afternoon' | 'evening'; teamId?: string; inspectorIds: string[]; instructions?: string },
+    userEmail = 'admin'
+  ): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const team = this.s.teams.find((t) => t.id === plan.teamId);
+    const people = plan.inspectorIds.map((uid) => this.s.users.find((u) => u.uid === uid)).filter(Boolean) as UserProfile[];
+    const inspection: InspectionAssessment = {
+      ...(lead.inspection ?? {
+        pestTypesFound: lead.pestIssues ?? [],
+        infestationSeverity: 'moderate',
+        areaSqFt: 0,
+        criticalFindings: '',
+        recommendedTreatment: '',
+        photoEvidenceUrls: [],
+      }),
+      id: lead.inspection?.id || `INSP-${Date.now().toString(36).toUpperCase()}`,
+      leadId,
+      scheduledDate: plan.date,
+      timeSlot: plan.timeSlot,
+      teamId: team?.id,
+      teamName: team?.name,
+      inspectorIds: people.map((p) => p.uid),
+      inspectorNames: people.map((p) => p.displayName),
+      inspectorId: people[0]?.uid || '',
+      inspectorName: people.map((p) => p.displayName).join(', ') || team?.name || 'Unassigned',
+      instructions: plan.instructions,
+      status: 'scheduled',
+    } as InspectionAssessment;
+    const rescheduled = lead.inspection?.status === 'scheduled';
+    const updated: Lead = {
+      ...lead,
+      stage: 'inspection_scheduled',
+      inspection,
+      inspectorIds: inspection.inspectorIds,
+      activities: [
+        this.activity({
+          kind: 'inspection',
+          channel: 'visit',
+          note: `${rescheduled ? 'Inspection rescheduled' : 'Inspection scheduled'} for ${formatDate(plan.date)} (${plan.timeSlot})${team ? ` · ${team.name}` : ''}${people.length ? ` · ${inspection.inspectorName}` : ''}`,
+        }),
+        ...(lead.activities ?? []),
+      ],
+    };
+    return this.saveLead(updated, userEmail);
+  }
+
+  public recordInspectionFindings(
+    leadId: string,
+    findings: Pick<InspectionAssessment, 'pestTypesFound' | 'infestationSeverity' | 'areaSqFt' | 'criticalFindings' | 'recommendedTreatment' | 'photos'>,
+    userEmail = 'admin'
+  ): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const base = lead.inspection;
+    const inspection: InspectionAssessment = {
+      id: base?.id || `INSP-${Date.now().toString(36).toUpperCase()}`,
+      leadId,
+      scheduledDate: base?.scheduledDate || now().slice(0, 10),
+      inspectorId: base?.inspectorId || this.session?.uid || '',
+      inspectorName: base?.inspectorName || this.session?.name || '',
+      ...base,
+      ...findings,
+      photos: findings.photos ?? base?.photos ?? [],
+      photoEvidenceUrls: findings.photos ? findings.photos.map((p) => p.imageUrl) : base?.photoEvidenceUrls ?? [],
+      completedDate: now().slice(0, 10),
+      findingsBy: this.session?.name,
+      status: 'completed',
+    };
+    const updated: Lead = {
+      ...lead,
+      stage: ['proposal_sent', 'won', 'lost', 'proposal_drafted'].includes(lead.stage) ? lead.stage : 'inspection_completed',
+      inspection,
+      pestIssues: findings.pestTypesFound,
+      activities: [
+        this.activity({ kind: 'inspection', channel: 'visit', note: `Inspection findings recorded (${findings.infestationSeverity} infestation, ${findings.areaSqFt || 0} sq ft${findings.photos?.length ? `, ${findings.photos.length} photo${findings.photos.length > 1 ? 's' : ''}` : ''})` }),
+        ...(lead.activities ?? []),
+      ],
+    };
+    return this.saveLead(updated, userEmail);
+  }
+
+  private provinceFor(city: string): CompanyMaster['province'] {
+    const c = city.toLowerCase();
+    if (/lahore|faisalabad|multan|rawalpindi|gujranwala|sialkot|sargodha|bahawalpur/.test(c)) return /rawalpindi/.test(c) ? 'Punjab' : 'Punjab';
+    if (/islamabad/.test(c)) return 'Islamabad_ICT';
+    if (/peshawar|mardan|abbottabad|swat/.test(c)) return 'KPK';
+    if (/quetta|gwadar/.test(c)) return 'Balochistan';
+    return 'Sindh';
+  }
+
+  /**
+   * Proposals need a customer account. Creates a prospect account (status "lead") from the lead's
+   * company details and contacts, or reuses the one already linked. Returns the account id.
+   */
+  public ensureLeadCustomer(leadId: string, userEmail = 'admin'): { customerId: string; customerType: 'company' | 'individual' } {
+    const lead = this.getLeadById(leadId);
+    if (!lead) throw new Error('Lead not found');
+    if (lead.existingCustomerId) return { customerId: lead.existingCustomerId, customerType: lead.customerType };
+
+    const ts = now();
+    const contacts = contactsOf(lead);
+    const primary = contacts.find((c) => c.isPrimary) ?? contacts[0];
+    const province = this.provinceFor(lead.city || '');
+    let customerId: string;
+
+    if (lead.customerType === 'individual') {
+      customerId = generatePermanentId('CL', this.s.clients.length + 1);
+      const client: IndividualClient = {
+        id: customerId,
+        type: 'individual',
+        fullName: primary?.name || lead.title,
+        primaryPhone: primary?.phone || lead.phone,
+        email: primary?.email || lead.email,
+        residentialAddress: lead.propertyAddress || lead.city,
+        city: lead.city,
+        area: lead.area,
+        province,
+        taxStatus: 'non_filer',
+        status: 'lead',
+        balance: 0,
+        createdAt: ts,
+        createdBy: this.session?.name || userEmail,
+        updatedAt: ts,
+      };
+      this.saveClient(client, userEmail);
+    } else {
+      customerId = generatePermanentId('CO', this.s.companies.length + 1);
+      const toContact = (c: LeadContact, isPrimary: boolean) => ({
+        id: `cont_${c.id}_${Date.now().toString(36)}`,
+        fullName: c.name,
+        designation: c.designation,
+        phone: c.phone,
+        mobile: c.phone,
+        email: c.email,
+        isPrimary,
+      });
+      const company: CompanyMaster = {
+        id: customerId,
+        type: 'company',
+        legalCompanyName: lead.companyName || lead.title,
+        headOfficeAddress: lead.propertyAddress || lead.city,
+        city: lead.city,
+        province,
+        website: lead.website,
+        primaryContact: primary ? toContact(primary, true) : { id: 'cont_primary', fullName: lead.contactName, phone: lead.phone, mobile: lead.phone, email: lead.email, isPrimary: true },
+        additionalContacts: contacts.filter((c) => c !== primary).map((c) => toContact(c, false)),
+        industrySegment: 'other',
+        billingPreference: 'centralized',
+        taxStatus: 'active_filer',
+        totalBranchesCount: 1,
+        totalActiveContracts: 0,
+        totalBalance: 0,
+        status: 'lead',
+        createdAt: ts,
+        createdBy: this.session?.name || userEmail,
+        updatedAt: ts,
+      };
+      this.saveCompany(company, userEmail);
+    }
+
+    this.saveLead({ ...lead, existingCustomerId: customerId }, userEmail);
+    return { customerId, customerType: lead.customerType };
+  }
+
+  /** Closes a lead as won and activates its customer account. */
+  public markLeadWon(leadId: string, note?: string, userEmail = 'admin'): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const { customerId, customerType } = this.ensureLeadCustomer(leadId, userEmail);
+    if (customerType === 'company') {
+      const co = this.getCompanyById(customerId);
+      if (co && co.status !== 'active') this.saveCompany({ ...co, status: 'active' }, userEmail);
+    } else {
+      const cl = this.getClientById(customerId);
+      if (cl && cl.status !== 'active') this.saveClient({ ...cl, status: 'active' }, userEmail);
+    }
+    return this.setLeadStage(leadId, 'won', note, userEmail);
+  }
+
+  /** Keeps the lead in step with its proposal (created → proposal stage, accepted → won, declined → lost). */
+  private syncLeadWithProposal(proposal: Proposal, created: boolean, userEmail: string) {
+    if (!proposal.leadId) return;
+    const lead = this.getLeadById(proposal.leadId);
+    if (!lead) return;
+    const stage = stageOf(lead);
+    if (proposal.status === 'accepted' && stage !== 'won') {
+      this.markLeadWon(lead.id, `Proposal ${proposal.id} accepted`, userEmail);
+    } else if (proposal.status === 'declined' && stage !== 'lost') {
+      this.setLeadStage(lead.id, 'lost', `Proposal ${proposal.id} declined`, userEmail);
+    } else if (created || lead.proposalId !== proposal.id) {
+      this.saveLead({
+        ...lead,
+        stage: ['won', 'lost'].includes(stage) ? lead.stage : 'proposal_sent',
+        proposalId: proposal.id,
+        activities: [
+          this.activity({ kind: 'proposal', channel: 'note', note: `Proposal ${proposal.id} created (PKR ${Math.round(proposal.totalAmount).toLocaleString()})` }),
+          ...(lead.activities ?? []),
+        ],
+      }, userEmail);
+    }
   }
 
   // --- Proposals & Revisions ---
@@ -340,7 +1106,8 @@ class DataService {
       created
         ? `Drafted new proposal ${proposal.id} for ${proposal.customerName}`
         : `Updated proposal ${proposal.id} (status: ${proposal.status})`);
-    this.mirror('proposals', proposal.id, proposal);
+    this.write('proposals', proposal.id, proposal);
+    this.syncLeadWithProposal(proposal, created, userEmail);
     return proposal;
   }
 
@@ -393,8 +1160,138 @@ class DataService {
   public saveContract(contract: Contract, _userEmail = 'admin'): Contract {
     this.upsert(this.s.contracts, contract);
     this.commit();
-    this.mirror('contracts', contract.id, contract);
+    this.write('contracts', contract.id, contract);
     return contract;
+  }
+
+  /**
+   * Generates recurring visit schedule for an active contract.
+   * Creates service jobs spaced according to the contract's frequency across its term.
+   */
+  public generateVisitScheduleForContract(
+    contractId: string,
+    technician?: { uid: string; name: string },
+    userEmail = 'admin'
+  ): ServiceJob[] {
+    const leadPcoName = technician?.name || 'Unassigned';
+    const contract = this.getContractById(contractId);
+    if (!contract) throw new Error('Contract not found');
+
+    const startDate = new Date(contract.startDate);
+    const endDate = new Date(contract.endDate);
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      throw new Error('Invalid contract start or end date');
+    }
+
+    // Determine interval days based on service frequency
+    let stepDays = 30; // default monthly
+    switch (contract.frequency) {
+      case 'weekly':
+        stepDays = 7;
+        break;
+      case 'fortnightly':
+        stepDays = 14;
+        break;
+      case 'monthly':
+        stepDays = 30;
+        break;
+      case 'bi_monthly':
+        stepDays = 60;
+        break;
+      case 'quarterly':
+        stepDays = 90;
+        break;
+      case 'one_off':
+        stepDays = 0;
+        break;
+      default:
+        stepDays = 30;
+    }
+
+    const createdJobs: ServiceJob[] = [];
+    const customer =
+      contract.customerType === 'company'
+        ? this.getCompanyById(contract.customerId)
+        : this.getClientById(contract.customerId);
+    const sites = this.getSites(contract.customerId, contract.branchId);
+    const site = sites[0];
+
+    const siteId = site?.id || 'SITE-01';
+    const siteName = site?.siteName || `${contract.customerName} Facility`;
+    const siteAddress = site?.addressLine1 || (customer && 'headOfficeAddress' in customer ? customer.headOfficeAddress : (customer && 'residentialAddress' in customer ? customer.residentialAddress : 'Karachi Facility'));
+
+    let curDate = new Date(startDate.getTime());
+    let jobIdx = 1;
+
+    while (curDate <= endDate && (stepDays > 0 || jobIdx === 1)) {
+      const scheduledDateStr = curDate.toISOString().split('T')[0];
+      const jobId = `JOB-${new Date().getFullYear()}-${String(this.s.jobs.length + 1).padStart(4, '0')}`;
+
+      const job: ServiceJob = {
+        id: jobId,
+        contractId: contract.id,
+        proposalId: contract.proposalId,
+        customerType: contract.customerType,
+        customerId: contract.customerId,
+        customerName: contract.customerName,
+        branchId: contract.branchId,
+        branchName: contract.branchName,
+        siteId,
+        siteName,
+        siteAddress,
+        serviceType: contract.serviceScope,
+        targetPests: ['cockroaches', 'rodents_rats'],
+        scheduledDate: scheduledDateStr,
+        timeSlot: 'morning',
+        assignedTechnicianIds: technician ? [technician.uid] : [],
+        assignedTechnicianNames: technician ? [leadPcoName] : [],
+        leadPcoId: technician?.uid || '',
+        leadPcoName,
+        status: 'scheduled',
+        checklists: [
+          { id: 'c1', taskDescription: 'Conduct preliminary perimeter inspection & harbor check', isCompleted: false },
+          { id: 'c2', taskDescription: 'Calibrated application of target IPM formulations', isCompleted: false },
+          { id: 'c3', taskDescription: 'Post-treatment sanitation and site sign-off with customer', isCompleted: false },
+        ],
+        chemicalsUsed: [
+          {
+            id: 'chem_01',
+            chemicalName: 'Maxforce FC Magnum Roach Gel',
+            activeIngredient: 'Fipronil 0.05%',
+            dosageRate: '1-2 spots per sq meter',
+            quantityUsed: 30,
+            unit: 'grams',
+            batchNumber: 'BAY-2026-PAK',
+            targetPest: 'cockroaches',
+            applicationMethod: 'gel_baiting',
+          },
+        ],
+        photoEvidence: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      this.saveJob(job, userEmail);
+      createdJobs.push(job);
+      jobIdx++;
+
+      if (stepDays === 0) break;
+      curDate = new Date(curDate.getTime() + stepDays * 24 * 60 * 60 * 1000);
+    }
+
+    contract.totalJobsScheduled = (contract.totalJobsScheduled || 0) + createdJobs.length;
+    this.saveContract(contract, userEmail);
+
+    this.audit(
+      userEmail,
+      'create',
+      'contract',
+      contract.id,
+      contract.customerName,
+      `Generated ${createdJobs.length} visit schedule jobs across contract term`
+    );
+
+    return createdJobs;
   }
 
   // --- Service Jobs & PCO Operations ---
@@ -410,12 +1307,29 @@ class DataService {
     return this.s.jobs.find((j) => j.id === id);
   }
 
+  public getInvoiceForJob(jobId: string): Invoice | undefined {
+    return this.s.invoices.find((i) => i.jobId === jobId);
+  }
+
   public saveJob(job: ServiceJob, userEmail = 'admin'): ServiceJob {
     const created = this.upsert(this.s.jobs, job);
     this.audit(userEmail, created ? 'create' : 'update', 'job', job.id, job.serviceType,
       created ? `Scheduled service job ${job.id} for ${job.customerName}` : `Updated job ${job.id} status to ${job.status}`);
-    this.mirror('service_jobs', job.id, job);
+    this.write('service_jobs', job.id, job);
     return job;
+  }
+
+  /** Public record behind a document's "Scan to verify" QR code (minimal details, readable by id only). */
+  public recordVerification(id: string, data: Record<string, unknown>) {
+    this.write('doc_verifications', id, data);
+  }
+
+  /** Saves field photos as they are taken (no audit entry per photo; finishing the job logs the visit). */
+  public saveJobPhotos(jobId: string, photos: PhotoEvidence[]) {
+    const job = this.getJobById(jobId);
+    if (!job) return;
+    this.upsert(this.s.jobs, { ...job, photoEvidence: photos });
+    this.write('service_jobs', jobId, { photoEvidence: photos, updatedAt: now() });
   }
 
   public checkPcoConflict(technicianId: string, date: string, timeSlot: string, currentJobId?: string): boolean {
@@ -455,7 +1369,7 @@ class DataService {
       created
         ? `Generated invoice ${invoice.invoiceNumber} for ${invoice.customerName}`
         : `Updated invoice ${invoice.invoiceNumber} (status: ${invoice.status})`);
-    this.mirror('invoices', invoice.id, invoice);
+    this.write('invoices', invoice.id, invoice);
     return invoice;
   }
 
@@ -487,7 +1401,7 @@ class DataService {
 
     this.audit(userEmail, 'create', 'payment', payment.id, payment.receiptNumber,
       `Recorded payment receipt ${payment.receiptNumber} of PKR ${payment.cashAmountReceived} (WHT: PKR ${payment.customerWhtDeducted?.amountDeducted || 0}) for ${invoice.invoiceNumber}`);
-    this.mirror('payments', payment.id, payment);
+    this.write('payments', payment.id, payment);
     return payment;
   }
 
@@ -500,7 +1414,7 @@ class DataService {
     this.upsert(this.s.taxRules, rule, false);
     this.audit(userEmail, 'update', 'tax_rule', rule.id, rule.jurisdictionTitle,
       `Updated tax rule for ${rule.jurisdictionTitle}: Standard ${rule.standardSalesTaxPercent}%, WHT ${rule.whtActiveFilerPercent}%`);
-    this.mirror('tax_rules', rule.id, rule);
+    this.write('tax_rules', rule.id, rule);
     return rule;
   }
 
@@ -525,7 +1439,7 @@ class DataService {
   public saveDocument(document: PortalDocument, userEmail = 'admin'): PortalDocument {
     const created = this.upsert(this.s.documents, document, false);
     this.commit();
-    this.mirror('documents', document.id, document);
+    this.write('documents', document.id, document);
     if (created) {
       const ownerLabel = document.owner.kind === 'library' ? 'IKPM document library' : `${document.owner.kind} ${document.owner.id}`;
       this.logAudit({
@@ -541,14 +1455,21 @@ class DataService {
     return document;
   }
 
-  /** Removes the record from the portal. The file itself stays in Cloudinary (deleting requires a signed API call). */
+  /** Removes the record from the portal and, when the server API is configured, deletes the file from Cloudinary. */
   public removeDocument(id: string, userEmail = 'admin') {
     const docRec = this.getDocumentById(id);
     if (!docRec) return;
     this.s.documents = this.s.documents.filter((d) => d.id !== id);
     this.s.documentPacks = this.s.documentPacks.map((p) => ({ ...p, documentIds: p.documentIds.filter((x) => x !== id) }));
     this.audit(userEmail, 'delete', 'document', id, docRec.title, `Removed document "${docRec.title}" from portal`);
-    this.mirror('documents', id, { removed: true, removedAt: now() });
+    this.write('documents', id, { removed: true, removedAt: now() });
+    // Delete the actual file unless another document still points at it (e.g. a copy)
+    const shared = this.s.documents.some((d) => d.file.publicId && d.file.publicId === docRec.file.publicId);
+    if (!shared) {
+      deleteFromCloudinary(docRec.file).catch((err: Error) =>
+        this.emitError({ collection: 'cloudinary', id, code: 'cloudinary', message: `${docRec.title}: ${err.message}` })
+      );
+    }
   }
 
   public getDocumentPacks(): DocumentPack[] {
@@ -558,7 +1479,7 @@ class DataService {
   public saveDocumentPack(pack: DocumentPack) {
     this.upsert(this.s.documentPacks, pack, false);
     this.commit();
-    this.mirror('document_packs', pack.id, pack);
+    this.write('document_packs', pack.id, pack);
   }
 
   /** Resolves a pack to the concrete, non-expired library documents it contains. */
@@ -580,9 +1501,10 @@ class DataService {
   }
 
   public logOutreach(log: OutreachLog) {
+    Object.assign(log, this.ownership());
     this.s.outreachLogs.unshift(log);
     this.commit();
-    this.mirror('outreach_logs', log.id, log);
+    this.write('outreach_logs', log.id, log);
   }
 }
 

@@ -1,7 +1,7 @@
 // Direct browser -> Cloudinary uploads using an UNSIGNED upload preset (no API secret in the frontend).
 // Falls back to an inline data URL for small files when Cloudinary is not configured (demo / offline mode).
 
-import { cloudinaryEnv, integrations } from '../config/env';
+import { cloudinaryEnv, integrations, outreachEnv } from '../config/env';
 import type { StoredFile } from '../types/document';
 
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // Cloudinary free plan: 10 MB per file
@@ -35,6 +35,22 @@ function readAsDataUrl(file: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+/** Turns Cloudinary's terse upload errors into something the person can act on. */
+function explainUploadError(status: number, message = ''): string {
+  const m = message.trim();
+  if (/unknown api key|invalid cloud_name|cloud_name/i.test(m)) {
+    return `Cloudinary doesn't recognise the cloud name "${cloudinaryEnv.cloudName}". Copy the exact Cloud name from your Cloudinary dashboard into VITE_CLOUDINARY_CLOUD_NAME and restart the portal.`;
+  }
+  if (/upload preset not found/i.test(m)) {
+    return `Upload preset "${cloudinaryEnv.uploadPreset}" doesn't exist in cloud "${cloudinaryEnv.cloudName}". Check VITE_CLOUDINARY_UPLOAD_PRESET.`;
+  }
+  if (/whitelisted for unsigned|must be unsigned/i.test(m)) {
+    return `Upload preset "${cloudinaryEnv.uploadPreset}" must be set to Signing mode: Unsigned in Cloudinary (Settings → Upload → Upload presets).`;
+  }
+  if (status === 400 && /file size too large/i.test(m)) return 'This file is larger than your Cloudinary plan allows (10 MB on the free plan).';
+  return m || `Upload failed (HTTP ${status})`;
 }
 
 const safeSegment = (v: string) => v.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 60);
@@ -82,7 +98,7 @@ export async function uploadFile(
         // non-JSON error body
       }
       if (xhr.status >= 200 && xhr.status < 300) resolve(body);
-      else reject(new Error((body.error as { message?: string })?.message || `Upload failed (HTTP ${xhr.status})`));
+      else reject(new Error(explainUploadError(xhr.status, (body.error as { message?: string })?.message)));
     };
     xhr.onerror = () => reject(new Error('Network error while uploading. Check your connection.'));
     xhr.send(form);
@@ -109,4 +125,24 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * Permanently deletes a file from Cloudinary through the server (/api/delete-file), which holds
+ * the API secret. Returns false when the server API isn't configured (the file then stays in Cloudinary).
+ */
+export async function deleteFromCloudinary(file: StoredFile): Promise<boolean> {
+  if (file.storage !== 'cloudinary' || !file.publicId || !integrations.outreachApi) return false;
+  const { auth } = await import('./firebase');
+  const token = await auth.currentUser?.getIdToken();
+  const res = await fetch(`${outreachEnv.apiBaseUrl.replace(/\/$/, '')}/delete-file`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ publicId: file.publicId, resourceType: file.resourceType || 'image' }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Could not delete the file from Cloudinary (HTTP ${res.status})`);
+  }
+  return true;
 }
