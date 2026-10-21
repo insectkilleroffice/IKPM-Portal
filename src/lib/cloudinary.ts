@@ -37,6 +37,22 @@ function readAsDataUrl(file: Blob): Promise<string> {
   });
 }
 
+/** Turns Cloudinary's terse upload errors into something the person can act on. */
+function explainUploadError(status: number, message = ''): string {
+  const m = message.trim();
+  if (/unknown api key|invalid cloud_name|cloud_name/i.test(m)) {
+    return `Cloudinary doesn't recognise the cloud name "${cloudinaryEnv.cloudName}". Copy the exact Cloud name from your Cloudinary dashboard into VITE_CLOUDINARY_CLOUD_NAME and restart the portal.`;
+  }
+  if (/upload preset not found/i.test(m)) {
+    return `Upload preset "${cloudinaryEnv.uploadPreset}" doesn't exist in cloud "${cloudinaryEnv.cloudName}". Check VITE_CLOUDINARY_UPLOAD_PRESET.`;
+  }
+  if (/whitelisted for unsigned|must be unsigned/i.test(m)) {
+    return `Upload preset "${cloudinaryEnv.uploadPreset}" must be set to Signing mode: Unsigned in Cloudinary (Settings → Upload → Upload presets).`;
+  }
+  if (status === 400 && /file size too large/i.test(m)) return 'This file is larger than your Cloudinary plan allows (10 MB on the free plan).';
+  return m || `Upload failed (HTTP ${status})`;
+}
+
 const safeSegment = (v: string) => v.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 60);
 
 /**
@@ -82,7 +98,7 @@ export async function uploadFile(
         // non-JSON error body
       }
       if (xhr.status >= 200 && xhr.status < 300) resolve(body);
-      else reject(new Error((body.error as { message?: string })?.message || `Upload failed (HTTP ${xhr.status})`));
+      else reject(new Error(explainUploadError(xhr.status, (body.error as { message?: string })?.message)));
     };
     xhr.onerror = () => reject(new Error('Network error while uploading. Check your connection.'));
     xhr.send(form);

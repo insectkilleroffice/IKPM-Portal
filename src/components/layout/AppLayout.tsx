@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { RoleSimulatorBanner } from '../common/RoleSimulatorBanner';
 import { LoadingSpinner } from '../common/LoadingSpinner';
+import { ErrorBoundary } from '../common/ErrorBoundary';
 import { dataService } from '../../services/dataService';
 import { useNotification } from '../../contexts/NotificationContext';
 
@@ -41,9 +42,11 @@ export const AppLayout: React.FC = () => {
 
         <main className="content-area">
           {/* Keep sidebar & header on screen while a lazy page chunk loads */}
-          <Suspense fallback={<LoadingSpinner message="Loading…" />}>
-            <Outlet />
-          </Suspense>
+          <ErrorBoundary resetKey={location.pathname}>
+            <Suspense fallback={<LoadingSpinner message="Loading…" />}>
+              <Outlet />
+            </Suspense>
+          </ErrorBoundary>
         </main>
       </div>
     </div>

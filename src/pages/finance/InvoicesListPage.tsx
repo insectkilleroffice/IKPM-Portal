@@ -27,11 +27,15 @@ import { useDataStore } from '../../hooks/useDataStore';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import type { Invoice, PaymentReceipt, TaxJurisdiction, InvoiceLineItem } from '../../types/finance';
 import { provinceToJurisdiction, getStandardTaxRate } from '../../lib/workflow';
+import { pdfGenerator } from '../../lib/pdfGenerator';
+import { usePdfAction } from '../../hooks/usePdfAction';
+import { Download as DownloadIcon } from 'lucide-react';
 
 export const InvoicesListPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { success, error, warning } = useNotification();
+  const pdfAction = usePdfAction();
+  const { success, warning } = useNotification();
   const { userProfile, effectiveRole } = useAuth();
   useDataStore();
 
@@ -305,6 +309,21 @@ export const InvoicesListPage: React.FC = () => {
     setSelectedInvoice(voided);
   };
 
+  const downloadInvoice = (inv: Invoice) => pdfAction.run(inv.id, () => pdfGenerator.generateInvoicePDF(inv));
+  const downloadReceipt = (r: PaymentReceipt) => pdfAction.run(r.id, () => pdfGenerator.generateReceiptPDF(r));
+
+  /** Real contact for payment reminders (branch manager, company primary contact or individual client). */
+  const reminderRecipient = (inv: Invoice) => {
+    if (inv.customerType === 'company') {
+      const br = inv.branchId ? dataService.getBranchById(inv.branchId) : undefined;
+      if (br) return { name: br.branchManagerName || inv.customerName, phone: br.branchManagerPhone || br.branchPhone, email: br.branchEmail };
+      const co = dataService.getCompanyById(inv.customerId);
+      return { name: co?.primaryContact.fullName || inv.customerName, phone: co?.primaryContact.mobile, email: co?.primaryContact.email };
+    }
+    const cl = dataService.getClientById(inv.customerId);
+    return { name: cl?.fullName || inv.customerName, phone: cl?.primaryPhone, email: cl?.email };
+  };
+
   return (
     <div className="animate-fade-in">
       <Breadcrumbs items={[{ label: 'Invoices, Receivables & Tax' }]} />
@@ -441,6 +460,9 @@ export const InvoicesListPage: React.FC = () => {
                         </button>
                       )}
 
+                      <button className="icon-btn" title="Download invoice PDF" onClick={() => downloadInvoice(inv)}>
+                        <DownloadIcon size={15} />
+                      </button>
                       <button
                         className="btn btn-secondary"
                         style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem' }}
@@ -772,6 +794,10 @@ export const InvoicesListPage: React.FC = () => {
               )}
 
               <div style={{ display: 'flex', gap: '0.5rem', marginLeft: 'auto' }}>
+                <button className="btn btn-secondary" onClick={() => downloadInvoice(selectedInvoice)}>
+                  <DownloadIcon size={14} />
+                  <span>Download PDF</span>
+                </button>
                 {selectedInvoice.balanceDue > 0 && selectedInvoice.status !== 'void_reversed' && (
                   <button className="btn btn-primary" onClick={() => handleOpenPayment(selectedInvoice)}>
                     <DollarSign size={14} />
@@ -842,6 +868,36 @@ export const InvoicesListPage: React.FC = () => {
                 Balance Due: {formatPKR(selectedInvoice.balanceDue)}
               </div>
             </div>
+
+            {(() => {
+              const receipts = dataService.getPayments().filter((p) => p.invoiceId === selectedInvoice.id);
+              if (!receipts.length) return null;
+              return (
+                <div>
+                  <div className="section-title" style={{ marginTop: 0 }}>Receipts</div>
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead>
+                        <tr><th>Receipt</th><th>Date</th><th>Mode</th><th style={{ textAlign: 'right' }}>Amount</th><th /></tr>
+                      </thead>
+                      <tbody>
+                        {receipts.map((r) => (
+                          <tr key={r.id}>
+                            <td className="cell-title">{r.receiptNumber}</td>
+                            <td>{formatDate(r.paymentDate)}</td>
+                            <td style={{ textTransform: 'capitalize' }}>{r.paymentMode.replace(/_/g, ' ')}</td>
+                            <td style={{ textAlign: 'right' }}>{formatPKR(r.cashAmountReceived)}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button className="icon-btn" title="Download receipt PDF" onClick={() => downloadReceipt(r)}><DownloadIcon size={15} /></button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </Modal>
       )}
@@ -851,10 +907,7 @@ export const InvoicesListPage: React.FC = () => {
         <SendDocumentsModal
           isOpen={Boolean(sendReminderInvoice)}
           onClose={() => setSendReminderInvoice(null)}
-          recipient={{
-            name: sendReminderInvoice.customerName,
-            phone: '+92 300 1234567',
-          }}
+          recipient={reminderRecipient(sendReminderInvoice)}
           related={{
             kind: 'proposal',
             id: sendReminderInvoice.id,

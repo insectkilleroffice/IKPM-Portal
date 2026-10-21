@@ -7,6 +7,7 @@ import { SyncProvider } from './contexts/SyncContext';
 import { AppLayout } from './components/layout/AppLayout';
 import { ProtectedRoute } from './components/layout/ProtectedRoute';
 import { LoadingSpinner } from './components/common/LoadingSpinner';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import type { ModuleKey } from './lib/permissions';
 
 /** Route element restricted to the roles allowed to use a module (see src/lib/permissions.ts). */
@@ -31,6 +32,8 @@ const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m)
 const PcoMobilePage = lazy(() => import('./pages/pco/PcoMobilePage').then((m) => ({ default: m.PcoMobilePage })));
 const DocumentLibraryPage = lazy(() => import('./features/documents/DocumentLibraryPage').then((m) => ({ default: m.DocumentLibraryPage })));
 const TeamAccessPage = lazy(() => import('./pages/admin/TeamAccessPage').then((m) => ({ default: m.TeamAccessPage })));
+const InspectionsPage = lazy(() => import('./pages/inspections/InspectionsPage').then((m) => ({ default: m.InspectionsPage })));
+const VerifyDocumentPage = lazy(() => import('./pages/verify/VerifyDocumentPage').then((m) => ({ default: m.VerifyDocumentPage })));
 const ClientFilesPage = lazy(() => import('./features/documents/ClientFilesPage').then((m) => ({ default: m.ClientFilesPage })));
 
 function App() {
@@ -39,11 +42,13 @@ function App() {
       <NotificationProvider>
         <SyncProvider>
           <AuthProvider>
+            <ErrorBoundary>
             <Suspense fallback={<LoadingSpinner fullPage />}>
             <Routes>
               {/* Public & Bootstrap Authentication */}
               <Route path="/login" element={<LoginPage />} />
               <Route path="/setup-first-admin" element={<FirstAdminSetupPage />} />
+              <Route path="/verify/:id" element={<VerifyDocumentPage />} />
 
               {/* Protected Portal Workspaces */}
               <Route
@@ -61,6 +66,7 @@ function App() {
                 <Route path="/customers/branch/:id" element={guard('customers', <BranchDetailPage />)} />
                 <Route path="/customers/individual/:id" element={guard('customers', <IndividualDetailPage />)} />
                 <Route path="/crm" element={guard('crm', <LeadsListPage />)} />
+                <Route path="/inspections" element={guard(['inspections', 'crm'], <InspectionsPage />)} />
                 <Route path="/proposals" element={guard('proposals', <ProposalsListPage />)} />
                 <Route path="/contracts" element={guard('contracts', <ContractsListPage />)} />
 
@@ -86,6 +92,7 @@ function App() {
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
             </Suspense>
+            </ErrorBoundary>
           </AuthProvider>
         </SyncProvider>
       </NotificationProvider>

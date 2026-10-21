@@ -12,6 +12,7 @@ export type ModuleKey =
   | 'dashboard'
   | 'customers'
   | 'crm'
+  | 'inspections'
   | 'proposals'
   | 'contracts'
   | 'files'
@@ -45,7 +46,8 @@ export interface RoleDefinition {
 export const MODULES: { key: ModuleKey; label: string; group: string; hint?: string }[] = [
   { key: 'dashboard', label: 'Dashboard', group: 'General' },
   { key: 'customers', label: 'Customer accounts', group: 'Sales & customers' },
-  { key: 'crm', label: 'Leads', group: 'Sales & customers' },
+  { key: 'crm', label: 'Leads pipeline', group: 'Sales & customers' },
+  { key: 'inspections', label: 'Site inspections', group: 'Sales & customers', hint: 'Without Leads access: only inspections assigned to the person' },
   { key: 'proposals', label: 'Proposals', group: 'Sales & customers' },
   { key: 'contracts', label: 'Contracts & AMCs', group: 'Sales & customers' },
   { key: 'files', label: 'Client files', group: 'Files' },
@@ -71,17 +73,17 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
   {
     id: 'management', name: 'Management', basedOn: 'management', isSystem: true, defaultScope: 'company', color: '#1B3A63',
     description: 'Sees everything, approves proposals, views reports',
-    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'pco', 'invoices', 'tax']), settings: 'view' },
+    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'pco', 'invoices', 'tax']), settings: 'view' },
   },
   {
     id: 'sales', name: 'Sales', basedOn: 'sales', isSystem: true, defaultScope: 'own', color: '#1A73E8',
     description: 'Leads, proposals and their own customers',
-    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'proposals', 'contracts', 'files']), documents: 'view' },
+    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files']), documents: 'view' },
   },
   {
     id: 'operations', name: 'Operations', basedOn: 'operations', isSystem: true, defaultScope: 'company', color: '#D97706',
     description: 'Dispatch, service jobs and field teams',
-    modules: { ...all('edit', ['dashboard', 'calendar', 'jobs', 'pco', 'files']), customers: 'view', contracts: 'view', documents: 'view' },
+    modules: { ...all('edit', ['dashboard', 'inspections', 'calendar', 'jobs', 'pco', 'files']), customers: 'view', contracts: 'view', documents: 'view' },
   },
   {
     id: 'finance', name: 'Finance', basedOn: 'finance', isSystem: true, defaultScope: 'company', color: '#0E8A5F',
@@ -91,12 +93,12 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
   {
     id: 'technician', name: 'Technician (PCO)', basedOn: 'technician', isSystem: true, defaultScope: 'own', color: '#9A3412',
     description: 'Only the jobs assigned to them, in the PCO field app',
-    modules: { pco: 'edit' },
+    modules: { pco: 'edit', inspections: 'edit' },
   },
   {
     id: 'auditor', name: 'Auditor (read-only)', basedOn: 'auditor', isSystem: true, defaultScope: 'company', color: '#4B5563',
     description: 'Read-only access for compliance review',
-    modules: all('view', ['dashboard', 'customers', 'crm', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'invoices', 'settings']),
+    modules: all('view', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'invoices', 'settings']),
   },
 ];
 
@@ -109,7 +111,9 @@ export function setRoleDefinitions(fromCloud: RoleDefinition[]) {
   const next = new Map<string, RoleDefinition>(DEFAULT_ROLES.map((r) => [r.id, r]));
   fromCloud.forEach((r) => {
     if (r.id === 'super_admin') return; // Super admin can never be narrowed
-    next.set(r.id, { ...next.get(r.id), ...r, modules: { ...r.modules } });
+    const base = next.get(r.id);
+    // Modules added in later versions fall back to the built-in default until saved explicitly
+    next.set(r.id, { ...base, ...r, modules: { ...(base?.modules ?? {}), ...r.modules } });
   });
   registry = next;
 }
@@ -158,6 +162,7 @@ const MODULE_HOME: Partial<Record<ModuleKey, string>> = {
   pco: '/pco-field',
   customers: '/customers',
   crm: '/crm',
+  inspections: '/inspections',
   proposals: '/proposals',
   contracts: '/contracts',
   files: '/files',

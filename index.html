@@ -6,7 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>IKPM Business Portal — Insect Killer Pest Management Pakistan</title>
     <meta name="description" content="Integrated enterprise management portal for Insect Killer Pest Management (IKPM), Pakistan. Comprehensive CRM, Service Operations, AMC Contracts, and Provincial Tax Invoicing." />
-    <meta name="theme-color" content="#06152B" />
+    <meta name="theme-color" content="#F3F6FB" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="/manifest.json" />
@@ -16,16 +17,22 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
-      if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(reg => {
-              console.log('IKPM ServiceWorker registered with scope:', reg.scope);
-            })
-            .catch(err => {
+      // Offline support only on real deployments. During development (Vite dev server) the
+      // worker would cache source modules and serve stale code, so remove it there.
+      if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+        var isDev = ['localhost', '127.0.0.1', '[::1]'].indexOf(location.hostname) !== -1 || location.hostname.endsWith('.localhost');
+        if (isDev) {
+          navigator.serviceWorker.getRegistrations().then(function (regs) {
+            regs.forEach(function (r) { r.unregister(); });
+          });
+          if (window.caches) caches.keys().then(function (keys) { keys.forEach(function (k) { caches.delete(k); }); });
+        } else {
+          window.addEventListener('load', function () {
+            navigator.serviceWorker.register('/sw.js').catch(function (err) {
               console.warn('IKPM ServiceWorker registration note:', err);
             });
-        });
+          });
+        }
       }
     </script>
   </body>

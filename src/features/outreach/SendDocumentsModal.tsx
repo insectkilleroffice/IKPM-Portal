@@ -150,10 +150,10 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
       if (proposal && attachProposal) {
         if (!integrations.cloudinary) {
           warning('Proposal PDF not attached', 'Configure Cloudinary to share the proposal as a link. Downloading it instead.');
-          pdfGenerator.generateProposalPDF(proposal);
+          await pdfGenerator.generateProposalPDF(proposal);
         } else {
           const fileName = pdfGenerator.proposalFileName(proposal);
-          const stored = await uploadFile(pdfGenerator.proposalPDFBlob(proposal), { folder: `proposal/${proposal.id}`, fileName });
+          const stored = await uploadFile(await pdfGenerator.proposalPDFBlob(proposal), { folder: `proposal/${proposal.id}`, fileName });
           store.saveDocument(
             {
               id: `DOC-${Date.now()}-pdf`,

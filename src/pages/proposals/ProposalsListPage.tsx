@@ -21,6 +21,7 @@ import { Modal } from '../../components/common/Modal';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { formatPKR, generatePermanentId } from '../../lib/formatters';
 import { pdfGenerator } from '../../lib/pdfGenerator';
+import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import type { Proposal, ProposalLineItem, TemplateType } from '../../types/proposal';
@@ -31,6 +32,7 @@ export const ProposalsListPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { success, error, warning } = useNotification();
+  const pdfAction = usePdfAction();
   const { userProfile, canApproveProposals } = useAuth();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -41,6 +43,15 @@ export const ProposalsListPage: React.FC = () => {
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [sendTarget, setSendTarget] = useState<Proposal | null>(null);
   useDataStore();
+
+  // Deep link from a lead: /proposals?view=P-2026-0001
+  const viewId = searchParams.get('view');
+  useEffect(() => {
+    if (!viewId || selectedProposal) return;
+    const p = dataService.getProposalById(viewId);
+    if (p) setSelectedProposal(p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewId, dataService.getProposals().length]);
 
   const canSend = (p: Proposal) => ['approved', 'draft', 'sent_to_client', 'negotiation'].includes(p.status);
 
@@ -197,6 +208,7 @@ export const ProposalsListPage: React.FC = () => {
       customerType: selectedCustomerType,
       customerId: selectedCustomerId,
       customerName,
+      leadId: searchParams.get('fromLead') || undefined,
       branchId: selectedBranchId || undefined,
       branchName,
       preparedByUserId: userProfile?.uid || 'admin',
@@ -395,7 +407,8 @@ export const ProposalsListPage: React.FC = () => {
                       className="btn btn-secondary"
                       style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
                       title="Download Official Proposal PDF"
-                      onClick={() => pdfGenerator.generateProposalPDF(p)}
+                      onClick={() => pdfAction.run(p.id, () => pdfGenerator.generateProposalPDF(p))}
+                      disabled={pdfAction.busy === p.id}
                     >
                       <Download size={13} />
                     </button>
@@ -640,7 +653,8 @@ export const ProposalsListPage: React.FC = () => {
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
               <button
                 className="btn btn-secondary"
-                onClick={() => pdfGenerator.generateProposalPDF(selectedProposal)}
+                onClick={() => pdfAction.run(selectedProposal.id, () => pdfGenerator.generateProposalPDF(selectedProposal))}
+                disabled={pdfAction.busy === selectedProposal.id}
               >
                 <Download size={14} />
                 <span>Export PDF</span>
@@ -661,6 +675,33 @@ export const ProposalsListPage: React.FC = () => {
                     >
                       <CheckCircle2 size={15} />
                       <span>Approve Proposal (AP-01)</span>
+                    </button>
+                  </>
+                )}
+                {['approved', 'sent_to_client', 'negotiation'].includes(selectedProposal.status) && (
+                  <>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => {
+                        const updated: Proposal = { ...selectedProposal, status: 'declined' };
+                        dataService.saveProposal(updated, userProfile?.email);
+                        setSelectedProposal(updated);
+                        warning('Marked as lost', selectedProposal.leadId ? `Lead ${selectedProposal.leadId} was moved to Lost.` : 'Proposal declined by client.');
+                      }}
+                    >
+                      Client declined (Lost)
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        const updated: Proposal = { ...selectedProposal, status: 'accepted' };
+                        dataService.saveProposal(updated, userProfile?.email);
+                        setSelectedProposal(updated);
+                        success('Won', selectedProposal.leadId ? `Lead ${selectedProposal.leadId} is now Won and the customer account is active.` : 'Proposal accepted by client.');
+                      }}
+                    >
+                      <CheckCircle2 size={15} />
+                      <span>Client accepted (Won)</span>
                     </button>
                   </>
                 )}

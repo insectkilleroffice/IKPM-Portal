@@ -23,6 +23,7 @@ import { StatusBadge } from '../../components/common/StatusBadge';
 import { Modal } from '../../components/common/Modal';
 import { formatDate, generatePermanentId } from '../../lib/formatters';
 import { pdfGenerator } from '../../lib/pdfGenerator';
+import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
@@ -35,6 +36,7 @@ export const JobsListPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { success, warning, error } = useNotification();
+  const pdfAction = usePdfAction();
   const { userProfile, effectiveRole } = useAuth();
   useDataStore();
 
@@ -394,7 +396,8 @@ export const JobsListPage: React.FC = () => {
                         className="btn btn-secondary"
                         style={{ padding: '0.25rem 0.45rem', fontSize: '0.72rem' }}
                         title="Download Service Report PDF"
-                        onClick={() => pdfGenerator.generateJobReportPDF(j)}
+                        onClick={() => pdfAction.run(j.id, () => pdfGenerator.generateJobReportPDF(j))}
+                        disabled={pdfAction.busy === j.id}
                       >
                         <Download size={12} />
                       </button>
@@ -619,7 +622,8 @@ export const JobsListPage: React.FC = () => {
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
               <button
                 className="btn btn-secondary"
-                onClick={() => pdfGenerator.generateJobReportPDF(selectedJob)}
+                onClick={() => pdfAction.run(selectedJob.id, () => pdfGenerator.generateJobReportPDF(selectedJob))}
+                disabled={pdfAction.busy === selectedJob.id}
               >
                 <Download size={14} />
                 <span>Download Report PDF</span>

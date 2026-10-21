@@ -1,1120 +1,668 @@
-import React, { useState } from 'react';
-import { useDataStore } from '../../hooks/useDataStore';
-import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
-import { OutreachHistory } from '../../features/outreach/OutreachHistory';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Users2,
   Plus,
   Search,
-  Filter,
-  CheckCircle,
-  AlertTriangle,
-  FileSpreadsheet,
-  ArrowRight,
+  Upload,
+  Download,
   Phone,
-  MapPin,
-  Calendar,
-  Send,
-  Building2,
-  UserPlus,
+  MessageCircle,
+  Mail,
+  MoreVertical,
+  Pencil,
+  CalendarClock,
   ClipboardCheck,
+  FileSpreadsheet,
+  Trophy,
+  XCircle,
+  Send,
+  RotateCcw,
+  Star,
+  Building2,
+  User,
+  Clock,
+  Users2,
+  ArrowRight,
+  MapPin,
 } from 'lucide-react';
-import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
-import { StatusBadge } from '../../components/common/StatusBadge';
 import { Modal } from '../../components/common/Modal';
-import { formatPKR, formatDate, generatePermanentId } from '../../lib/formatters';
-import { useNotification } from '../../contexts/NotificationContext';
+import { ConfirmDialog } from '../../components/common/ConfirmDialog';
+import { EmptyState } from '../../components/common/EmptyState';
+import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
-import type { Lead, LeadStage, LeadSource, PestType, InspectionAssessment } from '../../types/crm';
-import type { IndividualClient, CompanyMaster, SiteAddress } from '../../types/customer';
-import { getLeadNextAction } from '../../lib/workflow';
+import { useNotification } from '../../contexts/NotificationContext';
+import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
+import { LeadFormModal } from '../../features/leads/LeadFormModal';
+import { ImportLeadsModal } from '../../features/leads/ImportLeadsModal';
+import { InspectionFindingsModal, LogContactModal, PEST_OPTIONS, ScheduleInspectionModal } from '../../features/leads/LeadActionModals';
+import { canEditModule } from '../../lib/permissions';
+import { pdfGenerator } from '../../lib/pdfGenerator';
+import { usePdfAction } from '../../hooks/usePdfAction';
+import { formatDate, formatDateTime } from '../../lib/formatters';
+import { toWhatsAppNumber } from '../../services/outreachService';
+import {
+  CHANNELS,
+  contactsOf,
+  exportLeadsToExcel,
+  isFollowUpDue,
+  nextStep,
+  outcomeLabel,
+  outcomeTone,
+  PIPELINE,
+  primaryContact,
+  sourceLabel,
+  SOURCES,
+  stageMeta,
+  stageOf,
+  type PipelineStage,
+} from '../../lib/leadWorkflow';
+import type { Lead, LeadActivity } from '../../types/crm';
 
-const PIPELINE_STAGES: { stage: LeadStage; title: string }[] = [
-  { stage: 'new', title: 'New Inquiries' },
-  { stage: 'contacted', title: 'Contacted' },
-  { stage: 'inspection_scheduled', title: 'Inspection Scheduled' },
-  { stage: 'inspection_completed', title: 'Inspection Done' },
-  { stage: 'qualified', title: 'Qualified Prospect' },
-  { stage: 'proposal_drafted', title: 'Proposal Sent' },
-  { stage: 'won', title: 'Won / Converted' },
-  { stage: 'lost', title: 'Lost / Closed' },
-];
+type Tab = 'all' | PipelineStage;
+
+const StagePill: React.FC<{ lead: Lead }> = ({ lead }) => {
+  const m = stageMeta(lead.stage);
+  return (
+    <span className="badge-status" style={{ background: `${m.color}1A`, color: m.color }}>
+      {m.short}
+    </span>
+  );
+};
+
+const ownerOf = (l: Lead) => (l as Lead & { ownerName?: string }).ownerName || l.assignedToName || l.createdBy || '—';
 
 export const LeadsListPage: React.FC = () => {
+  const store = useDataStore();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const { success, warning } = useNotification();
-  const { userProfile } = useAuth();
-  useDataStore();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { userProfile, effectiveRole } = useAuth();
+  const { success, warning, error } = useNotification();
+  const canEdit = canEditModule(effectiveRole, 'crm');
+
+  const [tab, setTab] = useState<Tab>((searchParams.get('stage') as Tab) || 'all');
+  const [query, setQuery] = useState('');
+  const [sourceFilter, setSourceFilter] = useState('all');
+  const [onlyMine, setOnlyMine] = useState(false);
+  const [onlyDue, setOnlyDue] = useState(false);
+
+  const [formLead, setFormLead] = useState<Lead | null | undefined>(searchParams.get('action') === 'new_lead' ? null : undefined);
+  const [showImport, setShowImport] = useState(false);
+  const [detailId, setDetailId] = useState<string | null>(searchParams.get('lead'));
+  const [contactLead, setContactLead] = useState<Lead | null>(null);
+  const [scheduleLead, setScheduleLead] = useState<Lead | null>(null);
+  const [findingsLead, setFindingsLead] = useState<Lead | null>(null);
+  const [lostLead, setLostLead] = useState<Lead | null>(null);
+  const [wonLead, setWonLead] = useState<Lead | null>(null);
   const [sendLead, setSendLead] = useState<Lead | null>(null);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
 
-  const [viewMode, setViewMode] = useState<'kanban' | 'table'>('kanban');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showNewLeadModal, setShowNewLeadModal] = useState(searchParams.get('action') === 'new_lead');
-  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const leads = store.getLeads();
+  const detail = detailId ? store.getLeadById(detailId) ?? null : null;
 
-  // Convert Won Lead to Client Modal State
-  const [showConvertModal, setShowConvertModal] = useState<Lead | null>(null);
-  const [convertType, setConvertType] = useState<'individual' | 'company'>('company');
-  const [convertForm, setConvertForm] = useState({
-    name: '',
-    phone: '',
-    email: '',
-    cnicOrNtn: '',
-    city: 'Karachi',
-    area: '',
-    address: '',
-    province: 'Sindh' as 'Sindh' | 'Punjab' | 'Islamabad_ICT' | 'KPK' | 'Balochistan',
-  });
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: leads.length };
+    PIPELINE.forEach((p) => (c[p.stage] = 0));
+    leads.forEach((l) => (c[stageOf(l)] = (c[stageOf(l)] || 0) + 1));
+    return c;
+  }, [leads]);
+  const dueCount = leads.filter(isFollowUpDue).length;
 
-  // Schedule / Complete Inspection Modal State
-  const [showInspectionModal, setShowInspectionModal] = useState<Lead | null>(null);
-  const [inspectionForm, setInspectionForm] = useState({
-    scheduledDate: new Date().toISOString().split('T')[0],
-    inspectorName: 'Kamran Abbasi (Inspector)',
-    infestationSeverity: 'moderate' as 'low' | 'moderate' | 'high' | 'severe',
-    pestTypesFound: ['termites'] as PestType[],
-    areaSqFt: 2500,
-    criticalFindings: 'Perimeter pest harbor observed along floor skirting.',
-    recommendedTreatment: 'Drill & sub-slab pressure chemical barrier injection.',
-  });
-
-  // New Lead Form State
-  const [newLead, setNewLead] = useState({
-    title: '',
-    source: 'whatsapp' as LeadSource,
-    customerType: 'company' as const,
-    contactName: '',
-    phone: '',
-    email: '',
-    city: 'Karachi',
-    area: '',
-    propertyAddress: '',
-    pestIssues: ['termites'] as PestType[],
-    estimatedValue: 50000,
-    notes: '',
-  });
-
-  const leads = dataService.getLeads();
-
-  const filteredLeads = leads.filter((l) => {
-    const q = searchQuery.toLowerCase();
-    return (
-      l.title.toLowerCase().includes(q) ||
-      l.contactName.toLowerCase().includes(q) ||
-      l.phone.includes(q) ||
-      l.city.toLowerCase().includes(q) ||
-      l.id.toLowerCase().includes(q)
-    );
-  });
-
-  const handleCreateLead = (e: React.FormEvent) => {
-    e.preventDefault();
-    const dups = dataService.checkDuplicates(newLead.phone, newLead.email);
-    if (dups.length > 0) {
-      warning('Duplicate Warning Flagged', dups[0]);
-    }
-
-    const nextId = generatePermanentId('LD', leads.length + 1);
-    const created: Lead = {
-      id: nextId,
-      title: newLead.title,
-      source: newLead.source,
-      stage: 'new',
-      customerType: newLead.customerType,
-      contactName: newLead.contactName,
-      phone: newLead.phone,
-      email: newLead.email,
-      city: newLead.city,
-      area: newLead.area,
-      propertyAddress: newLead.propertyAddress,
-      pestIssues: newLead.pestIssues,
-      estimatedValue: newLead.estimatedValue,
-      assignedToName: userProfile?.displayName || 'Salman (CEO)',
-      notes: newLead.notes,
-      duplicateWarning: dups.length > 0 ? dups.join(' | ') : undefined,
-      createdAt: new Date().toISOString(),
-      createdBy: userProfile?.displayName || 'Admin',
-      updatedAt: new Date().toISOString(),
-    };
-
-    dataService.saveLead(created, userProfile?.email);
-    success('Lead Inquiry Logged', `${created.title} (${created.id})`);
-    setShowNewLeadModal(false);
-  };
-
-  const handleStageChange = (lead: Lead, newStage: LeadStage) => {
-    const updated = { ...lead, stage: newStage };
-    dataService.saveLead(updated, userProfile?.email);
-    success('Pipeline Stage Updated', `${lead.title} is now ${newStage.replace('_', ' ')}`);
-  };
-
-  const handleExecuteLeadAction = (lead: Lead) => {
-    const nextAct = getLeadNextAction(lead);
-    if (nextAct.actionType === 'create_client') {
-      const isCo = lead.customerType === 'company';
-      setConvertType(isCo ? 'company' : 'individual');
-      const prov =
-        lead.city.toLowerCase().includes('lahore') || lead.city.toLowerCase().includes('faisalabad')
-          ? 'Punjab'
-          : lead.city.toLowerCase().includes('islamabad') || lead.city.toLowerCase().includes('rawalpindi')
-          ? 'Islamabad_ICT'
-          : 'Sindh';
-      setConvertForm({
-        name: isCo ? lead.title : lead.contactName,
-        phone: lead.phone,
-        email: lead.email || '',
-        cnicOrNtn: '',
-        city: lead.city || 'Karachi',
-        area: lead.area || '',
-        address: lead.propertyAddress || '',
-        province: prov,
+  const visible = useMemo(() => {
+    const q = query.toLowerCase().trim();
+    return leads
+      .filter((l) => tab === 'all' || stageOf(l) === tab)
+      .filter((l) => sourceFilter === 'all' || l.source === sourceFilter)
+      .filter((l) => !onlyMine || (l as Lead & { ownerUid?: string }).ownerUid === userProfile?.uid || l.assignedToUserId === userProfile?.uid)
+      .filter((l) => !onlyDue || isFollowUpDue(l))
+      .filter((l) => {
+        if (!q) return true;
+        const hay = [l.id, l.title, l.companyName, l.city, l.area, l.industry, ...contactsOf(l).flatMap((c) => [c.name, c.phone, c.email, c.designation])]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return hay.includes(q);
+      })
+      .sort((a, b) => {
+        // Follow-ups due first, then most recently updated
+        const d = Number(isFollowUpDue(b)) - Number(isFollowUpDue(a));
+        return d || (b.updatedAt || '').localeCompare(a.updatedAt || '');
       });
-      setShowConvertModal(lead);
-    } else if (nextAct.actionType === 'create_proposal') {
+  }, [leads, tab, sourceFilter, onlyMine, onlyDue, query, userProfile?.uid]);
+
+  const switchTab = (t: Tab) => {
+    setTab(t);
+    const next = new URLSearchParams(searchParams);
+    if (t === 'all') next.delete('stage');
+    else next.set('stage', t);
+    next.delete('action');
+    setSearchParams(next, { replace: true });
+  };
+
+  const openDetail = (id: string | null) => {
+    setDetailId(id);
+    const next = new URLSearchParams(searchParams);
+    if (id) next.set('lead', id);
+    else next.delete('lead');
+    setSearchParams(next, { replace: true });
+  };
+
+  const createProposal = (lead: Lead) => {
+    try {
+      const { customerId, customerType } = store.ensureLeadCustomer(lead.id, userProfile?.email);
       const params = new URLSearchParams({
         action: 'new_proposal',
         fromLead: lead.id,
-        customerName: lead.contactName || lead.title,
-        customerType: lead.customerType || 'company',
-        city: lead.city,
-        address: lead.propertyAddress || lead.city,
-        pests: lead.pestIssues.join(','),
-        val: String(lead.estimatedValue || 50000),
+        customerId,
+        customerType,
+        city: lead.city || '',
+        address: lead.propertyAddress || lead.area || lead.city || '',
       });
-      if (lead.existingCustomerId) {
-        params.set('customerId', lead.existingCustomerId);
-      }
+      const pests = lead.inspection?.pestTypesFound?.length ? lead.inspection.pestTypesFound : lead.pestIssues;
+      if (pests?.length) params.set('pests', pests.join(','));
       navigate(`/proposals?${params.toString()}`);
-    } else if (nextAct.actionType === 'schedule_inspection' || nextAct.actionType === 'complete_inspection') {
-      setInspectionForm({
-        scheduledDate: lead.inspection?.scheduledDate || new Date().toISOString().split('T')[0],
-        inspectorName: lead.inspection?.inspectorName || 'Kamran Abbasi (Inspector)',
-        infestationSeverity: lead.inspection?.infestationSeverity || 'moderate',
-        pestTypesFound: lead.pestIssues.length > 0 ? lead.pestIssues : ['termites'],
-        areaSqFt: lead.inspection?.areaSqFt || 2500,
-        criticalFindings: lead.inspection?.criticalFindings || 'Active infestation evidence identified at site perimeter.',
-        recommendedTreatment: lead.inspection?.recommendedTreatment || 'Targeted IPM chemical barrier application.',
-      });
-      setShowInspectionModal(lead);
-    } else if (nextAct.actionType === 'send_documents') {
-      setSendLead(lead);
+    } catch (err) {
+      error('Could not start proposal', err instanceof Error ? err.message : String(err));
     }
   };
 
-  const handleSaveInspection = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!showInspectionModal) return;
-
-    const insp: InspectionAssessment = {
-      id: `INSP-${Date.now().toString().slice(-4)}`,
-      leadId: showInspectionModal.id,
-      scheduledDate: inspectionForm.scheduledDate,
-      completedDate: new Date().toISOString().split('T')[0],
-      inspectorId: 'tech_01',
-      inspectorName: inspectionForm.inspectorName,
-      pestTypesFound: inspectionForm.pestTypesFound,
-      infestationSeverity: inspectionForm.infestationSeverity,
-      areaSqFt: Number(inspectionForm.areaSqFt),
-      criticalFindings: inspectionForm.criticalFindings,
-      recommendedTreatment: inspectionForm.recommendedTreatment,
-      photoEvidenceUrls: [],
-      status: 'completed',
-    };
-
-    const updatedLead: Lead = {
-      ...showInspectionModal,
-      stage: 'inspection_completed',
-      inspection: insp,
-      pestIssues: inspectionForm.pestTypesFound,
-    };
-
-    dataService.saveLead(updatedLead, userProfile?.email);
-    success('Inspection Completed & Logged', `Findings carried over. Ready to draft proposal.`);
-    setShowInspectionModal(null);
-    if (selectedLead?.id === updatedLead.id) {
-      setSelectedLead(updatedLead);
+  const runNext = (lead: Lead) => {
+    const step = nextStep(lead);
+    if (!canEdit && step.action !== 'open_proposal' && step.action !== 'open_customer') return openDetail(lead.id);
+    switch (step.action) {
+      case 'log_contact': return setContactLead(lead);
+      case 'schedule_inspection': return setScheduleLead(lead);
+      case 'record_findings': return setFindingsLead(lead);
+      case 'create_proposal': return createProposal(lead);
+      case 'open_proposal': return navigate(lead.proposalId ? `/proposals?view=${lead.proposalId}` : '/proposals');
+      case 'open_customer':
+        return lead.existingCustomerId
+          ? navigate(`/customers/${lead.customerType === 'individual' ? 'individual' : 'company'}/${lead.existingCustomerId}`)
+          : openDetail(lead.id);
+      case 'reopen':
+        store.setLeadStage(lead.id, 'contacted', 'Reopened', userProfile?.email);
+        return success('Lead reopened', `${lead.title} is back in Contacted.`);
     }
   };
 
-  const handleConvertLead = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!showConvertModal) return;
-
-    const dups = dataService.checkDuplicates(convertForm.phone, convertForm.email, convertForm.cnicOrNtn);
-    if (dups.length > 0) {
-      warning('Duplicate Matches Detected', dups[0]);
-    }
-
-    if (convertType === 'individual') {
-      const clientId = generatePermanentId('CL', dataService.getClients().length + 1);
-      const client: IndividualClient = {
-        id: clientId,
-        type: 'individual',
-        fullName: convertForm.name || showConvertModal.contactName,
-        cnic: convertForm.cnicOrNtn || undefined,
-        primaryPhone: convertForm.phone || showConvertModal.phone,
-        email: convertForm.email || showConvertModal.email,
-        residentialAddress: convertForm.address || showConvertModal.propertyAddress,
-        city: convertForm.city,
-        area: convertForm.area,
-        province: convertForm.province,
-        taxStatus: 'non_filer',
-        status: 'active',
-        balance: 0,
-        createdAt: new Date().toISOString(),
-        createdBy: userProfile?.displayName || 'Admin',
-        updatedAt: new Date().toISOString(),
-      };
-
-      dataService.saveClient(client, userProfile?.email);
-
-      const site: SiteAddress = {
-        id: `SITE-${Date.now().toString().slice(-4)}`,
-        siteName: `${client.fullName} Residence`,
-        customerType: 'individual',
-        customerId: client.id,
-        propertyType: 'residential_house',
-        addressLine1: client.residentialAddress,
-        area: client.area,
-        city: client.city,
-        province: client.province,
-        contactPersonName: client.fullName,
-        contactPersonPhone: client.primaryPhone,
-        isActive: true,
-        createdAt: new Date().toISOString(),
-      };
-      dataService.saveSite(site);
-
-      const updatedLead: Lead = {
-        ...showConvertModal,
-        stage: 'won',
-        customerType: 'individual',
-        existingCustomerId: client.id,
-      };
-      dataService.saveLead(updatedLead, userProfile?.email);
-      success('Client Account Created (Won)', `${client.fullName} (${client.id})`);
-      setShowConvertModal(null);
-      navigate(`/customers/individual/${client.id}`);
-    } else {
-      const companyId = generatePermanentId('CO', dataService.getCompanies().length + 1);
-      const company: CompanyMaster = {
-        id: companyId,
-        type: 'company',
-        legalCompanyName: convertForm.name || showConvertModal.title,
-        ntn: convertForm.cnicOrNtn || undefined,
-        headOfficeAddress: convertForm.address || showConvertModal.propertyAddress,
-        city: convertForm.city,
-        province: convertForm.province,
-        primaryContact: {
-          id: `cont_${Date.now()}`,
-          fullName: showConvertModal.contactName,
-          phone: showConvertModal.phone,
-          mobile: showConvertModal.phone,
-          email: showConvertModal.email,
-          isPrimary: true,
-        },
-        additionalContacts: [],
-        industrySegment: 'corporate_office',
-        billingPreference: 'centralized',
-        taxStatus: 'active_filer',
-        totalBranchesCount: 1,
-        totalActiveContracts: 0,
-        totalBalance: 0,
-        status: 'active',
-        createdAt: new Date().toISOString(),
-        createdBy: userProfile?.displayName || 'Admin',
-        updatedAt: new Date().toISOString(),
-      };
-
-      dataService.saveCompany(company, userProfile?.email);
-
-      const site: SiteAddress = {
-        id: `SITE-${Date.now().toString().slice(-4)}`,
-        siteName: `${company.legalCompanyName} Main Premises`,
-        customerType: 'company',
-        customerId: company.id,
-        propertyType: 'commercial_office',
-        addressLine1: company.headOfficeAddress,
-        area: convertForm.area || showConvertModal.area,
-        city: company.city,
-        province: company.province,
-        contactPersonName: company.primaryContact.fullName,
-        contactPersonPhone: company.primaryContact.mobile,
-        isActive: true,
-        createdAt: new Date().toISOString(),
-      };
-      dataService.saveSite(site);
-
-      const updatedLead: Lead = {
-        ...showConvertModal,
-        stage: 'won',
-        customerType: 'company',
-        existingCustomerId: company.id,
-      };
-      dataService.saveLead(updatedLead, userProfile?.email);
-      success('Company Account Created (Won)', `${company.legalCompanyName} (${company.id})`);
-      setShowConvertModal(null);
-      navigate(`/customers/company/${company.id}`);
+  const doExport = async () => {
+    if (!visible.length) return warning('Nothing to export', 'No leads match the current tab and filters.');
+    try {
+      const tabName = tab === 'all' ? 'all' : stageMeta(tab).short.toLowerCase();
+      await exportLeadsToExcel(visible, `IKPM-leads-${tabName}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      success('Exported', `${visible.length} lead(s) downloaded as Excel.`);
+    } catch (err) {
+      error('Export failed', err instanceof Error ? err.message : String(err));
     }
   };
+
+  const activeTabMeta = tab === 'all' ? null : stageMeta(tab);
 
   return (
     <div className="animate-fade-in">
-      <Breadcrumbs items={[{ label: 'CRM & Sales Pipeline' }]} />
+      <Breadcrumbs items={[{ label: 'Leads pipeline' }]} />
 
-      {/* Header */}
       <div className="page-header">
         <div className="page-title-wrap">
-          <h1>CRM, Leads & Sales Pipeline</h1>
+          <h1>Leads pipeline</h1>
           <p className="page-subtitle">
-            Capture inquiries from WhatsApp, Web, and Calls. Automatic duplicate detection and lead conversion.
+            Add the company and who to contact → log calls until they're engaged → schedule an inspection → record findings → send a proposal → won or lost.
           </p>
         </div>
-
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
-          <div style={{ display: 'flex', backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)' }}>
-            <button
-              onClick={() => setViewMode('kanban')}
-              style={{
-                padding: '0.45rem 0.85rem',
-                border: 'none',
-                background: viewMode === 'kanban' ? 'var(--ikpm-emerald-600)' : 'none',
-                color: viewMode === 'kanban' ? 'white' : 'var(--text-muted)',
-                borderRadius: 'var(--radius-md) 0 0 var(--radius-md)',
-                cursor: 'pointer',
-                fontWeight: 600,
-                fontSize: '0.8rem',
-              }}
-            >
-              Kanban Board
+        <div>
+          {canEdit && (
+            <button className="btn btn-secondary" onClick={() => setShowImport(true)}>
+              <Upload size={15} /> Import
             </button>
-            <button
-              onClick={() => setViewMode('table')}
-              style={{
-                padding: '0.45rem 0.85rem',
-                border: 'none',
-                background: viewMode === 'table' ? 'var(--ikpm-emerald-600)' : 'none',
-                color: viewMode === 'table' ? 'white' : 'var(--text-muted)',
-                borderRadius: '0 var(--radius-md) var(--radius-md) 0',
-                cursor: 'pointer',
-                fontWeight: 600,
-                fontSize: '0.8rem',
-              }}
-            >
-              Table List
-            </button>
-          </div>
-
-          <button className="btn btn-primary" onClick={() => setShowNewLeadModal(true)}>
-            <Plus size={16} />
-            <span>+ Capture New Lead</span>
+          )}
+          <button className="btn btn-secondary" onClick={doExport}>
+            <Download size={15} /> Export
           </button>
+          {canEdit && (
+            <button className="btn btn-primary" onClick={() => setFormLead(null)}>
+              <Plus size={16} /> New lead
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Search Bar */}
-      <div className="card" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ position: 'relative', width: '320px' }}>
-          <Search size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-          <input
-            type="text"
-            placeholder="Search leads by title, contact, phone, city..."
-            className="form-input"
-            style={{ paddingLeft: '2.2rem', height: '36px', fontSize: '0.825rem' }}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
-
-        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-          Showing <strong>{filteredLeads.length}</strong> inquiries
-        </div>
+      {/* Stage tabs */}
+      <div className="tab-bar" role="tablist">
+        <button className={`tab-btn ${tab === 'all' ? 'active' : ''}`} onClick={() => switchTab('all')} role="tab">
+          All <span className="tab-count">{counts.all}</span>
+        </button>
+        {PIPELINE.map((p) => (
+          <button key={p.stage} className={`tab-btn ${tab === p.stage ? 'active' : ''}`} onClick={() => switchTab(p.stage)} role="tab" title={p.hint}>
+            <span className="stage-dot" style={{ background: p.color }} /> {p.label} <span className="tab-count">{counts[p.stage] || 0}</span>
+          </button>
+        ))}
       </div>
 
-      {/* Kanban Pipeline View */}
-      {viewMode === 'kanban' ? (
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-            gap: '1rem',
-            overflowX: 'auto',
-            alignItems: 'start',
-          }}
-        >
-          {PIPELINE_STAGES.map(({ stage, title }) => {
-            const stageLeads = filteredLeads.filter((l) => l.stage === stage);
-            return (
-              <div
-                key={stage}
-                style={{
-                  backgroundColor: 'var(--bg-surface)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-lg)',
-                  padding: '1rem',
-                  minHeight: '400px',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
-                  <h4 style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--ikpm-navy-900)' }}>{title}</h4>
-                  <span className="badge-status badge-slate" style={{ fontSize: '0.7rem' }}>
-                    {stageLeads.length}
-                  </span>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                  {stageLeads.map((lead) => (
-                    <div
-                      key={lead.id}
-                      onClick={() => setSelectedLead(lead)}
-                      style={{
-                        padding: '0.85rem',
-                        backgroundColor: 'var(--bg-surface-alt)',
-                        borderRadius: 'var(--radius-md)',
-                        border: '1px solid var(--border-subtle)',
-                        borderLeft: lead.duplicateWarning ? '3px solid var(--ikpm-amber-500)' : '3px solid var(--ikpm-emerald-500)',
-                        cursor: 'pointer',
-                        transition: 'box-shadow 0.15s',
-                      }}
-                    >
-                      {lead.duplicateWarning && (
-                        <div
-                          style={{
-                            fontSize: '0.7rem',
-                            color: '#92400E',
-                            backgroundColor: 'var(--ikpm-amber-100)',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            marginBottom: '4px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '3px',
-                          }}
-                        >
-                          <AlertTriangle size={11} />
-                          <span>Possible Duplicate Customer</span>
-                        </div>
-                      )}
-
-                      <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>{lead.title}</div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        {lead.contactName} • {lead.city}
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.65rem' }}>
-                        <span className="badge-status badge-navy" style={{ fontSize: '0.65rem' }}>
-                          {lead.source}
-                        </span>
-                        <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--ikpm-emerald-600)' }}>
-                          {formatPKR(lead.estimatedValue)}
-                        </span>
-                      </div>
-
-                      {/* Next Action Single-Click Handoff */}
-                      <div
-                        style={{
-                          marginTop: '0.65rem',
-                          paddingTop: '0.5rem',
-                          borderTop: '1px dashed var(--border-subtle)',
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                        }}
-                      >
-                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Next Action:</span>
-                        <button
-                          className={`btn ${
-                            getLeadNextAction(lead).actionType === 'create_client' ? 'btn-primary' : 'btn-outline-emerald'
-                          }`}
-                          style={{ padding: '0.2rem 0.55rem', fontSize: '0.72rem', fontWeight: 700 }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleExecuteLeadAction(lead);
-                          }}
-                        >
-                          <span>{getLeadNextAction(lead).label}</span>
-                          <ArrowRight size={11} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>
+        <div className="drive-search" style={{ flex: '1 1 260px', maxWidth: 420 }}>
+          <Search size={16} color="var(--text-muted)" />
+          <input placeholder="Search company, contact, phone, city…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
+        <select className="form-select" style={{ width: 'auto', minHeight: 36 }} value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
+          <option value="all">All sources</option>
+          {SOURCES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+        </select>
+        <button type="button" className={`chip ${onlyMine ? 'chip-on' : ''}`} onClick={() => setOnlyMine((v) => !v)}>
+          <User size={14} /> My leads
+        </button>
+        <button type="button" className={`chip ${onlyDue ? 'chip-on' : ''}`} onClick={() => setOnlyDue((v) => !v)}>
+          <Clock size={14} /> Follow-up due {dueCount > 0 && <span className="tab-count" style={{ background: '#FEE2E2', color: '#991B1B' }}>{dueCount}</span>}
+        </button>
+        {activeTabMeta && <span className="cell-sub" style={{ marginLeft: 'auto' }}>{activeTabMeta.hint}</span>}
+      </div>
+
+      {visible.length === 0 ? (
+        <EmptyState
+          icon={Users2}
+          title={leads.length === 0 ? 'No leads yet' : 'No leads here'}
+          description={leads.length === 0 ? 'Add a lead with the company details and one contact, or import a list from Excel.' : 'Try another tab or clear the filters.'}
+          action={canEdit && leads.length === 0 ? { label: 'New lead', onClick: () => setFormLead(null) } : undefined}
+        />
       ) : (
-        /* Table View */
         <div className="table-container">
-          <table className="data-table">
+          <table className="data-table is-wide">
             <thead>
               <tr>
-                <th>Lead ID & Title</th>
-                <th>Source</th>
-                <th>Contact Name & Phone</th>
-                <th>City & Address</th>
-                <th>Pest Issues</th>
-                <th>Estimated Value</th>
+                <th style={{ minWidth: 220 }}>Company / client</th>
+                <th style={{ minWidth: 180 }}>Contact</th>
                 <th>Stage</th>
-                <th>Action</th>
+                <th>Progress</th>
+                <th>Follow-up</th>
+                <th>Owner</th>
+                <th style={{ width: 210, textAlign: 'right' }}>Next step</th>
               </tr>
             </thead>
             <tbody>
-              {filteredLeads.map((l) => (
-                <tr key={l.id}>
-                  <td>
-                    <div style={{ fontWeight: 700 }}>{l.title}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)', fontFamily: 'monospace' }}>
-                      {l.id}
-                    </div>
-                  </td>
-                  <td><span className="badge-status badge-navy">{l.source}</span></td>
-                  <td>
-                    <div>{l.contactName}</div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{l.phone}</div>
-                  </td>
-                  <td>
-                    <div>{l.city}</div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{l.propertyAddress}</div>
-                  </td>
-                  <td>
-                    {l.pestIssues.map((p) => (
-                      <span key={p} className="badge-status badge-slate" style={{ fontSize: '0.65rem', marginRight: '2px' }}>
-                        {p.replace('_', ' ')}
-                      </span>
-                    ))}
-                  </td>
-                  <td style={{ fontWeight: 700 }}>{formatPKR(l.estimatedValue)}</td>
-                  <td><StatusBadge status={l.stage} /></td>
-                  <td>
-                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                      <button
-                        className="btn btn-primary"
-                        style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
-                        onClick={() => handleExecuteLeadAction(l)}
-                      >
-                        <span>{getLeadNextAction(l).label}</span>
-                        <ArrowRight size={11} />
-                      </button>
-                      <button
-                        className="btn btn-secondary"
-                        style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem' }}
-                        onClick={() => setSelectedLead(l)}
-                      >
-                        Details
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {visible.map((l) => {
+                const p = primaryContact(l);
+                const extra = contactsOf(l).length - 1;
+                const step = nextStep(l);
+                const due = isFollowUpDue(l);
+                const st = stageOf(l);
+                return (
+                  <tr key={l.id} style={{ cursor: 'pointer' }} onClick={() => openDetail(l.id)}>
+                    <td>
+                      <div className="cell-main">
+                        <span className="lead-avatar">{l.customerType === 'individual' ? <User size={16} /> : <Building2 size={16} />}</span>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="cell-title">{l.title}</div>
+                          <div className="cell-sub">{[l.industry, l.area, l.city].filter(Boolean).join(' · ') || l.id}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      {p ? (
+                        <>
+                          <div>{p.name}{p.designation ? <span className="cell-sub"> · {p.designation}</span> : null}</div>
+                          <div className="cell-sub nowrap">{p.phone}{extra > 0 ? ` · +${extra} more` : ''}</div>
+                        </>
+                      ) : <span className="cell-sub">No contact</span>}
+                    </td>
+                    <td><StagePill lead={l} /></td>
+                    <td className="cell-sub">
+                      {st === 'inspection_scheduled' && l.inspection
+                        ? <>{formatDate(l.inspection.scheduledDate)} · {l.inspection.teamName || l.inspection.inspectorName}</>
+                        : st === 'inspection_completed' && l.inspection
+                          ? <>{l.inspection.infestationSeverity} · {l.inspection.pestTypesFound.map((x) => PEST_OPTIONS.find((o) => o.value === x)?.label || x).join(', ')}</>
+                          : st === 'proposal_sent'
+                            ? <>Proposal {l.proposalId || ''}</>
+                            : st === 'lost'
+                              ? <>{l.lostReason || 'Closed'}</>
+                              : l.contactOutcome
+                                ? <span className={`badge-status badge-${outcomeTone(l.contactOutcome)}`}>{outcomeLabel(l.contactOutcome)}</span>
+                                : <>{sourceLabel(l.source)}</>}
+                    </td>
+                    <td>
+                      {l.nextFollowUp && !['won', 'lost'].includes(st) ? (
+                        <span className={due ? 'badge-status badge-rose' : 'cell-sub'}>{due ? 'Due ' : ''}{formatDate(l.nextFollowUp)}</span>
+                      ) : (
+                        <span className="cell-sub">{l.lastContactedAt ? `Last ${formatDate(l.lastContactedAt)}` : '—'}</span>
+                      )}
+                    </td>
+                    <td className="cell-sub">{ownerOf(l)}</td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <div className="cell-actions" style={{ position: 'relative' }}>
+                        {(canEdit || step.action === 'open_proposal' || step.action === 'open_customer') && (
+                          <button className="btn btn-sm btn-secondary" onClick={() => runNext(l)}>
+                            {step.label} <ArrowRight size={13} />
+                          </button>
+                        )}
+                        {canEdit && (
+                          <RowMenu
+                            open={menuFor === l.id}
+                            onToggle={() => setMenuFor(menuFor === l.id ? null : l.id)}
+                            onClose={() => setMenuFor(null)}
+                            items={[
+                              { icon: Pencil, label: 'Edit details', run: () => setFormLead(l) },
+                              { icon: Phone, label: 'Log contact', run: () => setContactLead(l), hide: ['won', 'lost'].includes(st) },
+                              { icon: CalendarClock, label: l.inspection?.status === 'scheduled' ? 'Reschedule inspection' : 'Schedule inspection', run: () => setScheduleLead(l), hide: ['won', 'lost', 'new'].includes(st) },
+                              { icon: ClipboardCheck, label: 'Enter inspection findings', run: () => setFindingsLead(l), hide: ['won', 'lost', 'new', 'contacted'].includes(st) },
+                              { icon: FileSpreadsheet, label: 'Create proposal', run: () => createProposal(l), hide: ['won', 'lost', 'new', 'contacted'].includes(st) },
+                              { icon: Send, label: 'Send company documents', run: () => setSendLead(l) },
+                              { icon: Trophy, label: 'Mark as won', run: () => setWonLead(l), hide: ['won', 'lost', 'new'].includes(st) },
+                              { icon: XCircle, label: 'Mark as lost', run: () => setLostLead(l), hide: ['won', 'lost'].includes(st), danger: true },
+                              { icon: RotateCcw, label: 'Reopen', run: () => { store.setLeadStage(l.id, 'contacted', 'Reopened', userProfile?.email); success('Lead reopened', l.title); }, hide: st !== 'lost' },
+                            ]}
+                          />
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* Modal: New Lead Capture */}
-      <Modal
-        isOpen={showNewLeadModal}
-        onClose={() => setShowNewLeadModal(false)}
-        title="Capture New Lead Inquiry"
-        subtitle="Records WhatsApp, Call, or Web inquiries with automated duplicate detection."
-        maxWidth="640px"
-      >
-        <form onSubmit={handleCreateLead}>
-          <div className="form-group">
-            <label className="form-label">Inquiry Title / Description <span className="required">*</span></label>
-            <input
-              type="text"
-              required
-              className="form-input"
-              placeholder="e.g. Termite Inspection for Warehouse Roof"
-              value={newLead.title}
-              onChange={(e) => setNewLead({ ...newLead, title: e.target.value })}
-            />
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">Inquiry Source</label>
-              <select
-                className="form-select"
-                value={newLead.source}
-                onChange={(e) => setNewLead({ ...newLead, source: e.target.value as any })}
-              >
-                <option value="whatsapp">WhatsApp Business Platform</option>
-                <option value="website_form">Website Inquiry Form</option>
-                <option value="inbound_phone">Inbound Phone Call</option>
-                <option value="referral">Client Referral</option>
-                <option value="walk_in">Walk-in Customer</option>
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Customer Profile Type</label>
-              <select
-                className="form-select"
-                value={newLead.customerType}
-                onChange={(e) => setNewLead({ ...newLead, customerType: e.target.value as any })}
-              >
-                <option value="company">Corporate / Commercial Company</option>
-                <option value="individual">Individual Residential Client</option>
-              </select>
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">Contact Person Name <span className="required">*</span></label>
-              <input
-                type="text"
-                required
-                className="form-input"
-                placeholder="e.g. Tariq Mehmood"
-                value={newLead.contactName}
-                onChange={(e) => setNewLead({ ...newLead, contactName: e.target.value })}
-              />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Phone Number (Duplicate Check) <span className="required">*</span></label>
-              <input
-                type="text"
-                required
-                className="form-input"
-                placeholder="03001234567"
-                value={newLead.phone}
-                onChange={(e) => setNewLead({ ...newLead, phone: e.target.value })}
-              />
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">City</label>
-              <select
-                className="form-select"
-                value={newLead.city}
-                onChange={(e) => setNewLead({ ...newLead, city: e.target.value })}
-              >
-                <option value="Karachi">Karachi</option>
-                <option value="Lahore">Lahore</option>
-                <option value="Islamabad">Islamabad</option>
-                <option value="Rawalpindi">Rawalpindi</option>
-                <option value="Faisalabad">Faisalabad</option>
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Estimated Deal Value (PKR)</label>
-              <input
-                type="number"
-                className="form-input"
-                value={newLead.estimatedValue}
-                onChange={(e) => setNewLead({ ...newLead, estimatedValue: Number(e.target.value) })}
-              />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Site / Property Address</label>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="e.g. Plot 24, Industrial Area"
-              value={newLead.propertyAddress}
-              onChange={(e) => setNewLead({ ...newLead, propertyAddress: e.target.value })}
-            />
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
-            <button type="button" className="btn btn-secondary" onClick={() => setShowNewLeadModal(false)}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary">
-              Log Lead to Pipeline
-            </button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Modal: Lead Detail & Conversion Wizard */}
-      {selectedLead && (
-        <Modal
-          isOpen={Boolean(selectedLead)}
-          onClose={() => setSelectedLead(null)}
-          title={`Lead: ${selectedLead.title}`}
-          subtitle={`Lead ID: ${selectedLead.id} • Source: ${selectedLead.source}`}
-          maxWidth="600px"
-          footer={
-            <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>Update Stage:</span>
-                <select
-                  className="form-select"
-                  style={{ width: '170px', height: '32px', fontSize: '0.78rem' }}
-                  value={selectedLead.stage}
-                  onChange={(e) => {
-                    handleStageChange(selectedLead, e.target.value as LeadStage);
-                    setSelectedLead({ ...selectedLead, stage: e.target.value as LeadStage });
-                  }}
-                >
-                  {PIPELINE_STAGES.map((s) => (
-                    <option key={s.stage} value={s.stage}>
-                      {s.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button className="btn btn-secondary" onClick={() => setSendLead(selectedLead)} title="Send authority letters, NTN/SRB, profile… via WhatsApp / Email">
-                  <Send size={14} />
-                  <span>Send Docs</span>
-                </button>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => {
-                    handleExecuteLeadAction(selectedLead);
-                    setSelectedLead(null);
-                  }}
-                >
-                  <span>{getLeadNextAction(selectedLead).label}</span>
-                  <ArrowRight size={14} />
-                </button>
-              </div>
-            </div>
-          }
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', fontSize: '0.85rem' }}>
-            {selectedLead.duplicateWarning && (
-              <div
-                style={{
-                  padding: '0.75rem',
-                  backgroundColor: 'var(--ikpm-amber-100)',
-                  border: '1px solid #FCD34D',
-                  borderRadius: 'var(--radius-sm)',
-                  color: '#92400E',
-                }}
-              >
-                <strong>Duplicate Warning:</strong> {selectedLead.duplicateWarning}
-              </div>
-            )}
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>Contact Person:</span>
-                <div style={{ fontWeight: 700 }}>{selectedLead.contactName}</div>
-              </div>
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>Phone Number:</span>
-                <div style={{ fontWeight: 600 }}>{selectedLead.phone}</div>
-              </div>
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>City & Address:</span>
-                <div>{selectedLead.propertyAddress || selectedLead.city}</div>
-              </div>
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>Estimated Value:</span>
-                <div style={{ fontWeight: 700, color: 'var(--ikpm-emerald-600)' }}>{formatPKR(selectedLead.estimatedValue)}</div>
-              </div>
-            </div>
-
-            {selectedLead.inspection && (
-              <div style={{ padding: '0.75rem', backgroundColor: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: 'var(--radius-sm)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <strong style={{ color: 'var(--ikpm-emerald-800)' }}>Inspection Findings Recorded:</strong>
-                  <span className="badge-status badge-emerald">Severity: {selectedLead.inspection.infestationSeverity.toUpperCase()}</span>
-                </div>
-                <div style={{ fontSize: '0.78rem', marginTop: '4px' }}>
-                  Area: <strong>{selectedLead.inspection.areaSqFt} sq ft</strong> • Inspector: {selectedLead.inspection.inspectorName}
-                </div>
-                <div style={{ fontSize: '0.78rem', marginTop: '2px', color: 'var(--text-secondary)' }}>
-                  {selectedLead.inspection.criticalFindings}
-                </div>
-              </div>
-            )}
-
-            {selectedLead.notes && (
-              <div style={{ padding: '0.75rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-sm)' }}>
-                <strong>Inquiry Notes:</strong> {selectedLead.notes}
-              </div>
-            )}
-
-            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.85rem' }}>
-              <strong style={{ display: 'block', marginBottom: '0.5rem' }}>Documents shared</strong>
-              <OutreachHistory related={{ kind: 'lead', id: selectedLead.id }} emptyText="No company documents sent to this lead yet." />
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* Modal: Convert Won Lead to Client / Company Account (Duplicate Check Step 1) */}
-      {showConvertModal && (
-        <Modal
-          isOpen={Boolean(showConvertModal)}
-          onClose={() => setShowConvertModal(null)}
-          title="Convert Won Lead to Customer Account"
-          subtitle={`Lead ID: ${showConvertModal.id} • Real-time Duplicate Verification on Phone, NTN, & CNIC`}
-          maxWidth="640px"
-        >
-          <form onSubmit={handleConvertLead}>
-            {/* Live Duplicate Warning */}
-            {(() => {
-              const liveDups = dataService.checkDuplicates(convertForm.phone, convertForm.email, convertForm.cnicOrNtn);
-              return liveDups.length > 0 ? (
-                <div
-                  style={{
-                    padding: '0.75rem',
-                    backgroundColor: 'var(--ikpm-amber-100)',
-                    border: '1px solid #FCD34D',
-                    borderRadius: 'var(--radius-md)',
-                    color: '#92400E',
-                    marginBottom: '1rem',
-                    fontSize: '0.825rem',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700 }}>
-                    <AlertTriangle size={15} />
-                    <span>Duplicate Check Alert:</span>
-                  </div>
-                  <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
-                    {liveDups.map((dup, i) => (
-                      <li key={i}>{dup}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null;
-            })()}
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
-              <div className="form-group">
-                <label className="form-label">Account Structure Type <span className="required">*</span></label>
-                <select
-                  className="form-select"
-                  value={convertType}
-                  onChange={(e) => setConvertType(e.target.value as any)}
-                >
-                  <option value="company">Corporate Company Master</option>
-                  <option value="individual">Individual Client</option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">
-                  {convertType === 'company' ? 'Legal Company Name' : 'Client Full Name'} <span className="required">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  className="form-input"
-                  value={convertForm.name}
-                  onChange={(e) => setConvertForm({ ...convertForm, name: e.target.value })}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div className="form-group">
-                <label className="form-label">Primary Phone (Duplicate Checked) <span className="required">*</span></label>
-                <input
-                  type="text"
-                  required
-                  className="form-input"
-                  value={convertForm.phone}
-                  onChange={(e) => setConvertForm({ ...convertForm, phone: e.target.value })}
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Email Address</label>
-                <input
-                  type="email"
-                  className="form-input"
-                  value={convertForm.email}
-                  onChange={(e) => setConvertForm({ ...convertForm, email: e.target.value })}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div className="form-group">
-                <label className="form-label">
-                  {convertType === 'company' ? 'Federal NTN (1234567-8)' : 'National CNIC (42101-xxxxxxx-x)'}
-                </label>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder={convertType === 'company' ? '0812345-7' : '42101-1234567-1'}
-                  value={convertForm.cnicOrNtn}
-                  onChange={(e) => setConvertForm({ ...convertForm, cnicOrNtn: e.target.value })}
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Province (Provincial Tax Jurisdiction)</label>
-                <select
-                  className="form-select"
-                  value={convertForm.province}
-                  onChange={(e) => setConvertForm({ ...convertForm, province: e.target.value as any })}
-                >
-                  <option value="Sindh">Sindh (SRB 13%)</option>
-                  <option value="Punjab">Punjab (PRA 16%)</option>
-                  <option value="Islamabad_ICT">Islamabad ICT (16%)</option>
-                  <option value="KPK">KPK (KPRA 15%)</option>
-                  <option value="Balochistan">Balochistan (BRA 15%)</option>
-                </select>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '1rem' }}>
-              <div className="form-group">
-                <label className="form-label">City</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  value={convertForm.city}
-                  onChange={(e) => setConvertForm({ ...convertForm, city: e.target.value })}
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Premises / Head Office Address</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  value={convertForm.address}
-                  onChange={(e) => setConvertForm({ ...convertForm, address: e.target.value })}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
-              <button type="button" className="btn btn-secondary" onClick={() => setShowConvertModal(null)}>
-                Cancel
-              </button>
-              <button type="submit" className="btn btn-primary">
-                {convertType === 'company' ? <Building2 size={15} /> : <UserPlus size={15} />}
-                <span>Create Customer Account (Mark Won)</span>
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {/* Modal: Inspection Assessment (Step 1 Inspection Done -> Proposal) */}
-      {showInspectionModal && (
-        <Modal
-          isOpen={Boolean(showInspectionModal)}
-          onClose={() => setShowInspectionModal(null)}
-          title={`Inspection Assessment: ${showInspectionModal.title}`}
-          subtitle={`Lead ID: ${showInspectionModal.id} • Carry over findings directly to Proposal`}
-          maxWidth="640px"
-        >
-          <form onSubmit={handleSaveInspection}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div className="form-group">
-                <label className="form-label">Inspection Date <span className="required">*</span></label>
-                <input
-                  type="date"
-                  required
-                  className="form-input"
-                  value={inspectionForm.scheduledDate}
-                  onChange={(e) => setInspectionForm({ ...inspectionForm, scheduledDate: e.target.value })}
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Inspector Name</label>
-                <select
-                  className="form-select"
-                  value={inspectionForm.inspectorName}
-                  onChange={(e) => setInspectionForm({ ...inspectionForm, inspectorName: e.target.value })}
-                >
-                  <option value="Kamran Abbasi (Inspector)">Kamran Abbasi (Inspector)</option>
-                  <option value="Muhammad Asif (QC Supervisor)">Muhammad Asif (QC Supervisor)</option>
-                  <option value="Irfan Jameel (Technician)">Irfan Jameel (Technician)</option>
-                </select>
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div className="form-group">
-                <label className="form-label">Infestation Severity</label>
-                <select
-                  className="form-select"
-                  value={inspectionForm.infestationSeverity}
-                  onChange={(e) => setInspectionForm({ ...inspectionForm, infestationSeverity: e.target.value as any })}
-                >
-                  <option value="low">Low (Early Stage / Preventive)</option>
-                  <option value="moderate">Moderate (Visible Trails / Harbor)</option>
-                  <option value="high">High (Extensive Structural Activity)</option>
-                  <option value="severe">Severe (Critical Threat / Contamination)</option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Covered Area (Sq Ft) <span className="required">*</span></label>
-                <input
-                  type="number"
-                  required
-                  className="form-input"
-                  value={inspectionForm.areaSqFt}
-                  onChange={(e) => setInspectionForm({ ...inspectionForm, areaSqFt: Number(e.target.value) })}
-                />
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Critical Findings & Pest Activity</label>
-              <textarea
-                className="form-input"
-                rows={2}
-                value={inspectionForm.criticalFindings}
-                onChange={(e) => setInspectionForm({ ...inspectionForm, criticalFindings: e.target.value })}
-              />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Recommended Treatment / Scope</label>
-              <textarea
-                className="form-input"
-                rows={2}
-                value={inspectionForm.recommendedTreatment}
-                onChange={(e) => setInspectionForm({ ...inspectionForm, recommendedTreatment: e.target.value })}
-              />
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
-              <button type="button" className="btn btn-secondary" onClick={() => setShowInspectionModal(null)}>
-                Cancel
-              </button>
-              <button type="submit" className="btn btn-primary">
-                <ClipboardCheck size={15} />
-                <span>Save Inspection & Ready for Proposal</span>
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {sendLead && (
-        <SendDocumentsModal
-          isOpen={Boolean(sendLead)}
-          onClose={() => setSendLead(null)}
-          recipient={{ name: sendLead.contactName, phone: sendLead.phone, email: sendLead.email }}
-          related={{ kind: 'lead', id: sendLead.id, title: sendLead.title }}
-          onSent={(results) => {
-            // Automation: a brand-new lead that just received our documents has been contacted
-            if (results.some((r) => r.ok) && sendLead.stage === 'new') {
-              handleStageChange(sendLead, 'contacted');
-              if (selectedLead?.id === sendLead.id) setSelectedLead({ ...sendLead, stage: 'contacted' });
-            }
-          }}
+      {/* ---------- Lead detail ---------- */}
+      {detail && (
+        <LeadDetail
+          lead={detail}
+          canEdit={canEdit}
+          onClose={() => openDetail(null)}
+          onEdit={() => setFormLead(detail)}
+          onLogContact={() => setContactLead(detail)}
+          onSchedule={() => setScheduleLead(detail)}
+          onFindings={() => setFindingsLead(detail)}
+          onProposal={() => createProposal(detail)}
+          onWon={() => setWonLead(detail)}
+          onLost={() => setLostLead(detail)}
+          onSend={() => setSendLead(detail)}
+          onNext={() => runNext(detail)}
         />
+      )}
+
+      <LeadFormModal isOpen={formLead !== undefined} lead={formLead} onClose={() => setFormLead(undefined)} />
+      <ImportLeadsModal isOpen={showImport} onClose={() => setShowImport(false)} />
+      <LogContactModal lead={contactLead} onClose={() => setContactLead(null)} />
+      <ScheduleInspectionModal lead={scheduleLead} onClose={() => setScheduleLead(null)} />
+      <InspectionFindingsModal lead={findingsLead} onClose={() => setFindingsLead(null)} />
+
+      <ConfirmDialog
+        isOpen={Boolean(lostLead)}
+        onClose={() => setLostLead(null)}
+        onConfirm={(reason) => {
+          if (!lostLead) return;
+          store.setLeadStage(lostLead.id, 'lost', reason, userProfile?.email);
+          warning('Moved to Lost', lostLead.title);
+          setLostLead(null);
+        }}
+        title="Mark lead as lost?"
+        message={`${lostLead?.title} will move to Lost / rejected. You can reopen it later.`}
+        confirmLabel="Mark as lost"
+        requireReason
+        reasonLabel="Why was it lost? (e.g. price, chose competitor, not interested)"
+        isDestructive
+      />
+
+      <ConfirmDialog
+        isOpen={Boolean(wonLead)}
+        onClose={() => setWonLead(null)}
+        onConfirm={() => {
+          if (!wonLead) return;
+          try {
+            const updated = store.markLeadWon(wonLead.id, undefined, userProfile?.email);
+            success('Won!', `${wonLead.title} is now an active customer account.`);
+            if (updated?.existingCustomerId) {
+              navigate(`/customers/${updated.customerType === 'individual' ? 'individual' : 'company'}/${updated.existingCustomerId}`);
+            }
+          } catch (err) {
+            error('Could not mark as won', err instanceof Error ? err.message : String(err));
+          }
+          setWonLead(null);
+        }}
+        title="Mark lead as won?"
+        message={`${wonLead?.title} becomes an active customer account with its company details and contacts. Next you can create the contract or schedule service.`}
+        confirmLabel="Mark as won"
+      />
+
+      {sendLead && (() => {
+        const p = primaryContact(sendLead);
+        return (
+          <SendDocumentsModal
+            isOpen
+            onClose={() => setSendLead(null)}
+            recipient={{ name: p?.name || sendLead.title, phone: p?.phone, email: p?.email || sendLead.companyEmail }}
+            related={{ kind: 'lead', id: sendLead.id, title: sendLead.title }}
+            onSent={(results) => {
+              if (results.some((r) => r.ok) && stageOf(sendLead) === 'new') {
+                store.logLeadContact(sendLead.id, { channel: results.some((r) => r.channel === 'whatsapp') ? 'whatsapp' : 'email', note: 'Sent company documents' }, userProfile?.email);
+              }
+            }}
+          />
+        );
+      })()}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Row "more" menu
+// ---------------------------------------------------------------------------
+interface MenuItem {
+  icon: React.ComponentType<{ size?: number }>;
+  label: string;
+  run: () => void;
+  hide?: boolean;
+  danger?: boolean;
+}
+
+const RowMenu: React.FC<{ open: boolean; onToggle: () => void; onClose: () => void; items: MenuItem[] }> = ({ open, onToggle, onClose, items }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && onClose();
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open, onClose]);
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button className="icon-btn" onClick={onToggle} title="More actions" aria-expanded={open}><MoreVertical size={16} /></button>
+      {open && (
+        <div className="dropdown-panel" style={{ minWidth: 220 }}>
+          {items.filter((i) => !i.hide).map((i) => (
+            <button key={i.label} type="button" className={`dropdown-item ${i.danger ? 'danger' : ''}`} onClick={() => { onClose(); i.run(); }}>
+              <i.icon size={15} /> {i.label}
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
 };
+
+// ---------------------------------------------------------------------------
+// Lead detail
+// ---------------------------------------------------------------------------
+interface DetailProps {
+  lead: Lead;
+  canEdit: boolean;
+  onClose: () => void;
+  onEdit: () => void;
+  onLogContact: () => void;
+  onSchedule: () => void;
+  onFindings: () => void;
+  onProposal: () => void;
+  onWon: () => void;
+  onLost: () => void;
+  onSend: () => void;
+  onNext: () => void;
+}
+
+const channelLabel = (a: LeadActivity) => CHANNELS.find((c) => c.value === a.channel)?.label || a.channel;
+
+const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onEdit, onLogContact, onSchedule, onFindings, onProposal, onWon, onLost, onSend, onNext }) => {
+  const st = stageOf(lead);
+  const contacts = contactsOf(lead);
+  const step = nextStep(lead);
+  const activities = lead.activities ?? [];
+  const pdfAction = usePdfAction();
+  const sitePhotos = [...(lead.inspection?.photos ?? []), ...(lead.sitePhotos ?? [])];
+  const stageIndex = PIPELINE.findIndex((p) => p.stage === st);
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={lead.title}
+      subtitle={`${lead.id} · ${[lead.industry, lead.area, lead.city].filter(Boolean).join(' · ')} · Source: ${sourceLabel(lead.source)}`}
+      maxWidth="940px"
+      footer={
+        canEdit ? (
+          <>
+            <button className="btn btn-ghost" onClick={onEdit} style={{ marginRight: 'auto' }}><Pencil size={15} /> Edit</button>
+            {!['won', 'lost'].includes(st) && <button className="btn btn-secondary" onClick={onLost}><XCircle size={15} /> Lost</button>}
+            {!['won', 'lost', 'new'].includes(st) && <button className="btn btn-secondary" onClick={onWon}><Trophy size={15} /> Won</button>}
+            <button className="btn btn-secondary" onClick={onSend}><Send size={15} /> Send documents</button>
+            <button className="btn btn-primary" onClick={onNext}>{step.label} <ArrowRight size={15} /></button>
+          </>
+        ) : (
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        )
+      }
+    >
+      {/* Stage progress */}
+      <div className="stage-track">
+        {PIPELINE.filter((p) => p.stage !== 'lost').map((p, i) => {
+          const done = st === 'lost' ? i <= PIPELINE.findIndex((x) => x.stage === stageOf({ stage: lead.lostAtStage || 'new' })) : i <= stageIndex;
+          return (
+            <div key={p.stage} className={`stage-step ${done ? 'done' : ''} ${p.stage === st ? 'current' : ''}`} title={p.hint}>
+              <span className="stage-step-bar" style={done ? { background: p.color } : undefined} />
+              <span className="stage-step-label">{p.short}</span>
+            </div>
+          );
+        })}
+      </div>
+      {st === 'lost' && <div className="error-hint" style={{ marginBottom: '1rem' }}><strong>Lost</strong>{lead.lostReason ? `: ${lead.lostReason}` : ''}{lead.lostAt ? ` (${formatDate(lead.lostAt)})` : ''}</div>}
+
+      <div className="lead-detail-grid">
+        <div>
+          <div className="section-title" style={{ marginTop: 0 }}>Contacts</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {contacts.map((c) => (
+              <div key={c.id} className="contact-card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'flex-start' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="cell-title">
+                      {c.isPrimary && <Star size={13} fill="var(--ikpm-amber-500)" color="var(--ikpm-amber-500)" style={{ marginRight: 4, verticalAlign: '-2px' }} />}
+                      {c.name}
+                    </div>
+                    <div className="cell-sub">{c.designation || (c.isPrimary ? 'Primary contact' : 'Contact')}</div>
+                    <div className="cell-sub">{c.phone}{c.email ? ` · ${c.email}` : ''}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+                    <a className="icon-btn" href={`tel:${c.phone}`} title="Call"><Phone size={15} /></a>
+                    <a className="icon-btn" href={`https://wa.me/${toWhatsAppNumber(c.phone)}`} target="_blank" rel="noreferrer" title="WhatsApp"><MessageCircle size={15} /></a>
+                    {c.email && <a className="icon-btn" href={`mailto:${c.email}`} title="Email"><Mail size={15} /></a>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="section-title">Company</div>
+          <dl className="detail-list">
+            <dt>Type</dt><dd>{lead.customerType === 'individual' ? 'Individual / household' : 'Company'}</dd>
+            {lead.propertyAddress && (<><dt>Address</dt><dd><MapPin size={13} style={{ verticalAlign: '-2px' }} /> {lead.propertyAddress}{lead.area ? `, ${lead.area}` : ''}, {lead.city}</dd></>)}
+            {lead.companyPhone && (<><dt>Phone</dt><dd>{lead.companyPhone}</dd></>)}
+            {lead.companyEmail && (<><dt>Email</dt><dd>{lead.companyEmail}</dd></>)}
+            {lead.website && (<><dt>Website</dt><dd>{lead.website}</dd></>)}
+            <dt>Owner</dt><dd>{ownerOf(lead)}</dd>
+            <dt>Created</dt><dd>{formatDate(lead.createdAt)}</dd>
+            {lead.notes && (<><dt>Notes</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.notes}</dd></>)}
+          </dl>
+
+          {lead.inspection && (
+            <>
+              <div className="section-title">Inspection</div>
+              <dl className="detail-list">
+                <dt>Status</dt><dd style={{ textTransform: 'capitalize' }}>{lead.inspection.status}</dd>
+                <dt>Date</dt><dd>{formatDate(lead.inspection.scheduledDate)}{lead.inspection.timeSlot ? ` · ${lead.inspection.timeSlot}` : ''}</dd>
+                {lead.inspection.teamName && (<><dt>Team</dt><dd>{lead.inspection.teamName}</dd></>)}
+                <dt>Inspectors</dt><dd>{lead.inspection.inspectorNames?.join(', ') || lead.inspection.inspectorName || '—'}</dd>
+                {lead.inspection.status === 'completed' && (
+                  <>
+                    <dt>Pests</dt><dd>{lead.inspection.pestTypesFound.map((x) => PEST_OPTIONS.find((o) => o.value === x)?.label || x).join(', ')}</dd>
+                    <dt>Severity</dt><dd style={{ textTransform: 'capitalize' }}>{lead.inspection.infestationSeverity}{lead.inspection.areaSqFt ? ` · ${lead.inspection.areaSqFt.toLocaleString()} sq ft` : ''}</dd>
+                    <dt>Findings</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.criticalFindings}</dd>
+                    {lead.inspection.recommendedTreatment && (<><dt>Treatment</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.recommendedTreatment}</dd></>)}
+                  </>
+                )}
+              </dl>
+              {canEdit && (
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                  {!['won', 'lost'].includes(st) && <button className="btn btn-sm btn-secondary" onClick={onSchedule}><CalendarClock size={14} /> Reschedule</button>}
+                  <button className="btn btn-sm btn-secondary" onClick={onFindings}><ClipboardCheck size={14} /> {lead.inspection.status === 'completed' ? 'Edit findings' : 'Enter findings'}</button>
+                  {st === 'inspection_completed' && <button className="btn btn-sm btn-primary" onClick={onProposal}><FileSpreadsheet size={14} /> Create proposal</button>}
+                </div>
+              )}
+              <button className="btn btn-sm btn-ghost" style={{ marginTop: '0.4rem' }} onClick={() => pdfAction.run(lead.id, () => pdfGenerator.generateInspectionReportPDF(lead))} disabled={pdfAction.busy === lead.id}>
+                <Download size={14} /> Inspection report PDF
+              </button>
+            </>
+          )}
+
+          {sitePhotos.length > 0 && (
+            <>
+              <div className="section-title">Photos ({sitePhotos.length})</div>
+              <div className="photo-grid">
+                {sitePhotos.map((p) => (
+                  <a key={p.id} className="photo-tile" href={p.imageUrl} target="_blank" rel="noreferrer">
+                    <img src={p.imageUrl} alt={p.caption} loading="lazy" />
+                    <span className="photo-badge">{p.caption}</span>
+                  </a>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div className="section-title" style={{ marginTop: 0 }}>Activity</div>
+            {canEdit && !['won', 'lost'].includes(st) && (
+              <button className="btn btn-sm btn-secondary" onClick={onLogContact}><Phone size={14} /> Log contact</button>
+            )}
+          </div>
+          {lead.nextFollowUp && !['won', 'lost'].includes(st) && (
+            <div className={isFollowUpDue(lead) ? 'error-hint' : 'info-hint'} style={{ marginBottom: '0.75rem' }}>
+              <Clock size={14} style={{ verticalAlign: '-2px' }} /> Next follow-up: <strong>{formatDate(lead.nextFollowUp)}</strong>
+            </div>
+          )}
+          {activities.length === 0 ? (
+            <div className="drive-empty">No activity yet. Log the first call or WhatsApp.</div>
+          ) : (
+            <ol className="timeline lead-timeline">
+              {activities.map((a) => (
+                <li key={a.id} className="timeline-item">
+                  <span className={`timeline-icon ${a.channel === 'whatsapp' ? 'whatsapp' : ''}`}>
+                    {a.kind === 'inspection' ? <ClipboardCheck size={14} /> : a.kind === 'proposal' ? <FileSpreadsheet size={14} /> : a.channel === 'whatsapp' ? <MessageCircle size={14} /> : a.channel === 'email' ? <Mail size={14} /> : a.kind === 'contact' ? <Phone size={14} /> : <Clock size={14} />}
+                  </span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <strong style={{ fontSize: '0.84rem' }}>{a.kind === 'contact' ? `${channelLabel(a)}${a.contactName ? ` with ${a.contactName}` : ''}` : a.note}</strong>
+                      {a.outcome && <span className={`badge-status badge-${outcomeTone(a.outcome)}`}>{outcomeLabel(a.outcome)}</span>}
+                    </div>
+                    {a.kind === 'contact' && a.note && <div style={{ fontSize: '0.82rem', whiteSpace: 'pre-wrap' }}>{a.note}</div>}
+                    <div className="cell-sub">
+                      {a.byName} · {formatDateTime(a.at)}{a.nextFollowUp ? ` · follow up ${formatDate(a.nextFollowUp)}` : ''}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
+export default LeadsListPage;

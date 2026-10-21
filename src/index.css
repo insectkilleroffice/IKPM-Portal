@@ -117,7 +117,7 @@ code, pre, .font-mono {
 /* Animations */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 1; transform: translateY(0); }
+  to { opacity: 1; transform: none; }
 }
 
 @keyframes spin {
@@ -130,7 +130,8 @@ code, pre, .font-mono {
 }
 
 .animate-fade-in {
-  animation: fadeIn 0.2s ease-out both;
+  /* "backwards" (not "both") so no transform is left on the element after the animation */
+  animation: fadeIn 0.2s ease-out backwards;
 }
 
 .animate-spin {
@@ -507,6 +508,11 @@ code, pre, .font-mono {
   margin-right: auto;
 }
 
+/* Inline grid layouts on pages: columns shrink instead of overflowing the content area */
+.content-area [style*="grid-template-columns"] > * {
+  min-width: 0;
+}
+
 /* Breadcrumbs */
 .breadcrumb-container {
   display: flex;
@@ -604,10 +610,17 @@ code, pre, .font-mono {
   overflow-x: auto;
   overflow-y: hidden;
   white-space: nowrap;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
 }
 
-.tab-bar::-webkit-scrollbar { display: none; }
+.tab-bar:hover { scrollbar-color: #C5CDD8 transparent; }
+.tab-bar::-webkit-scrollbar { height: 6px; }
+.tab-bar::-webkit-scrollbar-thumb { background: transparent; border: 0; border-radius: 6px; }
+.tab-bar:hover::-webkit-scrollbar-thumb { background: #C5CDD8; }
+.tab-bar .tab-btn { scroll-snap-align: start; }
 
 .tab-btn {
   position: relative;
@@ -852,7 +865,35 @@ code, pre, .font-mono {
   background-color: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
+  max-width: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+/* Long lists: cap the height and scroll inside, with the column header pinned */
+.table-container.is-scroll {
+  max-height: min(70vh, 720px);
+  overflow-y: auto;
+}
+
+/* Wide tables keep readable columns and scroll horizontally on narrow screens */
+.table-container > .data-table {
+  min-width: 640px;
+}
+
+.modal-body .table-container > .data-table {
+  min-width: 0;
+}
+
+/* Wide lists with many columns keep a usable width and scroll sideways instead */
+.table-container > .data-table.is-wide {
+  min-width: 1040px;
+}
+
+.nowrap {
+  white-space: nowrap;
 }
 
 .data-table {
@@ -874,10 +915,13 @@ code, pre, .font-mono {
   position: sticky;
   top: 0;
   z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
 }
 
 .data-table td {
   padding: 0.7rem 1rem;
+  /* Break only words that can't fit on their own line (long emails / URLs) */
+  overflow-wrap: break-word;
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-primary);
   vertical-align: middle;
@@ -918,12 +962,13 @@ code, pre, .font-mono {
 
 .cell-actions {
   display: flex;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 0.15rem;
 }
 
 /* ==========================================================================
-   Modals
+   Modals — fixed header & footer, only the body scrolls, nothing overflows sideways
    ========================================================================== */
 .modal-overlay {
   position: fixed;
@@ -934,6 +979,8 @@ code, pre, .font-mono {
   justify-content: center;
   z-index: 200;
   padding: 1.5rem;
+  overflow: hidden;
+  overscroll-behavior: contain;
   animation: fadeIn 0.12s ease-out;
 }
 
@@ -943,39 +990,92 @@ code, pre, .font-mono {
   box-shadow: var(--shadow-xl);
   width: 100%;
   max-width: 640px;
-  max-height: 90vh;
-  overflow-y: auto;
+  min-width: 0;
+  /* dvh tracks the real visible height on phones (browser bars); vh is the fallback */
+  max-height: calc(100vh - 3rem);
+  max-height: calc(100dvh - 3rem);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .modal-header {
-  padding: 1.25rem 1.5rem 0.75rem;
+  flex-shrink: 0;
+  padding: 1.15rem 1.25rem 0.85rem 1.5rem;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.modal-header h2, .modal-header h3 {
-  font-size: 1.15rem;
-  font-weight: 600;
-}
-
-.modal-body {
-  padding: 0.75rem 1.5rem 1.25rem;
+.modal-heading {
+  min-width: 0;
   flex: 1;
 }
 
+.modal-heading h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--ikpm-navy-900);
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.modal-heading p {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+  overflow-wrap: anywhere;
+}
+
+.modal-header .icon-btn {
+  margin-top: -2px;
+}
+
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 1.1rem 1.5rem 1.25rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  overflow-wrap: break-word;
+}
+
+/* Inline grid layouts used by the page forms: let columns shrink instead of pushing the modal wider */
+.modal-body [style*="grid-template-columns"] > *,
+.modal-body .form-grid-2 > *,
+.modal-body .form-grid-3 > * {
+  min-width: 0;
+}
+
+.modal-body img,
+.modal-body canvas,
+.modal-body video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Tables inside a modal scroll sideways on their own */
+.modal-body .table-container {
+  max-width: 100%;
+}
+
 .modal-footer {
-  padding: 0.85rem 1.5rem 1.25rem;
+  flex-shrink: 0;
+  padding: 0.85rem 1.5rem;
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 0.5rem;
-  position: sticky;
-  bottom: 0;
   background: var(--bg-surface);
   border-top: 1px solid var(--border-subtle);
+}
+
+.modal-footer > * {
+  min-width: 0;
 }
 
 /* ==========================================================================
@@ -983,6 +1083,7 @@ code, pre, .font-mono {
    ========================================================================== */
 .form-group {
   margin-bottom: 1rem;
+  min-width: 0;
 }
 
 .form-label {
@@ -1005,6 +1106,8 @@ code, pre, .font-mono {
 
 .form-input, .form-select, .form-textarea {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 38px;
   padding: 0.5rem 0.75rem;
   background-color: var(--bg-surface);
@@ -1106,7 +1209,7 @@ code, pre, .font-mono {
   background: var(--ikpm-emerald-600); color: #fff; font-size: 0.72rem; font-weight: 600;
 }
 
-.doc-check-list { max-height: 240px; overflow-y: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 0.35rem; }
+.doc-check-list { max-height: 240px; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 0.35rem; }
 .doc-group-label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); padding: 0.5rem 0.4rem 0.2rem; }
 .doc-check { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.84rem; cursor: pointer; }
 .doc-check:hover { background: var(--bg-surface-alt); }
@@ -1609,6 +1712,299 @@ code, pre, .font-mono {
   font-size: 0.78rem;
 }
 
+.logo-preview {
+  width: 220px;
+  height: 84px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.6rem;
+  background: #fff;
+}
+
+.logo-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.sticky-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 0;
+  background: linear-gradient(to top, var(--bg-surface) 70%, transparent);
+}
+
+/* ==========================================================================
+   Field photos (camera / gallery)
+   ========================================================================== */
+.photo-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.photo-action {
+  height: 54px;
+  font-size: 0.95rem;
+  border-radius: var(--radius-lg);
+}
+
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.6rem;
+}
+
+.photo-tile {
+  position: relative;
+  margin: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-surface-alt);
+  min-width: 0;
+}
+
+.photo-tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+}
+
+.photo-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(11, 31, 58, 0.78);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.photo-badge.offline {
+  top: auto;
+  bottom: 44px;
+  background: rgba(217, 119, 6, 0.9);
+}
+
+.photo-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ikpm-rose-500);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+}
+
+.photo-caption {
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  padding: 0.5rem 0.6rem;
+  font-size: 0.78rem;
+  background: var(--bg-surface);
+  outline: none;
+}
+
+.photo-caption:focus {
+  background: #F0F6FE;
+}
+
+.photo-tile.is-pending img {
+  filter: brightness(0.55);
+}
+
+.photo-progress {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0.5rem;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.photo-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.photo-step {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.photo-step.is-active { border-color: var(--bg-selected); background: var(--bg-selected); color: #0B3D7A; }
+.photo-step .step-num {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-surface-alt);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.photo-step.is-done .step-num { background: #DCF5E7; color: #0B6B3A; }
+.photo-step .step-label { flex: 1; font-weight: 600; }
+.photo-step .step-state { font-size: 0.75rem; color: var(--text-muted); }
+
+@media (max-width: 420px) {
+  .photo-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* ==========================================================================
+   Leads pipeline
+   ========================================================================== */
+.stage-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.lead-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-hover);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.contact-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 0.75rem 0.9rem;
+  background: var(--bg-surface);
+  min-width: 0;
+}
+
+.contact-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+}
+
+.stage-track {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 1.1rem;
+}
+
+.stage-step {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.stage-step-bar {
+  height: 5px;
+  border-radius: 5px;
+  background: var(--bg-surface-hover);
+}
+
+.stage-step-label {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage-step.current .stage-step-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.lead-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: 1.5rem;
+}
+
+.detail-list {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 0.35rem 0.75rem;
+  font-size: 0.84rem;
+}
+
+.detail-list dt {
+  color: var(--text-muted);
+}
+
+.detail-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.lead-timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 480px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.lead-timeline .timeline-item {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.lead-timeline .timeline-item:last-child {
+  border-bottom: none;
+}
+
+@media (max-width: 800px) {
+  .lead-detail-grid { grid-template-columns: minmax(0, 1fr); }
+  .stage-step-label { font-size: 0.6rem; }
+}
+
 /* ==========================================================================
    Print
    ========================================================================== */
@@ -1684,9 +2080,35 @@ code, pre, .font-mono {
   .sync-pill .sync-label { display: none; }
 }
 
+@media (max-width: 960px) {
+  /* Detail pages (profile + side panel) stack below tablet width */
+  .content-area [style*="grid-template-columns: 1.2fr 1fr"],
+  .content-area [style*="grid-template-columns: 1fr 1.5fr"],
+  .content-area [style*="grid-template-columns: 1fr 1fr 1.2fr"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 640px) {
+  /* Any fixed multi-column form grid inside a modal becomes one column */
+  .modal-body [style*="grid-template-columns"]:not([style*="auto-fill"]):not([style*="auto-fit"]) {
+    grid-template-columns: 1fr !important;
+  }
+  .modal-header { padding: 1rem 1rem 0.75rem 1.1rem; }
+  .modal-body { padding: 1rem 1.1rem; }
+  .modal-footer { padding: 0.75rem 1.1rem; }
+  .modal-footer .btn { flex: 1 1 auto; }
+}
+
 @media (max-width: 520px) {
   .drive-grid { grid-template-columns: 1fr; }
   .drive-file-actions .icon-btn:not(:last-child) { display: none; }
-  .modal-overlay { padding: 0.5rem; align-items: flex-end; }
-  .modal-content { max-height: 94vh; border-radius: var(--radius-xl) var(--radius-xl) 0 0; }
+  /* Bottom sheet on phones */
+  .modal-overlay { padding: 0.5rem 0 0; align-items: flex-end; }
+  .modal-content {
+    max-height: calc(100vh - 0.5rem);
+    max-height: calc(100dvh - 0.5rem);
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  }
+  .modal-footer { padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }
 }

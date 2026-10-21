@@ -34,13 +34,14 @@ import type {
   CompanyBranch,
   SiteAddress,
 } from '../types/customer';
-import type { Lead } from '../types/crm';
+import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadActivity, LeadContact, LeadStage } from '../types/crm';
 import type { Proposal, ProposalRevision } from '../types/proposal';
-import type { Contract, ServiceJob } from '../types/operations';
+import type { Contract, PhotoEvidence, ServiceJob } from '../types/operations';
 import type { Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
 import type { AuditLogEntry, DataScope, RecordOwnership, Team, UserProfile, UserRole } from '../types';
 import type { DocumentOwner, DocumentPack, OutreachLog, PortalDocument } from '../types/document';
-import { normalizePakistaniPhone } from '../lib/formatters';
+import { formatDate, generatePermanentId, normalizePakistaniPhone } from '../lib/formatters';
+import { contactsOf, outcomeLabel, stageMeta, stageOf, syncLeadFields } from '../lib/leadWorkflow';
 import { deleteFromCloudinary } from '../lib/cloudinary';
 import {
   SEED_COMPANIES,
@@ -297,12 +298,29 @@ class DataService {
     setRoleDefinitions(this.s.roles);
     const se = this.session;
     if (!se) return;
+    if (se.role === 'super_admin') this.backfillRoleModules();
     const sig = JSON.stringify(getRole(se.role)?.modules ?? {});
     if (sig !== this.accessSignature) {
       this.closeScoped();
       BUSINESS_KEYS.forEach((k) => this.rebuild(k));
       this.openScoped();
     }
+  }
+
+  /**
+   * Built-in roles saved before a module existed don't mention it, and firestore.rules treats a
+   * missing module as "none". The super admin's session fills in the default level once.
+   */
+  private backfillRoleModules() {
+    const cloud = new Map<string, Record<string, unknown>>();
+    this.partials.get('roles')?.forEach((docs) => docs.forEach((v, id) => cloud.set(id, v as Record<string, unknown>)));
+    DEFAULT_ROLES.filter((r) => r.id !== 'super_admin').forEach((def) => {
+      const saved = cloud.get(def.id);
+      if (!saved) return; // Not seeded yet; maybeSeedDefaults writes the full role
+      const savedModules = (saved.modules ?? {}) as Record<string, unknown>;
+      const missing = Object.fromEntries(Object.entries(def.modules).filter(([k]) => !(k in savedModules)));
+      if (Object.keys(missing).length) this.write('roles', def.id, { modules: missing });
+    });
   }
 
   /** Queries this person may run for a collection; each must be provable by firestore.rules. */
@@ -336,6 +354,13 @@ class DataService {
       if (can('files') && all) return [col];
       const qs: Query[] = can('files') ? ownAndTeam() : [query(col, where('ownerUid', '==', se.uid))];
       if (can('documents')) qs.push(query(col, where('owner.kind', '==', 'library')));
+      return qs;
+    }
+
+    if (key === 'leads') {
+      const qs: Query[] = can('crm') ? (all ? [col] : ownAndTeam()) : [];
+      // Inspectors see the leads they were assigned to inspect
+      if (can('inspections') && !(can('crm') && all)) qs.push(query(col, where('inspectorIds', 'array-contains', se.uid)));
       return qs;
     }
 
@@ -741,6 +766,314 @@ class DataService {
     return lead;
   }
 
+  // --- Lead workflow (see src/lib/leadWorkflow.ts) ---
+
+  /** Existing leads (and customers) with the same phone or email. */
+  public findLeadDuplicates(phone: string, email?: string, excludeLeadId?: string): string[] {
+    const p = normalizePakistaniPhone(phone);
+    const e = email?.toLowerCase().trim();
+    const hits = this.s.leads
+      .filter((l) => l.id !== excludeLeadId)
+      .filter((l) => contactsOf(l).some((c) => (p && normalizePakistaniPhone(c.phone) === p) || (e && c.email?.toLowerCase() === e)))
+      .map((l) => `Matches existing lead ${l.title} (${l.id}, ${stageMeta(l.stage).label})`);
+    return [...hits, ...this.checkDuplicates(phone, email)];
+  }
+
+  private activity(entry: Omit<LeadActivity, 'id' | 'at' | 'byName' | 'byUid'>): LeadActivity {
+    return {
+      id: `act_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      at: now(),
+      byUid: this.session?.uid,
+      byName: this.session?.name || 'Staff',
+      ...entry,
+    };
+  }
+
+  private nextLeadId(): string {
+    const year = new Date().getFullYear();
+    const max = this.s.leads.reduce((m, l) => {
+      const n = Number(l.id.match(/(\d+)$/)?.[1] || 0);
+      return l.id.includes(String(year)) ? Math.max(m, n) : m;
+    }, 0);
+    return `LD-${year}-${String(max + 1).padStart(4, '0')}`;
+  }
+
+  /** Creates a lead from the new-lead form or an import row. */
+  public createLead(data: Omit<Lead, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>, userEmail = 'admin'): Lead {
+    const lead = syncLeadFields({
+      ...data,
+      id: this.nextLeadId(),
+      stage: 'new',
+      activities: [this.activity({ kind: 'system', channel: 'note', note: 'Lead created' })],
+      assignedToUserId: data.assignedToUserId || this.session?.uid,
+      assignedToName: data.assignedToName || this.session?.name,
+      createdAt: now(),
+      createdBy: this.session?.name || userEmail,
+      updatedAt: now(),
+    } as Lead);
+    return this.saveLead(lead, userEmail);
+  }
+
+  /** Imports many leads at once (Excel). Returns how many were created. */
+  public importLeads(rows: Omit<Lead, 'id' | 'createdAt' | 'updatedAt' | 'createdBy'>[], userEmail = 'admin'): number {
+    rows.forEach((r) => {
+      const lead = this.createLead({ ...r, activities: undefined }, userEmail);
+      lead.activities = [this.activity({ kind: 'system', channel: 'note', note: 'Imported from Excel' })];
+      this.write('leads', lead.id, { activities: lead.activities });
+    });
+    return rows.length;
+  }
+
+  /** Records a call / WhatsApp / meeting and moves the lead according to the outcome. */
+  public logLeadContact(
+    leadId: string,
+    entry: { channel: ActivityChannel; outcome?: ContactOutcome; note?: string; contactId?: string; nextFollowUp?: string; lostReason?: string },
+    userEmail = 'admin'
+  ): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const contact = contactsOf(lead).find((c) => c.id === entry.contactId);
+    const act = this.activity({ kind: 'contact', channel: entry.channel, outcome: entry.outcome, note: entry.note, contactId: entry.contactId, contactName: contact?.name, nextFollowUp: entry.nextFollowUp });
+
+    const stage = stageOf(lead);
+    let nextStage: LeadStage = lead.stage;
+    if (entry.outcome === 'engaged' && ['new', 'contacted'].includes(stage)) nextStage = 'engaged';
+    else if (entry.outcome === 'not_interested' || entry.outcome === 'wrong_contact') nextStage = 'lost';
+    else if (stage === 'new' && entry.channel !== 'note') nextStage = 'contacted';
+
+    const updated: Lead = {
+      ...lead,
+      stage: nextStage,
+      contactOutcome: entry.outcome ?? lead.contactOutcome,
+      lastContactedAt: entry.channel === 'note' ? lead.lastContactedAt : act.at,
+      nextFollowUp: entry.nextFollowUp || (nextStage === 'lost' ? undefined : lead.nextFollowUp),
+      activities: [act, ...(lead.activities ?? [])],
+      ...(nextStage === 'lost' && lead.stage !== 'lost'
+        ? { lostAt: now(), lostAtStage: lead.stage, lostReason: entry.lostReason || outcomeLabel(entry.outcome) }
+        : {}),
+    };
+    return this.saveLead(updated, userEmail);
+  }
+
+  /** Moves a lead to any stage manually (with a timeline entry). */
+  public setLeadStage(leadId: string, stage: LeadStage, note?: string, userEmail = 'admin'): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const updated: Lead = {
+      ...lead,
+      stage,
+      activities: [this.activity({ kind: 'stage', channel: 'note', note: `Moved to ${stageMeta(stage).label}${note ? `: ${note}` : ''}` }), ...(lead.activities ?? [])],
+      ...(stage === 'lost' ? { lostAt: now(), lostAtStage: lead.stage, lostReason: note || lead.lostReason } : {}),
+      ...(stage === 'won' ? { wonAt: now() } : {}),
+    };
+    return this.saveLead(updated, userEmail);
+  }
+
+  public scheduleLeadInspection(
+    leadId: string,
+    plan: { date: string; timeSlot: 'morning' | 'afternoon' | 'evening'; teamId?: string; inspectorIds: string[]; instructions?: string },
+    userEmail = 'admin'
+  ): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const team = this.s.teams.find((t) => t.id === plan.teamId);
+    const people = plan.inspectorIds.map((uid) => this.s.users.find((u) => u.uid === uid)).filter(Boolean) as UserProfile[];
+    const inspection: InspectionAssessment = {
+      ...(lead.inspection ?? {
+        pestTypesFound: lead.pestIssues ?? [],
+        infestationSeverity: 'moderate',
+        areaSqFt: 0,
+        criticalFindings: '',
+        recommendedTreatment: '',
+        photoEvidenceUrls: [],
+      }),
+      id: lead.inspection?.id || `INSP-${Date.now().toString(36).toUpperCase()}`,
+      leadId,
+      scheduledDate: plan.date,
+      timeSlot: plan.timeSlot,
+      teamId: team?.id,
+      teamName: team?.name,
+      inspectorIds: people.map((p) => p.uid),
+      inspectorNames: people.map((p) => p.displayName),
+      inspectorId: people[0]?.uid || '',
+      inspectorName: people.map((p) => p.displayName).join(', ') || team?.name || 'Unassigned',
+      instructions: plan.instructions,
+      status: 'scheduled',
+    } as InspectionAssessment;
+    const rescheduled = lead.inspection?.status === 'scheduled';
+    const updated: Lead = {
+      ...lead,
+      stage: 'inspection_scheduled',
+      inspection,
+      inspectorIds: inspection.inspectorIds,
+      activities: [
+        this.activity({
+          kind: 'inspection',
+          channel: 'visit',
+          note: `${rescheduled ? 'Inspection rescheduled' : 'Inspection scheduled'} for ${formatDate(plan.date)} (${plan.timeSlot})${team ? ` · ${team.name}` : ''}${people.length ? ` · ${inspection.inspectorName}` : ''}`,
+        }),
+        ...(lead.activities ?? []),
+      ],
+    };
+    return this.saveLead(updated, userEmail);
+  }
+
+  public recordInspectionFindings(
+    leadId: string,
+    findings: Pick<InspectionAssessment, 'pestTypesFound' | 'infestationSeverity' | 'areaSqFt' | 'criticalFindings' | 'recommendedTreatment' | 'photos'>,
+    userEmail = 'admin'
+  ): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const base = lead.inspection;
+    const inspection: InspectionAssessment = {
+      id: base?.id || `INSP-${Date.now().toString(36).toUpperCase()}`,
+      leadId,
+      scheduledDate: base?.scheduledDate || now().slice(0, 10),
+      inspectorId: base?.inspectorId || this.session?.uid || '',
+      inspectorName: base?.inspectorName || this.session?.name || '',
+      ...base,
+      ...findings,
+      photos: findings.photos ?? base?.photos ?? [],
+      photoEvidenceUrls: findings.photos ? findings.photos.map((p) => p.imageUrl) : base?.photoEvidenceUrls ?? [],
+      completedDate: now().slice(0, 10),
+      findingsBy: this.session?.name,
+      status: 'completed',
+    };
+    const updated: Lead = {
+      ...lead,
+      stage: ['proposal_sent', 'won', 'lost', 'proposal_drafted'].includes(lead.stage) ? lead.stage : 'inspection_completed',
+      inspection,
+      pestIssues: findings.pestTypesFound,
+      activities: [
+        this.activity({ kind: 'inspection', channel: 'visit', note: `Inspection findings recorded (${findings.infestationSeverity} infestation, ${findings.areaSqFt || 0} sq ft${findings.photos?.length ? `, ${findings.photos.length} photo${findings.photos.length > 1 ? 's' : ''}` : ''})` }),
+        ...(lead.activities ?? []),
+      ],
+    };
+    return this.saveLead(updated, userEmail);
+  }
+
+  private provinceFor(city: string): CompanyMaster['province'] {
+    const c = city.toLowerCase();
+    if (/lahore|faisalabad|multan|rawalpindi|gujranwala|sialkot|sargodha|bahawalpur/.test(c)) return /rawalpindi/.test(c) ? 'Punjab' : 'Punjab';
+    if (/islamabad/.test(c)) return 'Islamabad_ICT';
+    if (/peshawar|mardan|abbottabad|swat/.test(c)) return 'KPK';
+    if (/quetta|gwadar/.test(c)) return 'Balochistan';
+    return 'Sindh';
+  }
+
+  /**
+   * Proposals need a customer account. Creates a prospect account (status "lead") from the lead's
+   * company details and contacts, or reuses the one already linked. Returns the account id.
+   */
+  public ensureLeadCustomer(leadId: string, userEmail = 'admin'): { customerId: string; customerType: 'company' | 'individual' } {
+    const lead = this.getLeadById(leadId);
+    if (!lead) throw new Error('Lead not found');
+    if (lead.existingCustomerId) return { customerId: lead.existingCustomerId, customerType: lead.customerType };
+
+    const ts = now();
+    const contacts = contactsOf(lead);
+    const primary = contacts.find((c) => c.isPrimary) ?? contacts[0];
+    const province = this.provinceFor(lead.city || '');
+    let customerId: string;
+
+    if (lead.customerType === 'individual') {
+      customerId = generatePermanentId('CL', this.s.clients.length + 1);
+      const client: IndividualClient = {
+        id: customerId,
+        type: 'individual',
+        fullName: primary?.name || lead.title,
+        primaryPhone: primary?.phone || lead.phone,
+        email: primary?.email || lead.email,
+        residentialAddress: lead.propertyAddress || lead.city,
+        city: lead.city,
+        area: lead.area,
+        province,
+        taxStatus: 'non_filer',
+        status: 'lead',
+        balance: 0,
+        createdAt: ts,
+        createdBy: this.session?.name || userEmail,
+        updatedAt: ts,
+      };
+      this.saveClient(client, userEmail);
+    } else {
+      customerId = generatePermanentId('CO', this.s.companies.length + 1);
+      const toContact = (c: LeadContact, isPrimary: boolean) => ({
+        id: `cont_${c.id}_${Date.now().toString(36)}`,
+        fullName: c.name,
+        designation: c.designation,
+        phone: c.phone,
+        mobile: c.phone,
+        email: c.email,
+        isPrimary,
+      });
+      const company: CompanyMaster = {
+        id: customerId,
+        type: 'company',
+        legalCompanyName: lead.companyName || lead.title,
+        headOfficeAddress: lead.propertyAddress || lead.city,
+        city: lead.city,
+        province,
+        website: lead.website,
+        primaryContact: primary ? toContact(primary, true) : { id: 'cont_primary', fullName: lead.contactName, phone: lead.phone, mobile: lead.phone, email: lead.email, isPrimary: true },
+        additionalContacts: contacts.filter((c) => c !== primary).map((c) => toContact(c, false)),
+        industrySegment: 'other',
+        billingPreference: 'centralized',
+        taxStatus: 'active_filer',
+        totalBranchesCount: 1,
+        totalActiveContracts: 0,
+        totalBalance: 0,
+        status: 'lead',
+        createdAt: ts,
+        createdBy: this.session?.name || userEmail,
+        updatedAt: ts,
+      };
+      this.saveCompany(company, userEmail);
+    }
+
+    this.saveLead({ ...lead, existingCustomerId: customerId }, userEmail);
+    return { customerId, customerType: lead.customerType };
+  }
+
+  /** Closes a lead as won and activates its customer account. */
+  public markLeadWon(leadId: string, note?: string, userEmail = 'admin'): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const { customerId, customerType } = this.ensureLeadCustomer(leadId, userEmail);
+    if (customerType === 'company') {
+      const co = this.getCompanyById(customerId);
+      if (co && co.status !== 'active') this.saveCompany({ ...co, status: 'active' }, userEmail);
+    } else {
+      const cl = this.getClientById(customerId);
+      if (cl && cl.status !== 'active') this.saveClient({ ...cl, status: 'active' }, userEmail);
+    }
+    return this.setLeadStage(leadId, 'won', note, userEmail);
+  }
+
+  /** Keeps the lead in step with its proposal (created → proposal stage, accepted → won, declined → lost). */
+  private syncLeadWithProposal(proposal: Proposal, created: boolean, userEmail: string) {
+    if (!proposal.leadId) return;
+    const lead = this.getLeadById(proposal.leadId);
+    if (!lead) return;
+    const stage = stageOf(lead);
+    if (proposal.status === 'accepted' && stage !== 'won') {
+      this.markLeadWon(lead.id, `Proposal ${proposal.id} accepted`, userEmail);
+    } else if (proposal.status === 'declined' && stage !== 'lost') {
+      this.setLeadStage(lead.id, 'lost', `Proposal ${proposal.id} declined`, userEmail);
+    } else if (created || lead.proposalId !== proposal.id) {
+      this.saveLead({
+        ...lead,
+        stage: ['won', 'lost'].includes(stage) ? lead.stage : 'proposal_sent',
+        proposalId: proposal.id,
+        activities: [
+          this.activity({ kind: 'proposal', channel: 'note', note: `Proposal ${proposal.id} created (PKR ${Math.round(proposal.totalAmount).toLocaleString()})` }),
+          ...(lead.activities ?? []),
+        ],
+      }, userEmail);
+    }
+  }
+
   // --- Proposals & Revisions ---
   public getProposals(customerId?: string, branchId?: string): Proposal[] {
     return this.s.proposals.filter((p) => {
@@ -774,6 +1107,7 @@ class DataService {
         ? `Drafted new proposal ${proposal.id} for ${proposal.customerName}`
         : `Updated proposal ${proposal.id} (status: ${proposal.status})`);
     this.write('proposals', proposal.id, proposal);
+    this.syncLeadWithProposal(proposal, created, userEmail);
     return proposal;
   }
 
@@ -983,6 +1317,19 @@ class DataService {
       created ? `Scheduled service job ${job.id} for ${job.customerName}` : `Updated job ${job.id} status to ${job.status}`);
     this.write('service_jobs', job.id, job);
     return job;
+  }
+
+  /** Public record behind a document's "Scan to verify" QR code (minimal details, readable by id only). */
+  public recordVerification(id: string, data: Record<string, unknown>) {
+    this.write('doc_verifications', id, data);
+  }
+
+  /** Saves field photos as they are taken (no audit entry per photo; finishing the job logs the visit). */
+  public saveJobPhotos(jobId: string, photos: PhotoEvidence[]) {
+    const job = this.getJobById(jobId);
+    if (!job) return;
+    this.upsert(this.s.jobs, { ...job, photoEvidence: photos });
+    this.write('service_jobs', jobId, { photoEvidence: photos, updatedAt: now() });
   }
 
   public checkPcoConflict(technicianId: string, date: string, timeSlot: string, currentJobId?: string): boolean {

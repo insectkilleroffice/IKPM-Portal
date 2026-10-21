@@ -11,7 +11,9 @@ import {
   CloudUpload,
   AlertTriangle,
   UsersRound,
+  Building2,
 } from 'lucide-react';
+import { CompanyProfileForm } from '../../features/settings/CompanyProfileForm';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
@@ -28,7 +30,7 @@ export const SettingsPage: React.FC = () => {
   const { success, error } = useNotification();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  type SettingsTab = 'cloud' | 'roles' | 'audit' | 'sync';
+  type SettingsTab = 'company' | 'cloud' | 'roles' | 'audit' | 'sync';
   const [activeTab, setActiveTabState] = useState<SettingsTab>((searchParams.get('tab') as SettingsTab) || 'cloud');
   const setActiveTab = (t: SettingsTab) => {
     setActiveTabState(t);
@@ -83,6 +85,9 @@ export const SettingsPage: React.FC = () => {
 
       {/* Settings Navigation Tabs */}
       <div className="tab-bar">
+        <button className={`tab-btn ${activeTab === 'company' ? 'active' : ''}`} onClick={() => setActiveTab('company')}>
+          <Building2 size={16} /> Company profile
+        </button>
         <button className={`tab-btn ${activeTab === 'cloud' ? 'active' : ''}`} onClick={() => setActiveTab('cloud')}>
           <Cloud size={16} /> Cloud database
           {cloud.status === 'error' && <AlertTriangle size={14} color="var(--ikpm-rose-500)" />}
@@ -97,6 +102,8 @@ export const SettingsPage: React.FC = () => {
           <HardDrive size={16} /> Offline queue <span className="tab-count">{pendingCount}</span>
         </button>
       </div>
+
+      {activeTab === 'company' && <CompanyProfileForm />}
 
       {/* Tab: Cloud database */}
       {activeTab === 'cloud' && (
@@ -229,7 +236,7 @@ export const SettingsPage: React.FC = () => {
 
       {/* Tab: Audit Logs */}
       {activeTab === 'audit' && (
-        <div className="table-container">
+        <div className="table-container is-scroll">
           <table className="data-table">
             <thead>
               <tr>

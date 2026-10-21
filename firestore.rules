@@ -93,6 +93,8 @@ service cloud.firestore {
         && !exists(/databases/$(database)/documents/system_config/initialization)
         && request.resource.data.superAdminUid == request.auth.uid
         && get(profilePath()).data.role == 'super_admin';
+      // Company letterhead (name, NTN, bank details, logo) used on generated documents
+      allow create: if configId == 'company_profile' && isSuperAdmin();
       allow update, delete: if isSuperAdmin();
     }
 
@@ -164,10 +166,18 @@ service cloud.firestore {
     }
 
     // ---------- Sales pipeline ----------
+    function assignedInspector() {
+      return request.auth.uid in resource.data.inspectorIds;
+    }
+
     match /leads/{id} {
-      allow read: if readMod('crm');
+      allow read: if readMod('crm') || (canView('inspections') && assignedInspector());
       allow create: if createMod('crm');
-      allow update: if updateMod('crm');
+      // Assigned inspectors may record findings, but not reassign the lead or change its contacts
+      allow update: if updateMod('crm')
+        || (canEdit('inspections') && assignedInspector()
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
+              ['ownerUid', 'teamId', 'inspectorIds', 'contacts', 'companyName', 'title', 'customerType', 'existingCustomerId']));
       allow delete: if isSuperAdmin();
     }
 
@@ -246,6 +256,15 @@ service cloud.firestore {
       allow create: if active() && request.resource.data.sentBy == request.auth.token.email
         && request.resource.data.get('ownerUid', '') == request.auth.uid;
       allow update, delete: if false;
+    }
+
+    // "Scan to verify" records behind document QR codes: anyone holding the link can read one,
+    // nobody can list them, and only active staff can write them
+    match /doc_verifications/{id} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if active();
+      allow delete: if isSuperAdmin();
     }
 
     match /audit_logs/{id} {

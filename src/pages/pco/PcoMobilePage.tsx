@@ -24,10 +24,15 @@ import {
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { pdfGenerator } from '../../lib/pdfGenerator';
+import { usePdfAction } from '../../hooks/usePdfAction';
+import { uploadFile } from '../../lib/cloudinary';
+import { integrations } from '../../config/env';
+import { JobPhotoCapture } from '../../features/field/JobPhotoCapture';
 import { useSync } from '../../contexts/SyncContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { StatusBadge } from '../../components/common/StatusBadge';
+import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import type { ServiceJob, ChemicalUsageRecord, CustomerSignOff, PhotoEvidence } from '../../types/operations';
 import { CHEMICAL_PRESETS } from '../../lib/workflow';
 import { formatPKR, formatDate } from '../../lib/formatters';
@@ -38,7 +43,8 @@ type GuidedStep = 1 | 2 | 3 | 4 | 5;
 export const PcoMobilePage: React.FC = () => {
   useDataStore(); // re-render when Firestore data arrives
   const { isOnline, pendingCount, enqueueOfflineAction } = useSync();
-  const { success, info, warning } = useNotification();
+  const { success, info, warning, error } = useNotification();
+  const pdfAction = usePdfAction();
   const { userProfile } = useAuth();
 
   const jobs = dataService.getJobs();
@@ -55,6 +61,7 @@ export const PcoMobilePage: React.FC = () => {
   const [feedbackRating, setFeedbackRating] = useState<1 | 2 | 3 | 4 | 5>(5);
   const [isFinished, setIsFinished] = useState(false);
   const [hasDrawnSignature, setHasDrawnSignature] = useState(false);
+  const [confirmSkipPhotos, setConfirmSkipPhotos] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawing = useRef(false);
@@ -164,24 +171,26 @@ export const PcoMobilePage: React.FC = () => {
     setChemicals(chemicals.filter((c) => c.id !== id));
   };
 
-  // Step 3: Add Photo
-  const handleAddSamplePhoto = (type: PhotoEvidence['type']) => {
-    const sampleUrls: Record<PhotoEvidence['type'], string> = {
-      before: 'https://images.unsplash.com/photo-1584622650111-993a426fbf0a?auto=format&fit=crop&w=400&q=80',
-      after: 'https://images.unsplash.com/photo-1581578731548-c64695cc6952?auto=format&fit=crop&w=400&q=80',
-      infestation_focus: 'https://images.unsplash.com/photo-1584622781867-1c5c4e975a6c?auto=format&fit=crop&w=400&q=80',
-      bait_station: 'https://images.unsplash.com/photo-1584622650111-993a426fbf0a?auto=format&fit=crop&w=400&q=80',
-    };
+  // Step 3: save each photo on the job straight away so a reload or closed app doesn't lose it
+  const handlePhotosChange = (next: PhotoEvidence[]) => {
+    setPhotos(next);
+    if (isOnline) {
+      dataService.saveJobPhotos(activeJob.id, next);
+    } else {
+      enqueueOfflineAction('service_jobs', 'update', activeJob.id, { ...activeJob, photoEvidence: next } as unknown as Record<string, unknown>);
+    }
+  };
 
-    const newPhoto: PhotoEvidence = {
-      id: `photo_${Date.now()}`,
-      caption: `${type.replace('_', ' ').toUpperCase()} treatment evidence at site perimeter`,
-      type,
-      imageUrl: sampleUrls[type],
-      capturedAt: new Date().toISOString(),
-    };
-    setPhotos([...photos, newPhoto]);
-    success('Photo Evidence Logged', `${type.replace('_', ' ')} photo added.`);
+  const missingPhotoSteps = (['before', 'after'] as const)
+    .filter((t) => !photos.some((p) => p.type === t))
+    .map((t) => (t === 'before' ? 'before-treatment' : 'after-treatment'));
+
+  const handlePhotosNext = () => {
+    if (missingPhotoSteps.length) {
+      setConfirmSkipPhotos(true);
+      return;
+    }
+    setCurrentStep(4);
   };
 
   // Step 5: Finish & Auto Save to Client Documents with no further clicks
@@ -219,34 +228,41 @@ export const PcoMobilePage: React.FC = () => {
       enqueueOfflineAction('service_jobs', 'update', activeJob.id, updatedJob as unknown as Record<string, unknown>);
     }
 
-    // Auto-save the Report PDF to the client's documents folder with zero extra clicks
-    try {
-      dataService.saveDocument(
-        {
-          id: `DOC-${Date.now().toString().slice(-4)}`,
-          title: `Field Service Report — ${updatedJob.id} (${updatedJob.customerName})`,
-          category: 'service_report',
-          owner: { kind: updatedJob.customerType === 'company' ? 'company' : 'client', id: updatedJob.customerId },
-          file: {
-            url: 'https://res.cloudinary.com/demo/image/upload/sample_report.pdf',
-            fileName: `${updatedJob.id}_Service_Report.pdf`,
-            fileSize: 184500,
-            fileType: 'application/pdf',
-            storage: 'local',
+    // Generate the real service report (with photos & signature) and file it in the client's folder
+    (async () => {
+      try {
+        const blob = await pdfGenerator.jobReportPDFBlob(updatedJob);
+        const fileName = pdfGenerator.jobReportFileName(updatedJob);
+        if (!integrations.cloudinary || !navigator.onLine) {
+          warning('Report not uploaded', 'No internet or file storage. Download the report from the job once you are back online.');
+          return;
+        }
+        const file = await uploadFile(blob, { folder: `job/${updatedJob.id}`, fileName });
+        dataService.saveDocument(
+          {
+            id: `DOC-${Date.now()}-${updatedJob.id}`,
+            title: `Service Report: ${updatedJob.id} (${updatedJob.customerName})`,
+            category: 'service_report',
+            folder: 'service_reports',
+            year: new Date().getFullYear(),
+            source: 'generated',
+            jobId: updatedJob.id,
+            owner: { kind: updatedJob.customerType === 'company' ? 'company' : 'client', id: updatedJob.customerId },
+            file,
+            uploadedBy: userProfile?.email || '',
+            uploadedByName: userProfile?.displayName || updatedJob.leadPcoName,
+            uploadedAt: new Date().toISOString(),
           },
-          uploadedBy: userProfile?.email || 'pco@ikpm.com.pk',
-          uploadedByName: userProfile?.displayName || 'Kamran Abbasi (PCO)',
-          uploadedAt: new Date().toISOString(),
-        },
-        userProfile?.email
-      );
-    } catch {
-      // offline document mirror
-    }
+          userProfile?.email
+        );
+      } catch (err) {
+        warning('Report not saved to client files', err instanceof Error ? err.message : String(err));
+      }
+    })();
 
     setIsFinished(true);
     setCurrentStep(5);
-    success('Job Visit Completed & Report Generated', `Report PDF automatically saved to client's folder. Unlocked for supervisor QC.`);
+    success('Visit completed', 'The service report PDF is being saved to the client’s files. Unlocked for supervisor QC.');
   };
 
   return (
@@ -530,72 +546,32 @@ export const PcoMobilePage: React.FC = () => {
             <Camera size={18} color="var(--ikpm-emerald-600)" />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '1rem' }}>
-            <button
-              className="btn btn-outline-emerald"
-              style={{ padding: '0.5rem', fontSize: '0.75rem', justifyContent: 'center' }}
-              onClick={() => handleAddSamplePhoto('before')}
-            >
-              + Before Treatment Photo
-            </button>
-            <button
-              className="btn btn-outline-emerald"
-              style={{ padding: '0.5rem', fontSize: '0.75rem', justifyContent: 'center' }}
-              onClick={() => handleAddSamplePhoto('after')}
-            >
-              + After Treatment Photo
-            </button>
-            <button
-              className="btn btn-outline-emerald"
-              style={{ padding: '0.5rem', fontSize: '0.75rem', justifyContent: 'center' }}
-              onClick={() => handleAddSamplePhoto('infestation_focus')}
-            >
-              + Infestation Focus
-            </button>
-            <button
-              className="btn btn-outline-emerald"
-              style={{ padding: '0.5rem', fontSize: '0.75rem', justifyContent: 'center' }}
-              onClick={() => handleAddSamplePhoto('bait_station')}
-            >
-              + Bait Station
-            </button>
+          <div style={{ marginBottom: '1rem' }}>
+            <JobPhotoCapture
+              jobId={activeJob.id}
+              photos={photos}
+              onChange={handlePhotosChange}
+              required={['before', 'after']}
+              onNotify={(kind, title, message) => (kind === 'error' ? error(title, message) : kind === 'warning' ? warning(title, message) : success(title, message))}
+            />
           </div>
 
-          <div style={{ marginBottom: '1rem' }}>
-            <strong style={{ fontSize: '0.8rem' }}>Logged Photos ({photos.length}):</strong>
-            {photos.length === 0 ? (
-              <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                No photos added yet. Tap above to add photographic proof.
-              </div>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '0.5rem', marginTop: '0.5rem' }}>
-                {photos.map((p) => (
-                  <div
-                    key={p.id}
-                    style={{
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 'var(--radius-sm)',
-                      overflow: 'hidden',
-                      position: 'relative',
-                      fontSize: '0.68rem',
-                    }}
-                  >
-                    <img src={p.imageUrl} alt={p.caption} style={{ width: '100%', height: '80px', objectFit: 'cover' }} />
-                    <div style={{ padding: '4px' }}>
-                      <span className="badge-status badge-navy" style={{ fontSize: '0.6rem' }}>{p.type}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <ConfirmDialog
+            isOpen={confirmSkipPhotos}
+            onClose={() => setConfirmSkipPhotos(false)}
+            onConfirm={() => setCurrentStep(4)}
+            title="Continue without all photos?"
+            message={`No ${missingPhotoSteps.join(' or ')} photo has been added. The service report is stronger with both. Continue anyway?`}
+            confirmLabel="Continue anyway"
+            isDestructive={false}
+          />
 
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
             <button className="btn btn-secondary" onClick={() => setCurrentStep(2)}>
               <ArrowLeft size={15} />
               <span>Back</span>
             </button>
-            <button className="btn btn-primary" onClick={() => setCurrentStep(4)}>
+            <button className="btn btn-primary" onClick={handlePhotosNext}>
               <span>Next: Client Sign-off</span>
               <ArrowRight size={15} />
             </button>
@@ -764,7 +740,8 @@ export const PcoMobilePage: React.FC = () => {
             <button
               className="btn btn-primary"
               style={{ width: '100%', justifyContent: 'center', padding: '0.7rem' }}
-              onClick={() => pdfGenerator.generateJobReportPDF(activeJob)}
+              onClick={() => pdfAction.run(activeJob.id, () => pdfGenerator.generateJobReportPDF(activeJob))}
+              disabled={pdfAction.busy === activeJob.id}
             >
               <Download size={15} />
               <span>Download Signed Report PDF</span>
