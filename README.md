@@ -1,412 +1,352 @@
-# IKPM Business Portal — Insect Killer Pest Management (Pakistan)
+# IKPM Business Portal
 
-Enterprise Management, CRM, Dispatch Operations, and Provincial Tax Invoicing Portal for **Insect Killer Pest Management (IKPM)**, Pakistan ([www.insectkiller.pk](https://www.insectkiller.pk)).
+Internal business portal for **Insect Killer Pest Management (IKPM)**, Pakistan ([insectkiller.pk](https://www.insectkiller.pk)): CRM, proposals, contracts/AMCs, dispatch, field service reports, provincial sales-tax invoicing, and a client document drive, all in one place.
 
----
-
-## 1. System Overview & Technology Stack
-
-- **Frontend:** React 19, TypeScript, Vite, React Router v7, Lucide Icons.
-- **Styling:** Custom Vanilla CSS Design System with IKPM Corporate Theme (Deep Navy `#06152B`, Emerald `#10B981`, Amber, Slate).
-- **Backend / Database:** Firebase Authentication & Cloud Firestore (`insect-killer-7d901`).
-- **Reporting & Printing:** Client-side vector PDF generation (`jspdf`) with official IKPM header, NTN/STRN details, chemical tables, and signature certificates.
-- **Mobile & Offline:** Installable Progressive Web App (PWA) with Service Worker caching, offline draft queues, automatic reconnection sync, and Capacitor-ready Android packaging.
-- **Security:** Least-privilege Firestore rules (`firestore.rules`), branch data isolation, role-based access control (RBAC), and immutable posted financial records.
-
----
-
-## 2. Customer Hierarchy Architecture (Highest Priority)
-
-The portal strictly enforces the two required customer models with permanent, zero-collision unique IDs:
-
-### A. Individual Client Hierarchy
-`Individual Client (CL-YYYY-XXXX) ──> Client Profile ──> 10 Separated Tabs`
-- Dedicated profile for residential clients, private estates, and individual homeowners.
-- Tracks personal CNIC, residential site addresses, service history, and individual billing.
-
-### B. Corporate Company & Branch Hierarchy
-`Company Master (CO-YYYY-XXXX) ──> Corporate Profile (All Tabs & Branch Overview)`
-`   ├── Karachi Branch (BR-YYYY-XXXX) ──> Branch Profile (Branch Jobs, Contracts, Billing)`
-`   ├── Lahore Branch (BR-YYYY-XXXX) ──> Branch Profile (Branch Jobs, Contracts, Billing)`
-`   └── Islamabad Branch (BR-YYYY-XXXX) ──> Branch Profile (Branch Jobs, Contracts, Billing)`
-
-- **Company Master:** Represents the primary legal corporate entity (NTN, STRN, Head Office). Holds company-wide master contracts and consolidated financial ledgers.
-- **Company Branches:** Each branch operates its own dedicated detail profile with branch-specific service sites, contact persons, PCO job dispatches, and local sales tax invoices.
-- **Zero Profile Duplication:** A branch is never created as an isolated customer; it is linked to the parent corporate entity with strict hierarchical breadcrumbs.
-
----
-
-## 3. Business Modules & Operational Lifecycle
-
-The portal supports the full end-to-end pest management lifecycle:
 ```
-Lead ──> Qualification ──> Site Inspection ──> Proposal (AP-01/02 Approval)
-  ──> Contract / AMC ──> Dispatch Calendar ──> Mobile PCO Execution 
-    ──> Verified Service Report ──> Provincial Sales Tax Invoice 
-      ──> Payment Receipt & WHT Section 153 Certificate ──> AMC Renewal
+Lead ─► Contact (Sales/CRO) ─► Meeting (Team Leader assigned) ─► Meeting Report
+    ─► Profile / Proposal ─► Contract / AMC ─► Dispatch ─► Field visit
+    ─► Supervisor-verified service report ─► Sales-tax invoice ─► Payment & WHT ─► Renewal
 ```
 
-### 1. CRM & Lead Management (`/crm/leads`)
-- Interactive Kanban pipeline: *New*, *Contacted*, *Inspection Scheduled*, *Proposal Sent*, *Won*, *Lost*.
-- **Duplicate Detection Engine:** Real-time checking against active and historical customer records matching Phone number, Corporate NTN, or Individual CNIC.
-- Direct qualification into either a Corporate Company or Individual Client.
+---
 
-### 2. Proposal Engine & Approval Workflow (`/proposals`)
-- Detailed multi-room pest inspection pricing (Termite proofing, General fumigation, Rodent baiting, Cockroach gel treatment, Bed bug eradication, Mosquito fogging).
-- **Discount Governance Rules:**
-  - Standard discounts ($\le 10\%$) can be generated directly by sales executives.
-  - Discounts exceeding threshold ($> 10\%$) automatically trigger **AP-01 / AP-02 Management Approval** states and lock PDF issuance until approved.
-- **Immutable Revision History:** New revisions clone and link back to earlier iterations without overwriting historical quotes.
-- One-click branded PDF export with company NTN `3134567-8` and SRN `32-77-8761-123-44`.
+## Contents
 
-### 3. Contracts & Annual Maintenance Contracts (AMC) (`/contracts`)
-- Supports one-off warranties and recurring multi-visit AMCs (Quarterly, Bi-Monthly, Monthly).
-- Automatic recurring visit scheduling and renewal tracking with 30-day advance expiry warnings.
-
-### 4. Operations & Dispatch Calendar (`/operations/calendar`, `/operations/jobs`)
-- Visual monthly/weekly dispatch calendar.
-- Real-time **Conflict Detection Engine**: Warns if a PCO / lead technician is double-booked for overlapping time slots on the same day.
-- Direct assignment of technicians, treatment chemical presets, target pests, and target areas.
-
-### 5. PCO Mobile Service Execution (`/pco/service-report`)
-- Mobile-first interface designed for technicians in the field.
-- **Chemical Usage Dosage Logs:** Logs chemical trade names, active ingredients, batch numbers, dosage rate, and EPA/Government registration numbers.
-- **Digital Sign-offs:** Touch/mouse signature capture for both client representative and PCO lead technician.
-- **Offline Draft Mode:** If field technicians lose cellular signal in basements or industrial warehouses, the report is saved to the local offline draft queue and automatically uploaded upon reconnection.
-
-### 6. Finance, Invoicing & Pakistani Tax Integrity (`/finance/invoices`, `/finance/tax-rules`)
-- **Provincial Sales Tax Separation:**
-  - Sindh Revenue Board (SRB): 13.0%
-  - Punjab Revenue Authority (PRA): 16.0%
-  - Islamabad Capital Territory (FBR / ICT): 15.0%
-  - Khyber Pakhtunkhwa Revenue Authority (KPRA): 15.0%
-  - Baluchistan Revenue Authority (BRA): 15.0%
-- **Withholding Tax (WHT) Section 153 Strict Separation:**
-  - *Customer WHT Deductions:* Tracked as an **Advance Income Tax Asset** supported by Section 153 CPR certificates deducted by corporate clients.
-  - *Supplier WHT Deductions:* Tracked strictly as a **Tax Payable Liability** to be remitted to the FBR National Treasury.
-  - *No Netting:* The system forbids conflating receivable certificates with payable liabilities.
-- **Financial Immutability:** Posted invoices cannot be deleted or edited. Financial adjustments must use authorized Credit Note reversals.
+1. [Tech stack](#tech-stack)
+2. [Getting started](#getting-started)
+3. [Scripts](#scripts)
+4. [Project structure](#project-structure)
+5. [Modules & routes](#modules--routes)
+6. [Roles & access control](#roles--access-control)
+7. [Key business rules](#key-business-rules)
+8. [Files, documents & client outreach](#files-documents--client-outreach)
+9. [Offline / PWA](#offline--pwa)
+10. [Testing](#testing)
+11. [Deployment](#deployment)
+12. [Maintenance scripts](#maintenance-scripts)
+13. [Android build (Capacitor)](#android-build-capacitor)
 
 ---
 
-## 4. Security & Role-Based Access Control (RBAC)
+## Tech stack
 
-### Predefined Roles & Data Scopes
-| Role | Default Scope | Allowed Operations |
+| Area | Choice |
+|---|---|
+| Frontend | React 19, TypeScript, Vite, React Router 7, Lucide icons |
+| Styling | Plain CSS design system (`src/index.css`, `src/App.css`) |
+| Data & auth | Firebase Authentication + Cloud Firestore (live sync, offline cache) |
+| Files | Cloudinary (unsigned browser uploads) |
+| PDFs | Client-side `jspdf` + `jspdf-autotable`, QR-verifiable via `/verify/:id` |
+| Server functions | Vercel serverless (`api/`): WhatsApp Cloud API, Resend email, Cloudinary delete |
+| Tooling | Vitest, oxlint, tsx |
+
+---
+
+## Getting started
+
+### Prerequisites
+
+- Node.js **20.19+ or 22.12+** (required by Vite 8)
+- A Firebase project with Email/Password auth and Firestore enabled
+- *(Optional)* A Cloudinary account for file uploads
+- *(Optional)* Java 11+ to run the Firestore rules emulator tests
+
+### 1. Install
+
+```bash
+npm install
+```
+
+### 2. Configure environment
+
+```bash
+cp .env.example .env.local
+```
+
+Fill in at least the `VITE_FIREBASE_*` values. Every variable is documented in [.env.example](.env.example):
+
+| Group | Variables | Needed for |
 |---|---|---|
-| **Super Admin** | National (`company`) | Full read/write access, system configuration, user provisioning, security audits. |
-| **Management** | National (`company`) | Read all operations, approve AP-01/02 discount proposals, view financial reports. |
-| **Sales** | Branch / Team (`branch`) | Create leads, inspections, and proposals; view branch customers. |
-| **Operations** | Branch (`branch`) | Dispatch calendar, job scheduling, chemical inventory tracking, verify service reports. |
-| **Finance** | National (`company`) | Issue invoices, record bank payments, verify Section 153 WHT certificates, credit notes. |
-| **Technician / PCO** | Assigned jobs (`own`) | Mobile service execution, chemical logs, client signatures, draft offline reports. |
-| **Read-Only Auditor** | Audit (`company`) | Read-only access to customer ledgers, logs, and compliance records. |
+| Firebase (required) | `VITE_FIREBASE_*` | Login and all data |
+| Cloudinary | `VITE_CLOUDINARY_CLOUD_NAME`, `VITE_CLOUDINARY_UPLOAD_PRESET`, `VITE_CLOUDINARY_FOLDER` | Shareable file uploads |
+| Branding | `VITE_COMPANY_*` | Sender identity in WhatsApp/email messages |
+| Outreach API | `VITE_OUTREACH_API_URL` (`/api` on Vercel) | Automatic WhatsApp/email sending |
+| First-admin setup | `VITE_SETUP_KEY` | Bootstrapping the first super admin |
+| Server-only secrets | `FIREBASE_*`, `CLOUDINARY_API_*`, `WHATSAPP_*`, `RESEND_API_KEY`, `EMAIL_*` | `api/*` functions (Vercel only) |
 
-### First-Administrator Setup
-- Public self-registration never grants privileged roles.
-- First administrator bootstrap occurs at `/setup-admin` requiring the system initialization bootstrap key:
-  ```text
-  IKPM-2026-PAKISTAN-SECURE
-  ```
-- Once an initial Super Admin is registered, Firestore rules permanently close the initialization gate (`is_initialized: true`).
+> **Never** prefix server secrets with `VITE_`. Anything starting with `VITE_` is bundled into the browser.
 
-### Role Simulator (`RBAC-004`)
-- Super Administrators can use the interactive top-bar "View as Role" switcher to simulate and test the user experience, layout, and permissions of any role (Sales, Operations, Finance, Technician) in real-time.
+### 3. Deploy Firestore rules and indexes (once per project)
+
+Firestore stays locked until the rules are deployed, so nothing will save without this step.
+
+```bash
+npx firebase-tools login
+npx firebase-tools deploy --only firestore --project <your-project-id>
+```
+
+### 4. Run
+
+```bash
+npm run dev          # http://localhost:5173
+```
+
+### 5. Create the first super admin
+
+1. Set `VITE_SETUP_KEY` to a long random value in `.env.local` (and in Vercel for production).
+2. Open `/setup-first-admin` and enter your email, password, name, and the setup key.
+3. After that, Firestore marks the portal as initialized and the setup screen no longer works.
+4. Add the rest of your staff from **Team & Access** (`/admin/team`).
+
+> If `VITE_SETUP_KEY` is not set, the app falls back to a built-in default key (see `src/contexts/AuthContext.tsx`). Always set your own key before going live.
+
+If you used the portal before cloud sync existed, use **Settings → Cloud database → Upload records** to move browser-only data into Firestore.
 
 ---
 
-## 5. Automated Security Verification Suite
+## Scripts
 
-An automated test suite (`src/tests/securityVerification.test.ts`) tests security constraints:
-1. **Branch Isolation:** Confirms a Karachi branch user is strictly blocked from accessing Lahore branch jobs or customers via URL or document ID alteration.
-2. **Privilege Escalation Prevention:** Confirms regular employees cannot change their own role or data scope.
-3. **Financial Immutability:** Confirms posted/paid invoices cannot be deleted or mutated without a credit note reversal.
-4. **Immediate Deactivation:** Confirms deactivated employees are immediately revoked from read/write access.
-5. **Tax Integrity:** Validates that customer Section 153 WHT certificates and supplier WHT payables remain segregated in independent ledger accounts.
+| Command | What it does |
+|---|---|
+| `npm run dev` | Start the Vite dev server |
+| `npm run build` | Type-check (`tsc -b`) and build to `dist/` |
+| `npm run preview` | Serve the production build locally |
+| `npm run lint` | Lint with oxlint |
+| `npm test` | Run the Vitest suite |
+| `npm run test:security` | Run the standalone security verification script |
+| `npm run test:rules` | Run Firestore rules tests against the emulator (needs Java) |
+| `npm run backfill:folders` | File legacy records into the virtual folder tree (see [Maintenance scripts](#maintenance-scripts)) |
+| `npm run typecheck:scripts` | Type-check the `scripts/` folder |
 
-Run the automated tests anytime using:
+---
+
+## Project structure
+
+```
+api/                      Vercel serverless functions (send-email, send-whatsapp, delete-file)
+public/                   PWA manifest, service worker (sw.js), icons
+scripts/                  Admin scripts run with tsx + firebase-admin (backfill, reset)
+src/
+  components/common/      Shared UI: Modal, ConfirmDialog, StatusBadge, Breadcrumbs, ...
+  components/layout/      AppLayout, Sidebar, Header, ProtectedRoute
+  config/env.ts           Typed access to VITE_* variables and integration flags
+  contexts/               AuthContext, NotificationContext, SyncContext (offline queue)
+  features/               Feature modules: documents, field, leads, onboarding,
+                          outreach, proposals, schedule, settings, devices
+  hooks/                  useDataStore (reactive store), usePdfAction
+  lib/                    Business logic: permissions, leadWorkflow, workflow, folders,
+                          visitSchedule, riskAssessment, pdfGenerator, taxRates, ...
+  pages/                  One folder per routed screen
+  services/               Firestore data access (dataService), outreach, staff, templates
+  tests/                  Vitest suites
+  types/                  Domain models (crm, customer, proposal, operations, finance, ...)
+firestore.rules           Server-side enforcement of roles and data scopes
+firestore.indexes.json    Composite indexes
+```
+
+Routes are lazy-loaded per page in [src/App.tsx](src/App.tsx), which keeps the first load small.
+
+---
+
+## Modules & routes
+
+| Route | Module | Purpose |
+|---|---|---|
+| `/` | Dashboard | Role-specific work queues |
+| `/customers` | Customers | Individuals (`CL-…`), companies (`CO-…`) and their branches (`BR-…`) |
+| `/crm` | Leads | Pipeline, duplicate detection (phone / NTN / CNIC), Excel import |
+| `/inspections` | Inspections | Site inspections, findings, photos, risk assessment |
+| `/proposals` | Proposals | Proposal builder, service plans, revisions, discount approvals, PDF |
+| `/contracts` | Contracts & AMCs | Recurring visit plans, renewals |
+| `/operations/calendar` | Dispatch | Calendar with technician double-booking checks |
+| `/operations/jobs` | Service jobs | Job list, supervisor QC verification |
+| `/pco-field` | PCO field app | Mobile visit execution: chemical logs, device monitoring, signatures, photos |
+| `/finance/invoices` | Invoices | Sales-tax invoices, receipts, credit notes |
+| `/finance/tax-rules` | Tax | Provincial sales tax and WHT rules |
+| `/files` | Client files | Drive-style explorer over the virtual folder tree |
+| `/documents` | Company documents | IKPM papers (licences, NTN/SRB, MSDS, ...) and pitch packs |
+| `/admin/team` | Team & Access | Staff, teams, roles |
+| `/settings` | Settings | Company profile, templates, audit trail, cloud migration |
+| `/verify/:id` | *(public)* | QR verification of issued documents |
+| `/login`, `/setup-first-admin` | *(public)* | Authentication and bootstrap |
+
+---
+
+## Roles & access control
+
+Roles are **data**, not code. Defaults live in [src/lib/permissions.ts](src/lib/permissions.ts). A super admin can edit them or create new ones in **Team & Access**, and they are stored in the Firestore `roles` collection. Each role gives every module a level of `none`, `view` or `edit`. Each staff member also has a **data scope**: `own`, `team` or `company`, which controls whose records they see.
+
+The UI and `firestore.rules` read the same role documents, so access is enforced on the server as well as hidden in the UI.
+
+| Default role | Default scope | Summary |
+|---|---|---|
+| Super Admin | company | Everything, including staff, teams and roles |
+| Management | company | All operational modules, proposal approvals, templates |
+| Sales / CRO | own | Customers, leads, inspections, proposals, contracts, client files. Assigns Team Leaders to meetings. |
+| Team Leader | team | Conducts client meetings, assigns team members, records findings and submits meeting reports. Next step (proposal or company profile) is set from their report. |
+| Operations | company | Dispatch, field visit jobs, inspections, client files |
+| Finance | company | Invoices, tax rules; view customers, contracts, jobs |
+| Auditor | company | Read-only across business modules |
+
+Team members (field staff who accompany Team Leaders) are added under a team via **Team & Access** (`/admin/team`). They do not need their own portal login; the Team Leader manages the meeting and submits the report on behalf of the team.
+
+Super admins can use **View as role** in the top bar to preview the portal as any role.
+
+---
+
+## Key business rules
+
+### Customer hierarchy
+- **Individual client** (`CL-YYYY-XXXX`): residential and private customers.
+- **Company** (`CO-YYYY-XXXX`) → **Branches** (`BR-YYYY-XXXX`): the company holds the legal identity (NTN/STRN) and master contracts. Each branch has its own sites, jobs, contracts and invoices. A branch is always linked to its parent company and is never created as a standalone customer.
+
+### Lead lifecycle ([src/lib/leadWorkflow.ts](src/lib/leadWorkflow.ts))
+```
+new ─► contacted ─► engaged ─► meeting_scheduled ─► meeting_done ─► profile_sent / proposal_sent ─► negotiation ─► won / lost
+```
+Step-by-step:
+1. **New** — lead captured, not yet contacted.
+2. **Contacted** — Sales / CRO made first contact; logged in activity log.
+3. **Engaged** — client is interested. CRO aligns a **Team Leader** for the meeting.
+4. **Meeting scheduled** — Team Leader (± team members) confirmed for client visit. Inspection can be conducted during the meeting.
+5. **Meeting done** — Team Leader submits a meeting report: what the client asked for (company profile, proposal, more info, etc.).
+6. **Profile sent / Proposal sent** — next step driven by the client request in the meeting report.
+7. **Negotiation → Won / Lost** — standard closing flow.
+
+- Contacted requires a logged contact (phone, WhatsApp or email).
+- Meeting scheduling assigns a Team Leader (`assignedTeamLeaderId`) and a date.
+- The meeting report captures `clientRequest` (company_profile / proposal / both / more_info) and `meetingReportNote`.
+- A proposal can only be created after meeting findings are recorded. At that point the customer account is created or linked (`ensureLeadCustomer()`), and the lead's documents and outreach history move with it.
+- Won converts the proposal to a contract and prompts sending the onboarding pack (SOP, MSDS, certificates, layout).
+
+### Proposals
+- Discounts above the approval threshold require management approval before the PDF can be issued.
+- Revisions are new linked records. Earlier quotes are never overwritten.
+
+### Scheduling ([src/lib/visitSchedule.ts](src/lib/visitSchedule.ts))
+- Generates service and follow-up visits from the contract's service plan and frequency.
+- Respects branch closing times and visit windows; after-hours visits go to the night shift.
+- Skips Sundays and configured public holidays.
+- Blocks technician double-booking.
+- Exports the visit schedule as a PDF into the client's `Documents` folder.
+
+### Finance
+- An invoice cannot be generated until its service report has supervisor QC sign-off.
+- Sales tax is charged by province from the editable `tax_rules` collection (defaults: SRB, PRA, ICT, KPRA, BRA).
+- Customer WHT (Section 153 certificates) is an **asset**. Supplier WHT is a **liability**. The two are never netted.
+- Posted invoices are immutable. Corrections go through credit notes.
+- Contracts within 60 days of expiry show a renewal alert. **Renew** clones the contract and creates a linked renewal proposal.
+
+---
+
+## Files, documents & client outreach
+
+### Virtual folder tree ([src/lib/folders.ts](src/lib/folders.ts))
+Firestore stays flat. Each record carries a `folderPath`, and the **Client files** explorer presents the records as folders:
+
+```
+/Clients/{Name}__{clientId}/
+   Profile/  Leads & Inspections/  Proposals/  Contracts/  Documents/
+   Service Reports/{YYYY}/{MM}/  Monitoring Sheets/  Invoices/{YYYY}/  Payments/
+   Branches/{Branch}__{branchId}/{Subfolder}/
+
+/Company (IKPM)/
+   Profile & Registrations/  SOP Templates/  MSDS Library/  Technician Certificates/
+   Proposal & Report Templates/  Tax Rules/  Internal/
+```
+
+Generated PDFs are filed automatically: verified service reports, posted invoices, payment receipts and visit schedules.
+
+### Cloudinary setup
+1. Cloudinary Console → *Settings → Upload → Add upload preset* → **Signing mode: Unsigned**.
+2. *Settings → Security* → enable **Allow delivery of PDF and ZIP files** (off by default on free plans; without it, shared PDF links return 401).
+3. Set `VITE_CLOUDINARY_CLOUD_NAME` and `VITE_CLOUDINARY_UPLOAD_PRESET`.
+
+Without Cloudinary, the portal still runs: files up to 750 KB are kept on the device only and cannot be shared as links.
+
+### Sending documents (WhatsApp / email)
+From a lead, proposal or customer, **Send Docs** lets the user pick a pitch pack or individual documents, edit the message, and send it. Every send is logged on the record. Sending moves a `new` lead to `contacted` and marks a proposal as sent.
+
+| Mode | Setup | Behaviour |
+|---|---|---|
+| Link (default) | None | Opens `wa.me` or the user's mail app with the message and links filled in; the user presses Send |
+| Automatic | Deploy on Vercel, set `VITE_OUTREACH_API_URL=/api` and the server secrets | `api/send-whatsapp.ts` sends real WhatsApp attachments; `api/send-email.ts` sends email through Resend from the staff member's business address. Falls back to link mode on error |
+
+The API checks the caller's Firebase session and only accepts attachments hosted in your Cloudinary account. WhatsApp only allows free-form messages within 24 h of the client's last message. For first contact, set `WHATSAPP_TEMPLATE_NAME` to an approved template.
+
+---
+
+## Offline / PWA
+
+- **Service worker** (`public/sw.js`) caches the app shell so the portal opens offline.
+- **Offline queue** (`src/lib/offlineStorage.ts` + `src/contexts/SyncContext.tsx`) stores field drafts and notes locally and syncs them when the device reconnects.
+- Invoice posting, payment reconciliation and discount approvals require an online connection.
+
+---
+
+## Testing
+
 ```bash
-npm run test:security
+npm test                 # all Vitest suites in src/tests
+npm run test:security    # security verification script
+npm run test:rules       # firestore.rules against the local emulator (needs Java)
+```
+
+Coverage includes the lead workflow, folder filing and backfill, onboarding, proposal plans, risk assessment, visit scheduling, devices, and Firestore rules: branch isolation, privilege escalation, invoice immutability, and deactivated users.
+
+---
+
+## Deployment
+
+### Vercel (frontend + API)
+1. Import the repo into Vercel. The framework preset is Vite and the output folder is `dist`.
+2. Add the `VITE_*` variables **and** any server-only secrets under *Project Settings → Environment Variables*.
+3. Deploy:
+   ```bash
+   npx vercel deploy --prod
+   ```
+`vercel.json` rewrites every non-`/api` path to `index.html` so client-side routes work.
+
+### Firestore
+Redeploy whenever `firestore.rules` or `firestore.indexes.json` changes:
+```bash
+npx firebase-tools deploy --only firestore:rules,firestore:indexes --project <your-project-id>
 ```
 
 ---
 
-## 6. Offline-First PWA & Background Sync
+## Maintenance scripts
 
-The IKPM portal operates as a Progressive Web App (PWA):
-1. **Service Worker (`public/sw.js`):** Caches the application shell, icons, and static assets for instant offline booting.
-2. **IndexedDB / Local Storage Sync Queue (`src/lib/offlineStorage.ts`):** Stores offline service drafts, customer contact notes, and new lead inquiries locally.
-3. **Automatic Reconnection Sync (`src/contexts/SyncContext.tsx`):** Listens to network connectivity events and automatically flushes pending offline items to Firebase when the device comes back online.
-4. **Safety Rule:** Financial invoice finalization, bank reconciliation, and management discount approvals are restricted to validated online connections.
+Both scripts need a Firebase service-account key. Keep it out of git.
+
+**Backfill folders.** Files records created before folder support:
+```bash
+npx tsx scripts/backfillFolders.ts --seed                                  # try on sample data
+npx tsx scripts/backfillFolders.ts --key=./service-account.json            # dry run, report in scripts/reports/
+npx tsx scripts/backfillFolders.ts --key=./service-account.json --apply --by=admin@insectkiller.pk
+```
+The script is idempotent: records that are already filed are skipped.
+
+**Reset data.** Wipes Firestore data but keeps staff logins:
+```bash
+npx tsx scripts/resetData.ts --key=./service-account.json            # dry run
+npx tsx scripts/resetData.ts --key=./service-account.json --apply    # backs up to ./backups, then deletes
+```
+The reset keeps `users` and the initialization flag. Use `--keep=a,b` to keep other collections. Cloudinary files are not deleted.
 
 ---
 
-## 7. Android Packaging via Capacitor (APK Build Guide)
+## Android build (Capacitor)
 
-The project includes `capacitor.config.json` pre-configured for `pk.insectkiller.portal`.
+`capacitor.config.json` is set up for app ID `pk.insectkiller.portal`. You need Android Studio, JDK 17 or 21, and Node 20+.
 
-### Prerequisites:
-- Android Studio Ladybug (or newer)
-- Java Development Kit (JDK 17 or JDK 21)
-- Node.js 20+
-
-### Step-by-Step Build Commands:
 ```bash
-# 1. Install Capacitor core and Android dependencies
 npm install @capacitor/core @capacitor/android
 npm install -D @capacitor/cli
-
-# 2. Build the production web bundle
 npm run build
-
-# 3. Add the Android platform project
 npx cap add android
-
-# 4. Synchronize web assets to native Android assets
 npx cap sync android
-
-# 5. Open Android Studio to build the release APK
 npx cap open android
 ```
 
-### Inside Android Studio:
-1. Go to **Build** > **Generate Signed Bundle / APK**.
-2. Select **APK** and choose your secure IKPM Keystore (`release-key.keystore`).
-3. Set Build Variant to **Release** with V1 (JAR) and V2 (Full APK Signature).
-4. The generated APK will be output in `android/app/release/app-release.apk` for direct sideloading or internal MDM distribution.
-
----
-
-## 8. Deployment Guide (Vercel & Firebase)
-
-### Required Environment Variables:
-Configure these in `.env.local` locally and in your **Vercel Project Settings > Environment Variables**:
-```ini
-VITE_FIREBASE_API_KEY=AIzaSy...
-VITE_FIREBASE_AUTH_DOMAIN=insect-killer-7d901.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=insect-killer-7d901
-VITE_FIREBASE_STORAGE_BUCKET=insect-killer-7d901.firebasestorage.app
-VITE_FIREBASE_MESSAGING_SENDER_ID=790177726591
-VITE_FIREBASE_APP_ID=1:790177726591:web:2a30bb3fc28ea6bb198308
-VITE_FIREBASE_MEASUREMENT_ID=G-ED4J7V004F
-```
-
-### Deploying Firestore Rules & Indexes:
-```bash
-# Login to Firebase
-npx firebase-tools login
-
-# Deploy security rules and composite indexes
-npx firebase-tools deploy --only firestore:rules,firestore:indexes --project insect-killer-7d901
-```
-
-### Deploying Frontend to Vercel:
-```bash
-npm run build
-npx vercel deploy --prod
-```
-
----
-
-## 9. Master Acceptance Checklist
-
-| Component | Status | Verification / Notes |
-|---|---|---|
-| **Vite + React 19 + TypeScript Setup** | **COMPLETED** | Verified with clean `npm run build` (2.55s) and `npm run lint` (0 errors). |
-| **Pakistani Domain Formatting** | **COMPLETED** | PKR currency, phone `+923...`, CNIC `42101-...`, NTN `3134567-8`. |
-| **Customer Hierarchy (Individual)** | **COMPLETED** | Unique `CL-YYYY-XXXX` IDs, 10 isolated tabs, residential site management. |
-| **Customer Hierarchy (Corporate)** | **COMPLETED** | Unique `CO-YYYY-XXXX` & `BR-YYYY-XXXX` IDs, branch hierarchy, branch contracts. |
-| **CRM & Duplicate Detection** | **COMPLETED** | Duplicate warnings on phone, CNIC, and NTN matching. |
-| **Proposal Engine & AP-01 Approval** | **COMPLETED** | Multi-service line items, auto-approval gates on $>10\%$ discount, PDF generation. |
-| **AMC Contracts & Renewals** | **COMPLETED** | Recurring visit scheduling, renewal tracking with 30-day alerts. |
-| **Operations Dispatch & Conflict Check**| **COMPLETED** | Visual dispatch calendar with technician double-booking conflict warning. |
-| **PCO Mobile Service Report** | **COMPLETED** | Chemical dosage logs, dual digital signatures, offline draft saving. |
-| **Provincial Sales Tax Invoicing** | **COMPLETED** | SRB (13%), PRA (16%), ICT (15%), KPRA (15%), BRA (15%) configurable rules. |
-| **Withholding Tax (WHT) Separation** | **COMPLETED** | Customer Section 153 certificates strictly isolated from supplier payables. |
-| **Financial Immutability** | **COMPLETED** | Posted invoices locked; reversals enforced through credit notes. |
-| **RBAC & First-Admin Bootstrap** | **COMPLETED** | Initialization gate (`IKPM-2026-PAKISTAN-SECURE`), Role Simulator banner. |
-| **Automated Security Verification** | **COMPLETED** | 11/11 automated security tests passing (`npm run test:security`). |
-| **PWA & Offline-First Sync** | **COMPLETED** | Service Worker, web app manifest, offline queue, auto-sync upon reconnection. |
-| **Capacitor Android APK Setup** | **COMPLETED** | `capacitor.config.json` configured with full documentation. |
-| **Free-Tier Constraints & Hosting** | **DOCUMENTED** | Firebase Spark plan limits & zero-cost client-side PDF fallback documented. |
-
----
-
-## 10. Documents, Cloudinary & One-Click Client Outreach (WhatsApp / Email)
-
-Clients almost always ask for IKPM's papers while you're pitching (principal **authority letters**, NTN / SRB certificates, pesticide license, company profile, MSDS…). The portal now handles that in one screen.
-
-### Workflow
-```
-Upload once ──> Document Library (/documents)  ──>  Pitch packs (Corporate / Food-Pharma / Intro)
-                                                         │
-Lead / Proposal / Customer ──> "Send Docs" / "Send to Client" ──> pick pack ──> WhatsApp and/or Email
-                                                         │
-                     Logged on the lead / proposal / customer  •  Lead auto-moves New → Contacted
-                     Proposal PDF generated + uploaded + attached  •  Proposal auto-marked "Sent to Client"
-```
-- **Document Library** (`/documents`): IKPM company documents with categories, issuer and *valid-until* dates. Expired documents are excluded from packs automatically; expiring ones are flagged 30 days ahead.
-- **Customer Documents tab** (company, branch, individual): upload files received *from* the client (signed contracts, POs, WHT certificates, vendor forms) and see everything sent *to* them.
-- **Send flow** (`src/features/outreach/SendDocumentsModal.tsx`): recipient → documents (pack chips or checklist) → editable message → send.
-
-### Storage — Cloudinary
-1. Cloudinary Console → *Settings → Upload → Add upload preset* → **Signing mode: Unsigned**, folder optional.
-2. *Settings → Security* → enable **"Allow delivery of PDF and ZIP files"** (off by default on free plans; otherwise shared PDF links return 401).
-3. Set `VITE_CLOUDINARY_CLOUD_NAME` and `VITE_CLOUDINARY_UPLOAD_PRESET`.
-
-Without Cloudinary the portal still works in demo mode: files ≤750 KB are stored on the device only and can't be shared as links.
-
-### Sending — two modes
-| Mode | Setup | What happens |
-|---|---|---|
-| **Link mode** (default) | Nothing | Opens WhatsApp (`wa.me`) / your mail app with the message and document links pre-filled; the salesperson presses Send. |
-| **Automatic** | Deploy on Vercel, set `VITE_OUTREACH_API_URL=/api` + server secrets (see `.env.example`) | `api/send-whatsapp.ts` (WhatsApp Cloud API) sends the message and each document as a real WhatsApp attachment; `api/send-email.ts` (Resend) emails the files as attachments. Falls back to link mode on any error. |
-
-The API verifies the caller's Firebase session and only accepts attachments hosted in your own Cloudinary account.
-WhatsApp rule: free-form messages are only allowed within 24 h of the client's last message. For first contact set `WHATSAPP_TEMPLATE_NAME` to an approved template; it is sent instead and documents follow once the client replies.
-
-### Code structure (new / refactored)
-```
-src/config/env.ts                 Typed env access + integration flags
-src/hooks/useDataStore.ts         Reactive store hook (pages re-render on any data change)
-src/services/dataService.ts       Generic upsert/audit/mirror helpers; documents, packs, outreach logs
-src/services/outreachService.ts   WhatsApp / email sending (API or link fallback) + logging
-src/lib/cloudinary.ts             Browser → Cloudinary unsigned upload with progress & validation
-src/features/documents/*          Library page, upload modal, document table, customer documents panel
-src/features/outreach/*           Send modal, outreach history timeline
-api/*                             Vercel serverless functions (WhatsApp Cloud API, Resend email)
-```
-Routes are lazy-loaded (main bundle ~1.5 MB → ~315 KB).
-#   I K P M  
- #   I K P M - P o r t a l  
- #   I K P M - P o r t a l  
- 
-## 5. Cloud database, staff & access (v1.1)
-
-All data now lives in **Cloud Firestore** (live sync, offline cache). The security rules in
-`firestore.rules` must be deployed once, or Firestore stays locked and nothing saves:
-
-```bash
-npx firebase-tools login
-npx firebase-tools deploy --only firestore
-```
-
-Then:
-
-1. **First admin** – sign in. If the portal says "account hasn't been set up", open
-   `/setup-first-admin` with the same email and password to become super admin.
-2. **Old browser data** – Settings → *Cloud database* → *Upload records* moves anything
-   that was saved only in this browser into Firestore.
-3. **Staff & teams** – *Team & Access* (super admin only): add people (each gets a login and a
-   password-set email), set role, team, data access (own / team / company) and business email.
-   Roles control which modules appear; data access controls whose records they see. Both are
-   enforced by the Firestore rules, not just hidden in the UI.
-4. **Client emails** are sent from the signed-in person's business email:
-   - automatic (portal API): set `RESEND_API_KEY`, `EMAIL_SENDER_DOMAINS=insectkiller.pk`
-     (domain verified in Resend), `FIREBASE_PROJECT_ID`, optional `EMAIL_FROM` fallback;
-   - or opened as a draft in their own Gmail / Google Workspace, Outlook 365 or desktop mail app.
-
----
-
-## 6. Virtual Folder Structure & Auto-Filing Architecture
-
-All client and company files are organized into a predictable virtual folder hierarchy. Firestore remains flat for performance; records carry `folderPath` alongside `FolderMeta`:
-
-### Folder Hierarchy Layout
-```
-/Clients/{ClientName}__{clientId}/
-   ├── Profile/                       # Registration docs, NTN/STRN certificates
-   ├── Leads & Inspections/           # Site inspection assessments & risk findings
-   ├── Proposals/                     # Commercial proposals, quotation revisions
-   ├── Contracts/                     # Signed AMCs & service agreements
-   ├── Documents/                     # Layouts, SOPs, MSDS, technician certs, visit schedules
-   ├── Service Reports/{YYYY}/{MM}   # Verified field service reports (auto-filed)
-   ├── Monitoring Sheets/             # Mechanical trap & glue station monitoring sheets
-   ├── Invoices/{YYYY}/               # Statutory sales tax invoices (auto-filed)
-   └── Payments/                      # Payment receipts & WHT 153 certificates (auto-filed)
-
-/Clients/{ClientName}__{clientId}/Branches/{BranchName}__{branchId}/
-   └── {Subfolder}/                   # Branch-specific documents, layouts & monitoring
-
-/Company (IKPM)/
-   ├── Profile & Registrations/       # IKPM corporate tax & licensing documents
-   ├── SOP Templates/                 # Standard operating procedure templates
-   ├── MSDS Library/                  # Chemical material safety data sheets
-   ├── Technician Certificates/       # Certified technician training & licenses
-   ├── Proposal & Report Templates/   # Master quotation and report templates
-   ├── Tax Rules/                     # Provincial sales tax reference tables
-   └── Internal/                      # Internal administrative files
-```
-
-### Auto-Filing Triggers
-- **Supervisor QC Verification:** When a field service job is verified by an operations supervisor, the branded PDF service report is generated and auto-filed into `/Clients/.../Service Reports/{YYYY}/{MM}`.
-- **Sales Tax Invoice Posting:** When an invoice is created/posted, the official sales tax invoice PDF is auto-filed into `/Clients/.../Invoices/{YYYY}`.
-- **Payment Allocation:** When a payment is recorded, the formal payment receipt PDF is auto-filed into `/Clients/.../Payments`.
-- **Visit Scheduling:** Exporting the contractual visit schedule auto-files the Dunkin-format PDF into `/Clients/.../Documents`.
-
----
-
-## 7. CRM Lead Lifecycle & Stage Transition Rules
-
-The CRM enforces strict, auditable stage transitions in `src/lib/leadWorkflow.ts`:
-
-```
-new ──► contacted ──► engaged ──► inspection_scheduled ──► inspection_completed ──► proposal_created ──► won / lost
-```
-
-### Stage Transition Rules
-1. **New ──► Contacted:** Requires recording an initial communication channel (phone, WhatsApp, email) and contact log.
-2. **Contacted ──► Engaged:** The prospect indicates active interest; site parameters (approximate area sq ft, pest types) are recorded.
-3. **Engaged ──► Inspection Scheduled:** Mandatory assignment of an inspector and scheduled inspection date.
-4. **Inspection Scheduled ──► Inspection Completed:** Requires recording field inspection findings, pest infestation severity, and site photos.
-5. **Inspection Completed ──► Proposal Created:** Prohibits issuing proposals before inspection findings are logged. Automatically provisions or links customer account via `ensureLeadCustomer()`. All lead documents and outreach logs seamlessly follow the lead into the newly created customer folder.
-6. **Proposal Accepted ──► Won:** Converts proposal to active contract, prompts onboarding pack transmission (SOP, MSDS, certificates, layout).
-
----
-
-## 8. New Firestore Collections & Data Models
-
-| Collection | Model Interface | Purpose |
-|---|---|---|
-| `devices` | `Device` | Numbered pest management stations (mechanical traps, glue boards, bait stations) with coordinates/pins on the branch floor plan. |
-| `monitoring_records` | `MonitoringRecord` | Device-level inspection logs from PCO visits (pest counts, damage, replacement, attractant change). |
-| `document_packs` | `DocumentPack` | Assembled client onboarding packs with verified delivery and QR access tokens. |
-| `templates` | `DocumentTemplate` | Standardized legal terms, IPM scope sections, and commercial clauses with semantic versioning. |
-
----
-
-## 9. Contract Visit Scheduling & Operations (Step 14)
-
-Modeled after commercial franchise schedules (e.g., Dunkin' Pest Control Schedule):
-
-1. **Automated Visit Generation:** Creates `service_jobs` from contract `servicePlan` and frequency (weekly, bi-weekly, monthly) across tenure, producing linked service and follow-up visit pairs.
-2. **Branch Constraints & Operating Hours:** Considers branch closing times and service windows (`closingTime`, `visitWindowStart`, `visitWindowEnd`). Automatically slots after-hours visits into `night_shift`.
-3. **Holiday & Sunday Exclusion:** Skips configured gazetted public holidays and Sundays.
-4. **Double-Booking Prevention:** The scheduling engine runs real-time technician conflict detection (`pcoConflicts`) against existing jobs and blocks overlapping assignments.
-5. **Dunkin Format Export:** One-click PDF export listing each branch, closing time, 1st service date, 2nd service date, and follow-up dates. Auto-filed into client Documents and viewable in `DispatchCalendarPage`.
-
----
-
-## 10. Financial Guard Rails & AMC Renewal (Step 15)
-
-1. **Supervisor Verification Guard Rail:** Strict system enforcement prevents generating or posting sales tax invoices until the service report is verified with a supervisor QC sign-off.
-2. **Provincial Sales Tax Integrity:** Rates dynamically derive from active rules in `tax_rules` (SRB 13%, PRA 16%, KPRA 15%, ICT 15%, BRA 15%). Contract client invoice base amounts strictly pull from `contract.monthlyRate`.
-3. **60-Day Renewal Automation:** Contracts within 60 days of expiry display renewal alerts. Clicking **Renew Contract** automatically clones the agreement for the subsequent term and creates a linked renewal proposal.
-
----
-
-## 11. Legacy Data Backfill Instructions
-
-To file legacy records created prior to virtual folder support, use the backfill runner:
-
-```bash
-# 1. Test against sample seed data (no credentials required)
-npx tsx scripts/backfillFolders.ts --seed
-
-# 2. Dry run against live Firestore (generates markdown report in scripts/reports/ without modifying data)
-npx tsx scripts/backfillFolders.ts --key=./service-account.json
-
-# 3. Apply changes (safe & idempotent: skips already filed records and logs audit trail)
-npx tsx scripts/backfillFolders.ts --key=./service-account.json --apply --by=admin@insectkiller.pk
-```
-
+In Android Studio, go to **Build → Generate Signed Bundle / APK**, pick **APK** and your release keystore, then build the **Release** variant.

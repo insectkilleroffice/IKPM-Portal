@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, Link, Navigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   Users2,
   Building2,
@@ -29,7 +29,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { getLeadNextAction, getJobNextAction } from '../../lib/workflow';
 
-type RoleQueueTab = 'sales' | 'operations' | 'finance' | 'technician';
+type RoleQueueTab = 'sales' | 'operations' | 'finance' | 'team_leader';
 
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
@@ -40,15 +40,11 @@ export const DashboardPage: React.FC = () => {
   const getDefaultTab = (): RoleQueueTab => {
     if (effectiveRole === 'finance') return 'finance';
     if (effectiveRole === 'sales') return 'sales';
+    if (effectiveRole === 'team_leader') return 'team_leader';
     return 'operations';
   };
 
   const [activeQueueTab, setActiveQueueTab] = useState<RoleQueueTab>(getDefaultTab());
-
-  // If user is a technician, skip full portal and open PCO field workstation directly
-  if (effectiveRole === 'technician') {
-    return <Navigate to="/pco-field" replace />;
-  }
 
   // Metrics queried from active database records
   const companies = dataService.getCompanies();
@@ -102,13 +98,54 @@ export const DashboardPage: React.FC = () => {
     return i.balanceDue > 0 && (!i.customerWhtTotal || i.customerWhtTotal === 0);
   });
 
-  // 4. TECHNICIAN QUEUE
-  const techJobsToday = jobs
-    .filter((j) => j.scheduledDate === todayStr || j.status === 'in_progress')
-    .sort((a, b) => {
-      const order = { morning: 1, afternoon: 2, evening: 3, night_shift: 4 };
-      return (order[a.timeSlot] || 1) - (order[b.timeSlot] || 1);
-    });
+  // 4. TEAM LEADER QUEUE
+  const uid = userProfile?.uid || '';
+  // Meetings scheduled today or overdue (not yet reported)
+  const tlMeetingsDue = leads.filter(
+    (l) =>
+      l.stage === 'meeting_scheduled' &&
+      l.inspection?.scheduledDate &&
+      l.inspection.scheduledDate <= todayStr &&
+      (l.assignedTeamLeaderId === uid || l.inspection?.assignedTeamLeaderId === uid)
+  );
+  // Upcoming meetings assigned to this TL
+  const tlUpcomingMeetings = leads.filter(
+    (l) =>
+      l.stage === 'meeting_scheduled' &&
+      l.inspection?.scheduledDate &&
+      l.inspection.scheduledDate > todayStr &&
+      (l.assignedTeamLeaderId === uid || l.inspection?.assignedTeamLeaderId === uid)
+  );
+  // Site inspections where this TL or their team is assigned
+  const tlSiteInspections = leads.filter(
+    (l) =>
+      l.siteInspection?.status === 'scheduled' &&
+      (l.siteInspection.teamLeaderId === uid || l.siteInspection.assignedTechIds?.includes(uid))
+  );
+  // Meeting done, TL requested inspection, but none scheduled yet (awaiting admin assignment)
+  const tlPendingInspectionAssignment = leads.filter(
+    (l) =>
+      l.stage === 'meeting_done' &&
+      l.inspection?.meetingFollowUps?.some(f => f.type === 'inspection') &&
+      !l.siteInspection &&
+      (l.assignedTeamLeaderId === uid || l.inspection?.assignedTeamLeaderId === uid)
+  );
+  // Active contracts assigned to this TL
+  const tlContracts = contracts.filter(
+    (c) => c.status === 'active' && c.assignedTeamLeaderId === uid
+  );
+  // Upcoming & in-progress service jobs for this TL
+  const tlServiceJobs = jobs.filter(
+    (j) =>
+      ['scheduled', 'in_progress'].includes(j.status) &&
+      (j.assignedTeamLeaderId === uid ||
+        j.leadPcoId === uid ||
+        j.assignedTechnicianIds.includes(uid))
+  );
+  // This TL's team members (getStaff already filters isActive)
+  const tlTeamMembers = dataService.getStaff().filter(
+    (u) => userProfile?.teamId && u.teamId === userProfile.teamId && u.uid !== uid
+  );
 
   return (
     <div className="animate-fade-in">
@@ -128,15 +165,11 @@ export const DashboardPage: React.FC = () => {
             Welcome, {userProfile?.displayName || 'User'}
           </h1>
           <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-            IKPM Target Workflow: Lead ─► Inspection ─► Proposal ─► Contract ─► Job ─► Report ─► Invoice ─► Paid
+            Lead ─► Contact ─► Meeting (Team Leader) ─► Report ─► Proposal / Profile ─► Contract ─► Job ─► Invoice ─► Paid
           </p>
         </div>
 
         <div style={{ display: 'flex', gap: '0.75rem' }}>
-          <button className="btn btn-secondary" onClick={() => navigate('/pco-field')}>
-            <Truck size={15} />
-            <span>PCO Mobile View</span>
-          </button>
           <button className="btn btn-primary" onClick={() => navigate('/crm?action=new_lead')}>
             <span>+ Capture New Lead</span>
           </button>
@@ -170,7 +203,7 @@ export const DashboardPage: React.FC = () => {
               { id: 'operations', label: 'Operations Queue' },
               { id: 'sales', label: 'Sales Queue' },
               { id: 'finance', label: 'Finance Queue' },
-              { id: 'technician', label: 'Technician Route' },
+              { id: 'team_leader', label: 'Team Leader Queue' },
             ].map((t) => (
               <button
                 key={t.id}
@@ -474,50 +507,177 @@ export const DashboardPage: React.FC = () => {
           </div>
         )}
 
-        {/* 4. TECHNICIAN ROUTE QUEUE */}
-        {activeQueueTab === 'technician' && (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-              <span style={{ fontSize: '0.825rem', color: 'var(--text-secondary)' }}>
-                Route Order for Today: <strong>{techJobsToday.length} assigned visits</strong>
-              </span>
-              <button className="btn btn-primary" onClick={() => navigate('/pco-field')}>
-                <Truck size={14} />
-                <span>Open Guided Field Screen</span>
-              </button>
+        {/* 4. TEAM LEADER QUEUE */}
+        {activeQueueTab === 'team_leader' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+            {/* My Meetings — due today or overdue + upcoming */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  My Meetings ({tlMeetingsDue.length + tlUpcomingMeetings.length})
+                </strong>
+                <Link to="/crm" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Pipeline</Link>
+              </div>
+              {tlMeetingsDue.length === 0 && tlUpcomingMeetings.length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No meetings assigned to you.</p>
+              ) : (
+                <>
+                  {tlMeetingsDue.length > 0 && (
+                    <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#DC2626', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      Due / Overdue
+                    </div>
+                  )}
+                  {tlMeetingsDue.slice(0, 3).map((l) => (
+                    <div key={l.id} onClick={() => navigate(`/crm?lead=${l.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid #FCA5A5', marginBottom: '0.4rem' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{l.title}</div>
+                      <div style={{ fontSize: '0.72rem', color: '#DC2626' }}>{l.city} • {formatDate(l.inspection!.scheduledDate!)}</div>
+                    </div>
+                  ))}
+                  {tlUpcomingMeetings.length > 0 && (
+                    <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', marginTop: '0.4rem', marginBottom: '0.25rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      Upcoming
+                    </div>
+                  )}
+                  {tlUpcomingMeetings.slice(0, 3).map((l) => (
+                    <div key={l.id} onClick={() => navigate(`/crm?lead=${l.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.4rem' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{l.title}</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{l.city} • {formatDate(l.inspection!.scheduledDate!)}</div>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '0.75rem' }}>
-              {techJobsToday.map((j, idx) => (
-                <div
-                  key={j.id}
-                  onClick={() => navigate('/pco-field')}
-                  style={{
-                    padding: '0.85rem',
-                    backgroundColor: 'var(--bg-surface-alt)',
-                    borderRadius: 'var(--radius-md)',
-                    border: '1px solid var(--border-subtle)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span className="badge-status badge-navy" style={{ fontSize: '0.65rem' }}>
-                      Stop #{idx + 1} • {j.timeSlot.replace('_', ' ')}
-                    </span>
-                    <StatusBadge status={j.status} />
+            {/* Site Inspections — scheduled technical visits */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Site Inspections ({tlSiteInspections.length})
+                </strong>
+                <Link to="/crm" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Pipeline</Link>
+              </div>
+              {tlSiteInspections.length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No site inspections assigned to you.</p>
+              ) : (
+                tlSiteInspections.slice(0, 4).map((l) => (
+                  <div key={l.id} onClick={() => navigate(`/crm?lead=${l.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--ikpm-emerald-300)', marginBottom: '0.4rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{l.title}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      {l.siteInspection!.branchName || l.city} • {formatDate(l.siteInspection!.scheduledDate)}
+                    </div>
+                    {l.siteInspection!.assignedTechNames?.length ? (
+                      <div style={{ fontSize: '0.7rem', color: 'var(--ikpm-emerald-700)', marginTop: '0.15rem' }}>
+                        Techs: {l.siteInspection!.assignedTechNames.join(', ')}
+                      </div>
+                    ) : null}
                   </div>
-                  <strong style={{ fontSize: '0.9rem', display: 'block', marginTop: '4px' }}>{j.customerName}</strong>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{j.siteName}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem' }}>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                      Pests: {j.targetPests.join(', ')}
-                    </span>
-                    <button className="btn btn-outline-emerald" style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem' }}>
-                      Start
-                    </button>
+                ))
+              )}
+            </div>
+
+            {/* Awaiting Assignment — TL requested inspection but admin hasn't scheduled it yet */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: '#92400E' }}>
+                  Awaiting Assignment ({tlPendingInspectionAssignment.length})
+                </strong>
+                <Link to="/crm" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Pipeline</Link>
+              </div>
+              {tlPendingInspectionAssignment.length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No pending inspection assignments.</p>
+              ) : (
+                tlPendingInspectionAssignment.slice(0, 4).map((l) => {
+                  const inspFu = l.inspection!.meetingFollowUps!.find(f => f.type === 'inspection');
+                  return (
+                    <div key={l.id} onClick={() => navigate(`/crm?lead=${l.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid #FCD34D', marginBottom: '0.4rem' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{l.title}</div>
+                      <div style={{ fontSize: '0.72rem', color: '#92400E' }}>
+                        {inspFu?.branchName ? `Site: ${inspFu.branchName}` : 'Site TBD'}
+                        {inspFu?.scheduledDate ? ` • ${formatDate(inspFu.scheduledDate)}` : ''}
+                      </div>
+                      {inspFu?.addressTbd && (
+                        <div style={{ fontSize: '0.7rem', color: '#D97706', marginTop: '0.1rem' }}>⚠ Address not confirmed</div>
+                      )}
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>Waiting for CRO/admin to assign</div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* My Service Jobs — upcoming visits for contracts assigned to this TL */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  My Service Jobs ({tlServiceJobs.length})
+                </strong>
+                <Link to="/operations/jobs" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>All Jobs</Link>
+              </div>
+              {tlServiceJobs.length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No service jobs assigned to you.</p>
+              ) : (
+                tlServiceJobs.slice(0, 4).map((j) => (
+                  <div key={j.id} onClick={() => navigate(`/operations/jobs?job=${j.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: `1px solid ${j.status === 'in_progress' ? 'var(--ikpm-emerald-300)' : 'var(--border-subtle)'}`, marginBottom: '0.4rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <strong style={{ fontSize: '0.8rem' }}>{j.customerName}</strong>
+                      <span className={`badge-status ${j.status === 'in_progress' ? 'badge-emerald' : 'badge-navy'}`} style={{ fontSize: '0.62rem' }}>
+                        {j.status === 'in_progress' ? 'In Progress' : 'Scheduled'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      {j.siteName} • {formatDate(j.scheduledDate)} • {j.timeSlot}
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
+                      Techs: {j.assignedTechnicianNames.join(', ') || '—'}
+                    </div>
                   </div>
+                ))
+              )}
+              {tlContracts.length > 0 && (
+                <div style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    My Contracts ({tlContracts.length} active)
+                  </div>
+                  {tlContracts.slice(0, 3).map((c) => (
+                    <div key={c.id} onClick={() => navigate(`/contracts`)} style={{ padding: '0.35rem 0.6rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: '0.78rem' }}>{c.customerName}</div>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>{c.contractType} • {c.totalJobsCompleted}/{c.totalJobsScheduled} visits done</div>
+                      </div>
+                      <span className="badge-status badge-emerald" style={{ fontSize: '0.6rem' }}>Active</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+            </div>
+
+            {/* My Team */}
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  My Team ({tlTeamMembers.length})
+                </strong>
+              </div>
+              {tlTeamMembers.length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No team members assigned to your team yet.</p>
+              ) : (
+                tlTeamMembers.map((m) => (
+                  <div key={m.uid} style={{ padding: '0.4rem 0.6rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', marginBottom: '0.3rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: 'var(--ikpm-navy-100)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700, color: 'var(--ikpm-navy-700)', flexShrink: 0 }}>
+                      {(m.displayName || m.email || '?').charAt(0).toUpperCase()}
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.displayName || m.email}</div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>{m.role?.replace(/_/g, ' ')}</div>
+                    </div>
+                  </div>
+                ))
+              )}
+              {userProfile?.teamName && (
+                <div style={{ marginTop: '0.4rem', fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+                  Team: {userProfile.teamName}
+                </div>
+              )}
             </div>
           </div>
         )}

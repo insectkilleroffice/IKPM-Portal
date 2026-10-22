@@ -37,7 +37,7 @@ import { useNotification } from '../../contexts/NotificationContext';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import { LeadFormModal } from '../../features/leads/LeadFormModal';
 import { ImportLeadsModal } from '../../features/leads/ImportLeadsModal';
-import { InspectionFindingsModal, LogContactModal, PEST_OPTIONS, ScheduleInspectionModal } from '../../features/leads/LeadActionModals';
+import { InspectionFindingsModal, LogContactModal, MeetingReportModal, PEST_OPTIONS, ScheduleInspectionModal, ScheduleSiteInspectionModal, SiteInspectionFindingsModal } from '../../features/leads/LeadActionModals';
 import { canEditModule } from '../../lib/permissions';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
@@ -84,6 +84,9 @@ const ACTION_ICONS: Record<LeadActionId, React.ComponentType<{ size?: number }>>
   schedule_inspection: CalendarClock,
   reschedule_inspection: CalendarClock,
   record_findings: ClipboardCheck,
+  record_meeting: ClipboardCheck,
+  schedule_site_inspection: CalendarClock,
+  record_site_inspection: ClipboardCheck,
   create_proposal: FileSpreadsheet,
   open_proposal: FileSpreadsheet,
   skip_inspection: SkipForward,
@@ -94,6 +97,7 @@ const ACTION_ICONS: Record<LeadActionId, React.ComponentType<{ size?: number }>>
   mark_lost: XCircle,
   open_customer: ExternalLink,
   reopen: RotateCcw,
+  change_stage: ArrowRight,
 };
 
 const ownerOf = (l: Lead) => (l as Lead & { ownerName?: string }).ownerName || l.assignedToName || l.createdBy || '—';
@@ -105,6 +109,8 @@ export const LeadsListPage: React.FC = () => {
   const { userProfile, effectiveRole } = useAuth();
   const { success, warning, error } = useNotification();
   const canEdit = canEditModule(effectiveRole, 'crm');
+  const canEditPco = canEditModule(effectiveRole, 'pco');
+  const canEditInspections = canEditModule(effectiveRole, 'inspections');
 
   const [tab, setTab] = useState<Tab>((searchParams.get('stage') as Tab) || 'all');
   const [query, setQuery] = useState('');
@@ -122,6 +128,10 @@ export const LeadsListPage: React.FC = () => {
   const [skipLead, setSkipLead] = useState<Lead | null>(null);
   const [sendLead, setSendLead] = useState<Lead | null>(null);
   const [stuckLead, setStuckLead] = useState<Lead | null>(null);
+  const [changeStageLead, setChangeStageLead] = useState<Lead | null>(null);
+  const [meetingReportLead, setMeetingReportLead] = useState<Lead | null>(null);
+  const [siteScheduleLead, setSiteScheduleLead] = useState<Lead | null>(null);
+  const [siteInspFindingsLead, setSiteInspFindingsLead] = useState<Lead | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
 
   const leads = store.getLeads();
@@ -198,13 +208,17 @@ export const LeadsListPage: React.FC = () => {
     const action = availableActions(lead).find((a) => a.id === id);
     if (!action) return;
     if (!action.enabled) return warning('Not available', action.disabledReason || 'This step is not allowed at the current stage.');
-    if (!canEdit && !READ_ONLY_ACTIONS.includes(id)) return openDetail(lead.id);
+    const isPcoAction = ['record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection'].includes(id);
+    if (!canEdit && !READ_ONLY_ACTIONS.includes(id) && !(isPcoAction && (canEditPco || canEditInspections))) return openDetail(lead.id);
     switch (id) {
       case 'edit': return setFormLead(lead);
       case 'log_contact': return setContactLead(lead);
       case 'schedule_inspection':
       case 'reschedule_inspection': return setScheduleLead(lead);
       case 'record_findings': return setFindingsLead(lead);
+      case 'record_meeting': return setMeetingReportLead(lead);
+      case 'schedule_site_inspection': return setSiteScheduleLead(lead);
+      case 'record_site_inspection': return setSiteInspFindingsLead(lead);
       case 'create_proposal': return createProposal(lead);
       case 'skip_inspection': return lead.inspectionSkipped ? createProposal(lead) : setSkipLead(lead);
       case 'send_documents': return setSendLead(lead);
@@ -212,6 +226,7 @@ export const LeadsListPage: React.FC = () => {
       case 'create_revision':
         return navigate(lead.proposalId ? `/proposals?view=${lead.proposalId}&action=revision` : '/proposals');
       case 'mark_lost': return setLostLead(lead);
+      case 'change_stage': return setChangeStageLead(lead);
       case 'mark_won': return; // Won happens when the proposal is accepted
       case 'open_proposal': return navigate(lead.proposalId ? `/proposals?view=${lead.proposalId}` : '/proposals');
       case 'open_customer':
@@ -233,7 +248,13 @@ export const LeadsListPage: React.FC = () => {
   /** "⋮" menu items: every allowed action except the one already on the primary button. */
   const menuItems = (lead: Lead, exclude?: LeadActionId): RowMenuItem[] =>
     availableActions(lead)
-      .filter((a) => a.id !== exclude && (canEdit || READ_ONLY_ACTIONS.includes(a.id)))
+      .filter((a) => {
+        if (a.id === exclude) return false;
+        if (canEdit) return true;
+        if (READ_ONLY_ACTIONS.includes(a.id)) return true;
+        const isPco = ['record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection'].includes(a.id);
+        return isPco && (canEditPco || canEditInspections);
+      })
       .map((a) => ({
         icon: ACTION_ICONS[a.id],
         label: a.label,
@@ -399,7 +420,7 @@ export const LeadsListPage: React.FC = () => {
                     <td className="cell-sub">{ownerOf(l)}</td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="cell-actions" style={{ position: 'relative' }}>
-                        {(canEdit || READ_ONLY_ACTIONS.includes(step.action)) && (
+                        {(canEdit || READ_ONLY_ACTIONS.includes(step.action) || (['record_meeting','record_site_inspection','reschedule_inspection','schedule_site_inspection'].includes(step.action) && (canEditPco || canEditInspections))) && (
                           <button className="btn btn-sm btn-secondary" onClick={() => runNext(l)}>
                             {step.label} <ArrowRight size={13} />
                           </button>
@@ -424,6 +445,8 @@ export const LeadsListPage: React.FC = () => {
         <LeadDetail
           lead={detail}
           canEdit={canEdit}
+          canEditPco={canEditPco}
+          canEditInspections={canEditInspections}
           onClose={() => openDetail(null)}
           onAction={(id) => runAction(detail, id)}
           menuItems={menuItems(detail, nextStep(detail).action)}
@@ -435,6 +458,9 @@ export const LeadsListPage: React.FC = () => {
       <LogContactModal lead={contactLead} onClose={() => setContactLead(null)} />
       <ScheduleInspectionModal lead={scheduleLead} onClose={() => setScheduleLead(null)} />
       <InspectionFindingsModal lead={findingsLead} onClose={() => setFindingsLead(null)} />
+      <MeetingReportModal lead={meetingReportLead} onClose={() => setMeetingReportLead(null)} onDone={(l) => { setMeetingReportLead(null); openDetail(l.id); }} />
+      <ScheduleSiteInspectionModal lead={siteScheduleLead} onClose={() => setSiteScheduleLead(null)} onDone={(l) => { setSiteScheduleLead(null); openDetail(l.id); }} />
+      <SiteInspectionFindingsModal lead={siteInspFindingsLead} onClose={() => setSiteInspFindingsLead(null)} onDone={(l) => { setSiteInspFindingsLead(null); openDetail(l.id); }} />
 
       <ConfirmDialog
         isOpen={Boolean(lostLead)}
@@ -508,6 +534,17 @@ export const LeadsListPage: React.FC = () => {
           }}
         />
       )}
+
+      {changeStageLead && (
+        <ChangeStageModal
+          lead={changeStageLead}
+          onClose={() => setChangeStageLead(null)}
+          onMoved={(updated) => {
+            setChangeStageLead(null);
+            if (detailId === updated.id) openDetail(updated.id);
+          }}
+        />
+      )}
     </div>
   );
 };
@@ -566,11 +603,97 @@ const SetStuckAtModal: React.FC<{ lead: Lead; onClose: () => void; onSaved: (upd
 };
 
 // ---------------------------------------------------------------------------
+// Change Stage Modal
+// ---------------------------------------------------------------------------
+const ChangeStageModal: React.FC<{ lead: Lead; onClose: () => void; onMoved: (updated: Lead) => void }> = ({ lead, onClose, onMoved }) => {
+  const store = useDataStore();
+  const { userProfile } = useAuth();
+  const { success, warning, error } = useNotification();
+  const currentStage = stageOf(lead);
+  const currentIndex = PIPELINE.findIndex((p) => p.stage === currentStage);
+
+  const moveToStage = (target: PipelineStage) => {
+    try {
+      const updated = store.setLeadStage(lead.id, target, undefined, userProfile?.email);
+      if (updated) {
+        const meta = PIPELINE.find((p) => p.stage === target);
+        success('Stage updated', `${lead.title} → ${meta?.label ?? target}`);
+        onMoved(updated);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      error('Cannot move stage', msg);
+    }
+  };
+
+  const forwardStages = PIPELINE.filter((p, i) => i > currentIndex && p.stage !== 'lost');
+  const backwardStages = PIPELINE.filter((p, i) => i < currentIndex && p.stage !== 'lost');
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={`Move stage: ${lead.title}`}
+      subtitle={`Currently at: ${PIPELINE.find((p) => p.stage === currentStage)?.label ?? currentStage}`}
+      maxWidth="480px"
+      footer={<button className="btn btn-secondary" onClick={onClose}>Cancel</button>}
+    >
+      {forwardStages.length > 0 && (
+        <div style={{ marginBottom: '1rem' }}>
+          <div className="section-title" style={{ marginBottom: '0.4rem' }}>Move forward</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+            {forwardStages.map((p) => (
+              <button
+                key={p.stage}
+                type="button"
+                className="btn btn-secondary"
+                style={{ justifyContent: 'flex-start', gap: '0.5rem', borderLeft: `4px solid ${p.color}` }}
+                onClick={() => moveToStage(p.stage)}
+                title={p.hint}
+              >
+                <ArrowRight size={14} style={{ color: p.color, flexShrink: 0 }} />
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {backwardStages.length > 0 && (
+        <div>
+          <div className="section-title" style={{ marginBottom: '0.4rem', color: 'var(--text-muted)' }}>Go back</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+            {[...backwardStages].reverse().map((p) => (
+              <button
+                key={p.stage}
+                type="button"
+                className="btn btn-ghost"
+                style={{ justifyContent: 'flex-start', gap: '0.5rem', opacity: 0.8 }}
+                onClick={() => {
+                  if (!window.confirm(`Move ${lead.title} back to "${p.label}"?`)) return;
+                  moveToStage(p.stage);
+                }}
+                title={p.hint}
+              >
+                ← {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Lead detail
 // ---------------------------------------------------------------------------
 interface DetailProps {
   lead: Lead;
   canEdit: boolean;
+  /** True when the viewer has pco:edit — lets team leaders submit/edit meeting & inspection reports. */
+  canEditPco: boolean;
+  /** True when the viewer has inspections:edit — lets team leaders/sales see inspection action buttons. */
+  canEditInspections: boolean;
   onClose: () => void;
   onAction: (id: LeadActionId) => void;
   /** Allowed actions other than the primary next step. */
@@ -579,7 +702,10 @@ interface DetailProps {
 
 const channelLabel = (a: LeadActivity) => CHANNELS.find((c) => c.value === a.channel)?.label || a.channel;
 
-const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onAction, menuItems }) => {
+// Actions gated by pco or inspections module (team leaders can use these)
+const PCO_ACTIONS: LeadActionId[] = ['record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection'];
+
+const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, canEditPco, canEditInspections, onClose, onAction, menuItems }) => {
   const st = stageOf(lead);
   const contacts = contactsOf(lead);
   const step = nextStep(lead);
@@ -588,8 +714,11 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onAction, m
   const sitePhotos = [...(lead.inspection?.photos ?? []), ...(lead.sitePhotos ?? [])];
   const stageIndex = PIPELINE.findIndex((p) => p.stage === st);
   const actions = availableActions(lead);
-  const allowed = (id: LeadActionId) => canEdit && actions.some((a) => a.id === id && a.enabled);
-  const stepAllowed = canEdit || READ_ONLY_ACTIONS.includes(step.action);
+  const allowed = (id: LeadActionId) => {
+    const hasAccess = canEdit || (PCO_ACTIONS.includes(id) && (canEditPco || canEditInspections));
+    return hasAccess && actions.some((a) => a.id === id && a.enabled);
+  };
+  const stepAllowed = canEdit || READ_ONLY_ACTIONS.includes(step.action) || (PCO_ACTIONS.includes(step.action) && (canEditPco || canEditInspections));
 
   return (
     <Modal
@@ -694,21 +823,60 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onAction, m
 
           {lead.inspection && (
             <>
-              <div className="section-title">Inspection</div>
+              <div className="section-title">Meeting report</div>
               <dl className="detail-list">
-                <dt>Status</dt><dd style={{ textTransform: 'capitalize' }}>{lead.inspection.status}</dd>
+                <dt>Status</dt>
+                <dd>
+                  <span style={{ textTransform: 'capitalize' }}>{lead.inspection.status === 'completed' ? 'Done' : lead.inspection.status}</span>
+                  {lead.inspection.tlStatus && (
+                    <span style={{ marginLeft: '0.5rem', fontSize: '0.78rem', padding: '0.15rem 0.45rem', borderRadius: '0.3rem', background: lead.inspection.tlStatus === 'send_proposal' ? 'var(--ikpm-emerald-100)' : '#FFFBEB', color: lead.inspection.tlStatus === 'send_proposal' ? 'var(--ikpm-emerald-800)' : '#92400E', fontWeight: 600 }}>
+                      {lead.inspection.tlStatus === 'send_proposal' ? '✓ Ready to send proposal' : '⏳ Hold — more steps needed'}
+                    </span>
+                  )}
+                </dd>
                 <dt>Date</dt><dd>{formatDate(lead.inspection.scheduledDate)}{lead.inspection.timeSlot ? ` · ${lead.inspection.timeSlot}` : ''}</dd>
                 {lead.inspection.teamName && (<><dt>Team</dt><dd>{lead.inspection.teamName}</dd></>)}
-                <dt>Inspectors</dt><dd>{lead.inspection.inspectorNames?.join(', ') || lead.inspection.inspectorName || '—'}</dd>
-                {lead.inspection.status === 'completed' && (
-                  <>
-                    <dt>Pests</dt><dd>{lead.inspection.pestTypesFound.map((x) => PEST_OPTIONS.find((o) => o.value === x)?.label || x).join(', ')}</dd>
-                    <dt>Severity</dt><dd style={{ textTransform: 'capitalize' }}>{lead.inspection.infestationSeverity}{lead.inspection.areaSqFt ? ` · ${lead.inspection.areaSqFt.toLocaleString()} sq ft` : ''}</dd>
-                    {!lead.inspection.findings?.length && (<><dt>Findings</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.criticalFindings}</dd></>)}
-                    {lead.inspection.recommendedTreatment && (<><dt>Treatment</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.recommendedTreatment}</dd></>)}
-                  </>
+                {(lead.inspection.assignedTeamLeaderName || lead.inspection.inspectorNames?.length) && (
+                  <><dt>Team leader</dt><dd>{lead.inspection.assignedTeamLeaderName || lead.inspection.inspectorNames?.join(', ')}</dd></>
                 )}
+                {lead.inspection.siteName && (<><dt>Site</dt><dd>{lead.inspection.siteName}</dd></>)}
+                {lead.inspection.observedBy && (<><dt>Observed by</dt><dd>{lead.inspection.observedBy}</dd></>)}
+                {lead.inspection.teamLeaderNotes && (<><dt>TL notes</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.teamLeaderNotes}</dd></>)}
               </dl>
+              {lead.inspection.meetingFollowUps?.length ? (
+                <div style={{ margin: '0.6rem 0', padding: '0.65rem 0.8rem', background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.4rem' }}>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--ikpm-emerald-800)', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Client requests</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                    {lead.inspection.meetingFollowUps.map((fu) => {
+                      const fuLabel: Record<string, string> = { company_profile: 'Company Profile', proposal: 'Proposal / Quote', inspection: 'Site Inspection', other_documents: 'Other Documents', not_interested: 'Not interested', contract_ready: 'Ready to sign' };
+                      const isNegative = fu.type === 'not_interested';
+                      return (
+                        <div key={fu.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
+                          <span style={{ fontSize: '1rem' }}>{fu.doneAt ? '✅' : isNegative ? '❌' : '⏳'}</span>
+                          <span style={{ flex: 1, fontWeight: fu.doneAt ? 400 : 600, color: isNegative ? 'var(--color-error, #DC2626)' : undefined }}>
+                            {fuLabel[fu.type] ?? fu.type}
+                            {fu.type === 'inspection' && (
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.1rem' }}>
+                            {fu.scheduledDate && `Date: ${formatDate(fu.scheduledDate)}`}
+                            {fu.branchName && ` · Site: ${fu.branchName}${fu.branchAddress ? ` (${fu.branchAddress})` : ''}`}
+                            {fu.addressTbd && <span style={{ color: '#D97706', marginLeft: '0.3rem' }}>⚠ Address TBD</span>}
+                          </div>
+                        )}
+                            {fu.type === 'other_documents' && fu.note && <span className="cell-sub"> · {fu.note}</span>}
+                          </span>
+                          {fu.doneAt && <span className="cell-sub">{formatDate(fu.doneAt)}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+              {lead.inspection.meetingReportNote && (
+                <div className="info-hint" style={{ marginTop: '0.4rem', marginBottom: '0.2rem', fontSize: '0.85rem' }}>
+                  <strong>Meeting note:</strong> {lead.inspection.meetingReportNote}
+                </div>
+              )}
+
               {lead.inspection.findings?.length ? (
                 <div className="table-container" style={{ marginTop: '0.5rem' }}>
                   <table className="data-table finding-table">
@@ -726,15 +894,87 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onAction, m
                   </table>
                 </div>
               ) : null}
-              {(allowed('reschedule_inspection') || allowed('record_findings')) && (
-                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-                  {allowed('reschedule_inspection') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('reschedule_inspection')}><CalendarClock size={14} /> Reschedule</button>}
-                  {allowed('record_findings') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('record_findings')}><ClipboardCheck size={14} /> {lead.inspection.status === 'completed' ? 'Edit findings' : 'Enter findings'}</button>}
+              {/* Assign Inspection button — shown when TL requested a separate site inspection but none is scheduled yet */}
+              {(() => {
+                const inspFu = lead.inspection?.meetingFollowUps?.find(f => f.type === 'inspection');
+                return inspFu && !lead.siteInspection && allowed('schedule_site_inspection') ? (
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <button className="btn btn-sm btn-primary" onClick={() => onAction('schedule_site_inspection')}>
+                      <CalendarClock size={13} /> Assign Inspection
+                    </button>
+                    {inspFu.addressTbd && (
+                      <span style={{ fontSize: '0.75rem', color: '#D97706', marginLeft: '0.5rem' }}>⚠ Address not confirmed — confirm with client first</span>
+                    )}
+                  </div>
+                ) : null;
+              })()}
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                {allowed('reschedule_inspection') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('reschedule_inspection')}><CalendarClock size={14} /> Reschedule meeting</button>}
+                {allowed('record_meeting') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('record_meeting')}><ClipboardCheck size={14} /> {lead.inspection.status === 'completed' ? 'Edit meeting report' : 'Submit meeting report'}</button>}
+              </div>
+              {lead.inspection.status === 'completed' && (
+                <button className="btn btn-sm btn-ghost" style={{ marginTop: '0.4rem' }} onClick={() => pdfAction.run(lead.id, () => pdfGenerator.generateInspectionReportPDF(lead))} disabled={pdfAction.busy === lead.id}>
+                  <Download size={14} /> Meeting report PDF
+                </button>
+              )}
+            </>
+          )}
+
+          {/* Site inspection section — independent of meeting; shown whenever user can schedule one or one exists */}
+          {(lead.siteInspection || allowed('schedule_site_inspection')) && (
+            <>
+              <div className="section-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                Site inspection
+                {lead.siteInspection && (
+                  <span style={{ fontSize: '0.75rem', padding: '0.15rem 0.5rem', borderRadius: '0.3rem', fontWeight: 600, background: lead.siteInspection.status === 'completed' ? 'var(--ikpm-emerald-100)' : lead.siteInspection.status === 'scheduled' ? '#EFF6FF' : '#F1F5F9', color: lead.siteInspection.status === 'completed' ? 'var(--ikpm-emerald-800)' : lead.siteInspection.status === 'scheduled' ? '#1D4ED8' : 'var(--text-secondary)' }}>
+                    {lead.siteInspection.status === 'completed' ? '✓ Completed' : lead.siteInspection.status === 'scheduled' ? '⏳ Scheduled' : 'Cancelled'}
+                  </span>
+                )}
+              </div>
+              {lead.siteInspection ? (
+                <>
+                  <dl className="detail-list">
+                    <dt>Date</dt><dd>{formatDate(lead.siteInspection.scheduledDate)}</dd>
+                    {lead.siteInspection.branchName && (<><dt>Site</dt><dd>{lead.siteInspection.branchName}{lead.siteInspection.branchAddress ? ` · ${lead.siteInspection.branchAddress}` : ''}</dd></>)}
+                    {lead.siteInspection.assignedTechNames?.length ? (<><dt>Technicians</dt><dd>{lead.siteInspection.assignedTechNames.join(', ')}</dd></>) : null}
+                    {lead.siteInspection.teamLeaderName && (<><dt>Supervisor</dt><dd>{lead.siteInspection.teamLeaderName}</dd></>)}
+                    {lead.siteInspection.status === 'completed' && lead.siteInspection.pestTypesFound?.length ? (
+                      <>
+                        <dt>Pests</dt><dd>{lead.siteInspection.pestTypesFound.map((x) => PEST_OPTIONS.find((o) => o.value === x)?.label || x).join(', ')}</dd>
+                        <dt>Severity</dt><dd style={{ textTransform: 'capitalize' }}>{lead.siteInspection.infestationSeverity}{lead.siteInspection.areaSqFt ? ` · ${lead.siteInspection.areaSqFt.toLocaleString()} sq ft` : ''}</dd>
+                        {lead.siteInspection.recommendedTreatment && (<><dt>Treatment</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.siteInspection.recommendedTreatment}</dd></>)}
+                      </>
+                    ) : null}
+                    {lead.siteInspection.notes && (<><dt>Notes</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.siteInspection.notes}</dd></>)}
+                  </dl>
+                  {lead.siteInspection.findings?.length ? (
+                    <div className="table-container" style={{ marginTop: '0.5rem' }}>
+                      <table className="data-table finding-table">
+                        <thead><tr><th>Evidence</th><th>Observation</th><th>Risk</th><th>Recommendation</th></tr></thead>
+                        <tbody>
+                          {lead.siteInspection.findings.map((f) => (
+                            <tr key={f.id}>
+                              <td>{f.photo ? <a href={f.photo.imageUrl} target="_blank" rel="noreferrer"><img className="finding-thumb" src={f.photo.imageUrl} alt={f.photo.caption} loading="lazy" /></a> : <span className="cell-sub">—</span>}</td>
+                              <td>{f.location && <div className="cell-sub">{f.location}</div>}{f.observation}</td>
+                              <td>{f.risk}</td>
+                              <td>{f.recommendation}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                  <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                    {allowed('schedule_site_inspection') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('schedule_site_inspection')}><CalendarClock size={14} /> {lead.siteInspection.status === 'scheduled' ? 'Reschedule' : 'Reschedule inspection'}</button>}
+                    {allowed('record_site_inspection') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('record_site_inspection')}><ClipboardCheck size={14} /> {lead.siteInspection.status === 'completed' ? 'Edit findings' : 'Record findings'}</button>}
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <span className="cell-sub">No site inspection scheduled yet.</span>
+                  {allowed('schedule_site_inspection') && <button className="btn btn-sm btn-primary" onClick={() => onAction('schedule_site_inspection')}><CalendarClock size={14} /> Schedule inspection</button>}
                 </div>
               )}
-              <button className="btn btn-sm btn-ghost" style={{ marginTop: '0.4rem' }} onClick={() => pdfAction.run(lead.id, () => pdfGenerator.generateInspectionReportPDF(lead))} disabled={pdfAction.busy === lead.id}>
-                <Download size={14} /> {lead.inspection.findings?.length ? 'Risk assessment PDF' : 'Inspection report PDF'}
-              </button>
             </>
           )}
 

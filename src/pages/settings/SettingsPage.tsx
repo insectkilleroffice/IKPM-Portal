@@ -65,10 +65,10 @@ export const SettingsPage: React.FC = () => {
   const rolesMatrix = [
     { role: 'super_admin', title: 'Super Admin (CEO / Owner)', leads: 'All', proposals: 'All + Full Approvals', jobs: 'All', finance: 'Full Access' },
     { role: 'management', title: 'Management (General Manager)', leads: 'All', proposals: 'All + Approvals', jobs: 'All', finance: 'View & Reports' },
-    { role: 'sales', title: 'Sales (Manager / CRO)', leads: 'Team / Owned', proposals: 'Draft & Submit', jobs: 'View Linked', finance: 'No Access' },
+    { role: 'sales', title: 'Sales / CRO', leads: 'Team / Owned', proposals: 'Draft & Submit', jobs: 'View Linked', finance: 'No Access' },
+    { role: 'team_leader', title: 'Team Leader (Meeting & Reports)', leads: 'Assigned Meetings', proposals: 'View Only', jobs: 'Assigned Visits', finance: 'No Access' },
     { role: 'operations', title: 'Operations (Dispatch / Coordinator)', leads: 'Conversion View', proposals: 'View Approved', jobs: 'Full Dispatch', finance: 'No Access' },
     { role: 'finance', title: 'Accounts & Finance Officer', leads: 'No Access', proposals: 'View Approved', jobs: 'View Completed', finance: 'Invoicing & WHT' },
-    { role: 'technician', title: 'Pest Control Operator (PCO Field)', leads: 'No Access', proposals: 'No Access', jobs: 'Assigned Site Only', finance: 'No Access' },
     { role: 'auditor', title: 'Read-only Auditor', leads: 'Read-only', proposals: 'Read-only', jobs: 'Read-only', finance: 'Read-only' },
   ];
 

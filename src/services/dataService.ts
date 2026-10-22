@@ -34,7 +34,7 @@ import type {
   CompanyBranch,
   SiteAddress,
 } from '../types/customer';
-import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadActivity, LeadBranch, LeadContact, LeadStage } from '../types/crm';
+import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadActivity, LeadBranch, LeadContact, LeadStage, MeetingFollowUp, PestType, RiskFinding, SiteInspection } from '../types/crm';
 import type { Proposal, ProposalRevision } from '../types/proposal';
 import type { Contract, PhotoEvidence, ServiceJob } from '../types/operations';
 import type { Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
@@ -356,7 +356,11 @@ class DataService {
     this.partials.get('roles')?.forEach((docs) => docs.forEach((v, id) => cloud.set(id, v as Record<string, unknown>)));
     DEFAULT_ROLES.filter((r) => r.id !== 'super_admin').forEach((def) => {
       const saved = cloud.get(def.id);
-      if (!saved) return; // Not seeded yet; maybeSeedDefaults writes the full role
+      if (!saved) {
+        // Role was added after initial seeding (e.g. team_leader replacing technician) — create it now
+        this.write('roles', def.id, { ...def, createdAt: now(), updatedAt: now() });
+        return;
+      }
       const savedModules = (saved.modules ?? {}) as Record<string, unknown>;
       const missing = Object.fromEntries(Object.entries(def.modules).filter(([k]) => !(k in savedModules)));
       if (Object.keys(missing).length) this.write('roles', def.id, { modules: missing });
@@ -1057,7 +1061,7 @@ class DataService {
   public recordInspectionFindings(
     leadId: string,
     findings: Pick<InspectionAssessment, 'pestTypesFound' | 'infestationSeverity' | 'areaSqFt' | 'criticalFindings' | 'recommendedTreatment' | 'photos'>
-      & Partial<Pick<InspectionAssessment, 'findings' | 'reportTitle' | 'siteName' | 'observedBy' | 'teamLeaderNotes'>>,
+      & Partial<Pick<InspectionAssessment, 'findings' | 'reportTitle' | 'siteName' | 'observedBy' | 'teamLeaderNotes' | 'clientRequest' | 'meetingReportNote' | 'meetingFollowUps' | 'tlStatus'>>,
     userEmail = 'admin',
     branches?: LeadBranch[]
   ): Lead | undefined {
@@ -1100,11 +1104,144 @@ class DataService {
       pestIssues: findings.pestTypesFound,
       branches: mergedBranches,
       activities: [
-        this.activity({ kind: 'inspection', channel: 'visit', note: `Meeting / Inspection findings recorded (${findings.infestationSeverity} infestation, ${findings.areaSqFt || 0} sq ft${findings.findings?.length ? `, ${findings.findings.length} risk finding${findings.findings.length > 1 ? 's' : ''}` : ''}${findings.photos?.length ? `, ${findings.photos.length} photo${findings.photos.length > 1 ? 's' : ''}` : ''}${branches?.length ? `, ${branches.length} branch/site${branches.length > 1 ? 's' : ''} added` : ''})` }),
+        this.activity({ kind: 'inspection', channel: 'visit', note: `Meeting / Inspection findings recorded (${findings.infestationSeverity} infestation, ${findings.areaSqFt || 0} sq ft${findings.findings?.length ? `, ${findings.findings.length} risk finding${findings.findings.length > 1 ? 's' : ''}` : ''}${findings.photos?.length ? `, ${findings.photos.length} photo${findings.photos.length > 1 ? 's' : ''}` : ''}${findings.meetingFollowUps?.length ? ` · Client asked for: ${findings.meetingFollowUps.map((f) => f.type.replace(/_/g, ' ')).join(', ')}` : findings.clientRequest ? ` · Client asked for: ${findings.clientRequest.replace(/_/g, ' ')}` : ''}${branches?.length ? `, ${branches.length} branch/site${branches.length > 1 ? 's' : ''} added` : ''})` }),
         ...(lead.activities ?? []),
       ],
     };
     return this.saveLead(updated, userEmail, 'Meeting / Inspection findings recorded');
+  }
+
+  /** Saves the meeting report from the Team Leader (no pest inspection data). Advances to meeting_done. */
+  public recordMeetingReport(
+    leadId: string,
+    report: Partial<Pick<InspectionAssessment, 'teamLeaderNotes' | 'clientRequest' | 'meetingFollowUps' | 'meetingReportNote' | 'tlStatus' | 'reportTitle' | 'siteName' | 'observedBy'>>,
+    userEmail = 'admin',
+    branches?: LeadBranch[]
+  ): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const stage = stageOf(lead);
+    if (stage !== 'meeting_scheduled' && stage !== 'meeting_done') {
+      throw new StageTransitionError('Meeting report can only be submitted when a meeting is scheduled or already done.');
+    }
+    const base = lead.inspection;
+    const inspection: InspectionAssessment = {
+      id: base?.id || `INSP-${Date.now().toString(36).toUpperCase()}`,
+      leadId,
+      scheduledDate: base?.scheduledDate || now().slice(0, 10),
+      inspectorId: base?.inspectorId || this.session?.uid || '',
+      inspectorName: base?.inspectorName || this.session?.name || '',
+      pestTypesFound: base?.pestTypesFound ?? [],
+      infestationSeverity: base?.infestationSeverity ?? 'moderate',
+      areaSqFt: base?.areaSqFt ?? 0,
+      criticalFindings: base?.criticalFindings ?? '',
+      recommendedTreatment: base?.recommendedTreatment ?? '',
+      photoEvidenceUrls: base?.photoEvidenceUrls ?? [],
+      ...base,
+      ...report,
+      completedDate: base?.completedDate || now().slice(0, 10),
+      findingsBy: base?.findingsBy || this.session?.name,
+      status: 'completed',
+    };
+    const mergedBranches = branches?.length
+      ? [...(lead.branches ?? []), ...branches.filter((b) => !(lead.branches ?? []).some((eb) => eb.name.toLowerCase() === b.name.toLowerCase()))]
+      : lead.branches;
+    const fuNote = report.meetingFollowUps?.length
+      ? ` · Client asked for: ${report.meetingFollowUps.map((f: MeetingFollowUp) => f.type.replace(/_/g, ' ')).join(', ')}`
+      : report.clientRequest ? ` · Client asked for: ${report.clientRequest.replace(/_/g, ' ')}` : '';
+    const tlNote = report.tlStatus === 'send_proposal' ? ' · Ready to send proposal' : report.tlStatus === 'waiting' ? ' · Hold — need more steps' : '';
+    const updated: Lead = {
+      ...lead,
+      stage: 'meeting_done',
+      inspection,
+      branches: mergedBranches,
+      activities: [
+        this.activity({ kind: 'inspection', channel: 'visit', note: `Meeting report submitted${fuNote}${tlNote}${branches?.length ? `, ${branches.length} site(s) added` : ''}` }),
+        ...(lead.activities ?? []),
+      ],
+    };
+    return this.saveLead(updated, userEmail, 'Meeting report submitted');
+  }
+
+  /** Schedules a separate technical site inspection after the client meeting. */
+  public scheduleSiteInspection(
+    leadId: string,
+    plan: {
+      scheduledDate: string;
+      branchId?: string;
+      branchName?: string;
+      branchAddress?: string;
+      assignedTechIds?: string[];
+      assignedTechNames?: string[];
+      teamLeaderId?: string;
+      teamLeaderName?: string;
+      notes?: string;
+    },
+    userEmail = 'admin'
+  ): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const existing = lead.siteInspection;
+    const siteInspection: SiteInspection = {
+      id: existing?.id || `SI-${Date.now().toString(36).toUpperCase()}`,
+      requestedAt: existing?.requestedAt || now(),
+      requestedBy: existing?.requestedBy || this.session?.name || userEmail,
+      ...existing,
+      ...plan,
+      status: 'scheduled',
+    };
+    const updated: Lead = {
+      ...lead,
+      siteInspection,
+      activities: [
+        this.activity({ kind: 'inspection', channel: 'visit', note: `Site inspection scheduled for ${formatDate(plan.scheduledDate)}${plan.branchName ? ` @ ${plan.branchName}` : ''}${plan.assignedTechNames?.length ? ` · Tech: ${plan.assignedTechNames.join(', ')}` : ''}` }),
+        ...(lead.activities ?? []),
+      ],
+    };
+    return this.saveLead(updated, userEmail, `Site inspection scheduled for ${plan.scheduledDate}`);
+  }
+
+  /** Records pest findings from a separate site inspection visit. */
+  public recordSiteInspectionFindings(
+    leadId: string,
+    findings: {
+      pestTypesFound: PestType[];
+      infestationSeverity: 'low' | 'moderate' | 'high' | 'severe';
+      areaSqFt?: number;
+      criticalFindings?: string;
+      recommendedTreatment?: string;
+      photos?: import('../types/operations').SitePhoto[];
+      findings?: RiskFinding[];
+      reportTitle?: string;
+      observedBy?: string;
+      notes?: string;
+    },
+    userEmail = 'admin'
+  ): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    if (!lead.siteInspection) throw new StageTransitionError('No site inspection is scheduled for this lead.');
+    const base = lead.siteInspection;
+    const siteInspection: SiteInspection = {
+      ...base,
+      ...findings,
+      photoEvidenceUrls: [
+        ...(findings.photos ?? []).map((p) => p.imageUrl),
+        ...(findings.findings ?? []).flatMap((f: RiskFinding) => f.photo ? [f.photo.imageUrl] : []),
+      ],
+      completedDate: now().slice(0, 10),
+      status: 'completed',
+    };
+    const updated: Lead = {
+      ...lead,
+      siteInspection,
+      pestIssues: findings.pestTypesFound.length ? findings.pestTypesFound : lead.pestIssues,
+      activities: [
+        this.activity({ kind: 'inspection', channel: 'visit', note: `Site inspection findings submitted (${findings.infestationSeverity} infestation${findings.findings?.length ? `, ${findings.findings.length} risk finding(s)` : ''}${findings.photos?.length ? `, ${findings.photos.length} photo(s)` : ''})` }),
+        ...(lead.activities ?? []),
+      ],
+    };
+    return this.saveLead(updated, userEmail, 'Site inspection findings submitted');
   }
 
   /**

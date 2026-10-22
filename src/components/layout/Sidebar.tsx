@@ -18,6 +18,8 @@ import {
   Plus,
   UserPlus,
   ClipboardCheck,
+  CalendarCheck,
+  SearchCheck,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -44,9 +46,16 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
     items: [
       { to: '/customers', label: 'Customer Accounts', icon: Building2, module: 'customers' },
       { to: '/crm', label: 'Leads Pipeline', icon: Users2, module: 'crm' },
-      { to: '/inspections', label: 'Site Inspections', icon: ClipboardCheck, module: 'inspections' },
       { to: '/proposals', label: 'Proposals', icon: FileSpreadsheet, module: 'proposals' },
       { to: '/contracts', label: 'Contracts & AMCs', icon: FileSignature, module: 'contracts' },
+    ],
+  },
+  {
+    title: 'Team Leader',
+    items: [
+      { to: '/crm', label: 'Meetings', icon: CalendarCheck, module: 'pco' },
+      { to: '/inspections', label: 'Site Inspections', icon: SearchCheck, module: 'inspections' },
+      { to: '/operations/jobs', label: 'Service Jobs', icon: Truck, module: 'pco' },
     ],
   },
   {

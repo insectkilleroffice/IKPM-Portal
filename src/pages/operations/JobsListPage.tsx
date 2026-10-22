@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Truck,
   Plus,
   Search,
   Calendar,
@@ -27,7 +26,7 @@ import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
-import type { ServiceJob, JobStatus, SupervisorVerification } from '../../types/operations';
+import type { ServiceJob, JobStatus, SupervisorVerification, ChemicalUsageRecord } from '../../types/operations';
 import type { PestType } from '../../types/crm';
 import { UnifiedWorkflowStatusBar } from '../../components/common/UnifiedWorkflowStatusBar';
 import { getJobNextAction } from '../../lib/workflow';
@@ -51,6 +50,25 @@ export const JobsListPage: React.FC = () => {
 
   // Supervisor QC Verification Modal
   const [showVerifyModal, setShowVerifyModal] = useState<ServiceJob | null>(null);
+  // Service report submission modal (replaces /pco-field)
+  const [showReportModal, setShowReportModal] = useState<ServiceJob | null>(null);
+  const [reportMember, setReportMember] = useState('');
+  type ReportItem = { id: string; name: string; qty: number; unit: ChemicalUsageRecord['unit'] };
+  const [reportItems, setReportItems] = useState<ReportItem[]>([{ id: 'item_1', name: '', qty: 1, unit: 'ml' }]);
+  const [reportNotes, setReportNotes] = useState('');
+  const [reportClientName, setReportClientName] = useState('');
+
+  useEffect(() => {
+    if (!showReportModal) return;
+    setReportMember('');
+    setReportItems(
+      showReportModal.chemicalsUsed.length
+        ? showReportModal.chemicalsUsed.map((c) => ({ id: c.id, name: c.chemicalName, qty: c.quantityUsed, unit: c.unit }))
+        : [{ id: `item_${Date.now()}`, name: '', qty: 1, unit: 'ml' as const }]
+    );
+    setReportNotes(showReportModal.executionNotes || '');
+    setReportClientName(showReportModal.customerSignOff?.acknowledgedByName || '');
+  }, [showReportModal?.id]);
   const [verifyForm, setVerifyForm] = useState({
     supervisorName: userProfile?.displayName || 'Muhammad Asif (QC Supervisor)',
     qcRating: 'excellent' as 'excellent' | 'satisfactory' | 'needs_revisit' | 'rejected',
@@ -60,7 +78,7 @@ export const JobsListPage: React.FC = () => {
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const jobs = dataService.getJobs();
-  const technicians = dataService.getStaff(['technician']);
+  const technicians = dataService.getStaff(['team_leader']);
 
   // If fromProposal or customerId query params are provided, pre-fill
   const fromPropId = searchParams.get('fromProposal');
@@ -122,7 +140,7 @@ export const JobsListPage: React.FC = () => {
 
     // Guard Rail 2: No job without an assigned technician
     if (!newJob.leadPcoName || newJob.leadPcoName.trim() === '' || newJob.leadPcoName === 'Unassigned') {
-      warning('Technician Assignment Mandatory', 'Guard Rail: Cannot schedule service visit without assigning a certified technician.');
+      warning('Team Leader Required', 'Guard Rail: Cannot schedule a service visit without assigning a Team Leader.');
       return;
     }
 
@@ -152,7 +170,7 @@ export const JobsListPage: React.FC = () => {
     );
     if (hasConflict) {
       warning(
-        'Technician Schedule Overlap',
+        'Schedule Overlap Warning',
         `Warning: ${newJob.leadPcoName} already has another assignment in the ${newJob.timeSlot} slot on ${newJob.scheduledDate}.`
       );
     }
@@ -265,7 +283,7 @@ export const JobsListPage: React.FC = () => {
     if (nextAct.actionType === 'start_job') {
       handleUpdateStatus(job, 'in_progress');
     } else if (nextAct.actionType === 'complete_job') {
-      navigate('/pco-field');
+      setShowReportModal(job);
     } else if (nextAct.actionType === 'verify_report') {
       setShowVerifyModal(job);
     } else if (nextAct.actionType === 'create_invoice') {
@@ -283,6 +301,40 @@ export const JobsListPage: React.FC = () => {
     }
   };
 
+  const handleSubmitReport = () => {
+    if (!showReportModal) return;
+    const chemicalsUsed: ChemicalUsageRecord[] = reportItems
+      .filter((i) => i.name.trim())
+      .map((i) => ({
+        id: i.id,
+        chemicalName: i.name.trim(),
+        activeIngredient: '',
+        dosageRate: 'As applied',
+        quantityUsed: i.qty,
+        unit: i.unit,
+        batchNumber: '',
+        targetPest: showReportModal.targetPests[0] || 'cockroaches',
+        applicationMethod: 'residual_spray' as const,
+      }));
+    const memberNames = reportMember.trim() ? reportMember.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    const updatedJob: ServiceJob = {
+      ...showReportModal,
+      status: 'completed',
+      chemicalsUsed,
+      executionNotes: reportNotes.trim() || undefined,
+      assignedTechnicianIds: [showReportModal.leadPcoId],
+      assignedTechnicianNames: [showReportModal.leadPcoName, ...memberNames],
+      customerSignOff: reportClientName.trim()
+        ? { acknowledgedByName: reportClientName.trim(), feedbackRating: 5, signedAt: new Date().toISOString() }
+        : showReportModal.customerSignOff,
+      updatedAt: new Date().toISOString(),
+    };
+    dataService.saveJob(updatedJob, userProfile?.email);
+    success('Service report submitted', `${showReportModal.id} marked completed. Ready for supervisor QC.`);
+    if (selectedJob?.id === updatedJob.id) setSelectedJob(updatedJob);
+    setShowReportModal(null);
+  };
+
   return (
     <div className="animate-fade-in">
       <Breadcrumbs items={[{ label: 'Field Operations & Service Jobs' }]} />
@@ -295,16 +347,10 @@ export const JobsListPage: React.FC = () => {
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
-          <button className="btn btn-secondary" onClick={() => navigate('/pco-field')}>
-            <Truck size={15} />
-            <span>PCO Mobile View</span>
-          </button>
-          <button className="btn btn-primary" onClick={() => setShowNewJobModal(true)}>
-            <Plus size={16} />
-            <span>+ Schedule Service Visit</span>
-          </button>
-        </div>
+        <button className="btn btn-primary" onClick={() => setShowNewJobModal(true)}>
+          <Plus size={16} />
+          <span>+ Schedule Service Visit</span>
+        </button>
       </div>
 
       {/* Filter and Search Bar */}
@@ -345,7 +391,7 @@ export const JobsListPage: React.FC = () => {
               <th>Site & Address</th>
               <th>Scheduled Date</th>
               <th>Time Slot</th>
-              <th>Lead Technician</th>
+              <th>Team Leader</th>
               <th>QC Verification</th>
               <th>Status</th>
               <th>Next Action</th>
@@ -523,7 +569,7 @@ export const JobsListPage: React.FC = () => {
 
             <div className="form-group">
               <label className="form-label">
-                Assigned Technician <span className="required">* (Guard Rail)</span>
+                Assigned Team Leader <span className="required">* (Guard Rail)</span>
               </label>
               <select
                 className="form-select"
@@ -534,7 +580,7 @@ export const JobsListPage: React.FC = () => {
                   setNewJob({ ...newJob, leadPcoId: tech?.uid || '', leadPcoName: tech?.displayName || '' });
                 }}
               >
-                <option value="">Select a technician…</option>
+                <option value="">Select a team leader…</option>
                 {technicians.map((t) => (
                   <option key={t.uid} value={t.uid}>
                     {t.displayName}{t.teamName ? ` · ${t.teamName}` : ''}
@@ -542,7 +588,7 @@ export const JobsListPage: React.FC = () => {
                 ))}
               </select>
               {technicians.length === 0 && (
-                <div className="form-hint">No technicians yet. The super admin can add them under Team & Access with the Technician role.</div>
+                <div className="form-hint">No team leaders yet. Add them under Team & Access with the Team Leader role.</div>
               )}
             </div>
           </div>
@@ -685,7 +731,7 @@ export const JobsListPage: React.FC = () => {
                 <div style={{ fontWeight: 700 }}>{formatDate(selectedJob.scheduledDate)} ({selectedJob.timeSlot})</div>
               </div>
               <div>
-                <span style={{ color: 'var(--text-muted)' }}>Assigned PCO Lead:</span>
+                <span style={{ color: 'var(--text-muted)' }}>Team Leader:</span>
                 <div style={{ fontWeight: 600 }}>{selectedJob.leadPcoName}</div>
               </div>
             </div>
@@ -745,6 +791,123 @@ export const JobsListPage: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {/* Modal: Submit Service Report (Team Leader submits after visit) */}
+      {showReportModal && (
+        <Modal
+          isOpen
+          onClose={() => setShowReportModal(null)}
+          title={`Submit Service Report: ${showReportModal.id}`}
+          subtitle={`${showReportModal.customerName} · ${showReportModal.siteName} · ${formatDate(showReportModal.scheduledDate)} (${showReportModal.timeSlot})`}
+          maxWidth="720px"
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setShowReportModal(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleSubmitReport}>
+                <FileCheck2 size={15} />
+                <span>Submit Report & Complete Job</span>
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Team Leader (responsible)</label>
+              <input className="form-input" value={showReportModal.leadPcoName} disabled />
+            </div>
+
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Team member(s) who conducted the visit</label>
+              <input
+                className="form-input"
+                value={reportMember}
+                onChange={(e) => setReportMember(e.target.value)}
+                placeholder="Name(s) of team member(s) who went on site — leave blank if Team Leader went themselves"
+              />
+              <div className="form-hint">Separate multiple names with a comma. Leave blank if the Team Leader conducted the visit personally.</div>
+            </div>
+
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>Items / products used <span className="required">*</span></label>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-secondary"
+                  onClick={() => setReportItems((prev) => [...prev, { id: `item_${Date.now()}`, name: '', qty: 1, unit: 'ml' as const }])}
+                >
+                  <Plus size={13} /> Add item
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr auto', gap: '0.4rem' }}>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Product / item name</span>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Qty</span>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Unit</span>
+                  <span />
+                </div>
+                {reportItems.map((item, idx) => (
+                  <div key={item.id} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr auto', gap: '0.4rem', alignItems: 'center' }}>
+                    <input
+                      className="form-input"
+                      value={item.name}
+                      onChange={(e) => setReportItems((prev) => prev.map((r, i) => i === idx ? { ...r, name: e.target.value } : r))}
+                      placeholder="e.g. Maxforce Gel, Rodenticide"
+                    />
+                    <input
+                      className="form-input"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={item.qty}
+                      onChange={(e) => setReportItems((prev) => prev.map((r, i) => i === idx ? { ...r, qty: Number(e.target.value) } : r))}
+                    />
+                    <select
+                      className="form-select"
+                      value={item.unit}
+                      onChange={(e) => setReportItems((prev) => prev.map((r, i) => i === idx ? { ...r, unit: e.target.value as ChemicalUsageRecord['unit'] } : r))}
+                    >
+                      <option value="grams">g (grams)</option>
+                      <option value="kg">kg</option>
+                      <option value="ml">ml</option>
+                      <option value="litres">litres</option>
+                      <option value="bait_stations">bait stations</option>
+                    </select>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={() => setReportItems((prev) => prev.length > 1 ? prev.filter((_, i) => i !== idx) : prev)}
+                      title="Remove"
+                    >
+                      <AlertTriangle size={13} style={{ color: 'var(--ikpm-rose-500)' }} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Findings / execution notes</label>
+              <textarea
+                className="form-textarea"
+                rows={3}
+                value={reportNotes}
+                onChange={(e) => setReportNotes(e.target.value)}
+                placeholder="What was found on site, what was treated, any client feedback or follow-up needed…"
+              />
+            </div>
+
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Client representative name (optional sign-off)</label>
+              <input
+                className="form-input"
+                value={reportClientName}
+                onChange={(e) => setReportClientName(e.target.value)}
+                placeholder="Name of client contact who acknowledged the visit"
+              />
+              <div className="form-hint">Photos are optional — attach them later from the job details if taken on site.</div>
             </div>
           </div>
         </Modal>

@@ -106,6 +106,62 @@ export type PestType =
   | 'snake_reptile'
   | 'other';
 
+export type MeetingFollowUpType =
+  | 'company_profile'
+  | 'proposal'
+  | 'inspection'       // separate inspection visit requested
+  | 'other_documents'  // other specific documents; note field holds details
+  | 'not_interested'
+  | 'contract_ready';
+
+/** One item the client asked for during the meeting — tracked to completion. */
+export interface MeetingFollowUp {
+  id: string;
+  type: MeetingFollowUpType;
+  /** For 'inspection': when the visit is scheduled. */
+  scheduledDate?: string;
+  /** For 'other_documents': what documents specifically. */
+  note?: string;
+  /** ISO timestamp when this item was delivered / completed. */
+  doneAt?: string;
+  /** For 'inspection': branch/site where the visit should happen. */
+  branchId?: string;
+  branchName?: string;
+  branchAddress?: string;
+  /** For 'inspection': true when TL couldn't confirm the address yet. */
+  addressTbd?: boolean;
+}
+
+/** A separate technical site inspection scheduled after the initial client meeting. */
+export interface SiteInspection {
+  id: string;
+  status: 'scheduled' | 'completed' | 'cancelled';
+  scheduledDate: string;
+  /** Which branch / site is being inspected. */
+  branchId?: string;
+  branchName?: string;
+  branchAddress?: string;
+  /** Technician(s) assigned to conduct the inspection. */
+  assignedTechIds?: string[];
+  assignedTechNames?: string[];
+  teamLeaderId?: string;
+  teamLeaderName?: string;
+  requestedAt: string;
+  requestedBy: string;
+  completedDate?: string;
+  pestTypesFound?: PestType[];
+  infestationSeverity?: 'low' | 'moderate' | 'high' | 'severe';
+  areaSqFt?: number;
+  criticalFindings?: string;
+  recommendedTreatment?: string;
+  photoEvidenceUrls?: string[];
+  photos?: SitePhoto[];
+  findings?: RiskFinding[];
+  reportTitle?: string;
+  observedBy?: string;
+  notes?: string;
+}
+
 /** One row of the risk assessment report: picture evidence, observation, risk, recommendation. */
 export interface RiskFinding {
   id: string;
@@ -149,6 +205,14 @@ export interface InspectionAssessment {
   photos?: SitePhoto[];
   /** Risk assessment rows. Older inspections only have criticalFindings / recommendedTreatment. */
   findings?: RiskFinding[];
+  /** What the client asked for at the end of the meeting — drives next pipeline step. */
+  clientRequest?: 'company_profile' | 'proposal' | 'both' | 'more_info' | 'not_interested' | 'contract_ready';
+  /** Checklist of what the client requested — replaces the single clientRequest for new reports. */
+  meetingFollowUps?: MeetingFollowUp[];
+  /** Summary note from the Team Leader about what was discussed / what the client wants. */
+  meetingReportNote?: string;
+  /** TL's go/no-go decision: ready to create a proposal, or hold for more steps. */
+  tlStatus?: 'send_proposal' | 'waiting';
   /** Report heading, e.g. "Risk Assessment Report - Dunkin Johar". */
   reportTitle?: string;
   /** Branch / site the report is for. */
@@ -208,6 +272,8 @@ export interface Lead {
   assignedTeamLeaderId?: string;
   assignedTeamLeaderName?: string;
   inspection?: InspectionAssessment;
+  /** Separate technical site inspection (distinct from the initial client meeting visit). */
+  siteInspection?: SiteInspection;
   lostReason?: string;
   notes?: string;
   /** Photos of the property — kept optional so old records still load; no longer captured in the form. */

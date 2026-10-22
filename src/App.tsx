@@ -29,7 +29,6 @@ const DispatchCalendarPage = lazy(() => import('./pages/operations/DispatchCalen
 const InvoicesListPage = lazy(() => import('./pages/finance/InvoicesListPage').then((m) => ({ default: m.InvoicesListPage })));
 const TaxRulesPage = lazy(() => import('./pages/finance/TaxRulesPage').then((m) => ({ default: m.TaxRulesPage })));
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
-const PcoMobilePage = lazy(() => import('./pages/pco/PcoMobilePage').then((m) => ({ default: m.PcoMobilePage })));
 const DocumentLibraryPage = lazy(() => import('./features/documents/DocumentLibraryPage').then((m) => ({ default: m.DocumentLibraryPage })));
 const TeamAccessPage = lazy(() => import('./pages/admin/TeamAccessPage').then((m) => ({ default: m.TeamAccessPage })));
 const InspectionsPage = lazy(() => import('./pages/inspections/InspectionsPage').then((m) => ({ default: m.InspectionsPage })));
@@ -75,7 +74,7 @@ function App() {
                 <Route path="/documents" element={guard('documents', <DocumentLibraryPage />)} />
 
                 {/* Field operations */}
-                <Route path="/operations/jobs" element={guard('jobs', <JobsListPage />)} />
+                <Route path="/operations/jobs" element={guard(['jobs', 'pco'], <JobsListPage />)} />
                 <Route path="/operations/calendar" element={guard('calendar', <DispatchCalendarPage />)} />
 
                 {/* Finance, invoicing & tax */}

@@ -6,7 +6,7 @@
 
 import type { DataScope, UserRole } from '../types';
 
-export type SystemRole = 'super_admin' | 'management' | 'sales' | 'operations' | 'finance' | 'technician' | 'auditor';
+export type SystemRole = 'super_admin' | 'management' | 'sales' | 'team_leader' | 'operations' | 'finance' | 'auditor';
 
 export type ModuleKey =
   | 'dashboard'
@@ -57,7 +57,7 @@ export const MODULES: { key: ModuleKey; label: string; group: string; hint?: str
   { key: 'company_files', label: 'Company (IKPM) folder', group: 'Files', hint: 'SOP templates, MSDS library, certificates, registrations. View = read and send; Edit = upload and change' },
   { key: 'calendar', label: 'Dispatch calendar', group: 'Field operations' },
   { key: 'jobs', label: 'Service jobs', group: 'Field operations' },
-  { key: 'pco', label: 'PCO field app', group: 'Field operations', hint: 'Only jobs assigned to the person' },
+  { key: 'pco', label: 'Meeting & Field Reports', group: 'Field operations', hint: 'Assigned meetings, field reports and follow-ups (Team Leaders and above)' },
   { key: 'invoices', label: 'Invoices & receipts', group: 'Accounts' },
   { key: 'tax', label: 'Tax rules & WHT', group: 'Accounts' },
   { key: 'settings', label: 'Settings & audit trail', group: 'Administration' },
@@ -80,8 +80,8 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'pco', 'invoices', 'tax']), settings: 'view', company_files: 'view', templates: 'edit' },
   },
   {
-    id: 'sales', name: 'Sales', basedOn: 'sales', isSystem: true, defaultScope: 'own', color: '#1A73E8',
-    description: 'Leads, proposals and their own customers',
+    id: 'sales', name: 'Sales / CRO', basedOn: 'sales', isSystem: true, defaultScope: 'own', color: '#1A73E8',
+    description: 'Leads pipeline, proposals and their own customers. Assigns Team Leaders for meetings.',
     modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files']), documents: 'view', company_files: 'view' },
   },
   {
@@ -95,9 +95,9 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     modules: { ...all('edit', ['dashboard', 'invoices', 'tax']), customers: 'view', contracts: 'view', files: 'view', jobs: 'view' },
   },
   {
-    id: 'technician', name: 'Technician (PCO)', basedOn: 'technician', isSystem: true, defaultScope: 'own', color: '#9A3412',
-    description: 'Only the jobs assigned to them, in the PCO field app',
-    modules: { pco: 'edit', inspections: 'edit' },
+    id: 'team_leader', name: 'Team Leader', basedOn: 'team_leader', isSystem: true, defaultScope: 'team', color: '#9A3412',
+    description: 'Conducts client meetings, assigns team members, records findings and submits reports. Escalates to proposals or company profile based on client request.',
+    modules: { dashboard: 'edit', crm: 'view', inspections: 'edit', pco: 'edit', customers: 'view', proposals: 'view' },
   },
   {
     id: 'auditor', name: 'Auditor (read-only)', basedOn: 'auditor', isSystem: true, defaultScope: 'company', color: '#4B5563',
@@ -116,8 +116,16 @@ export function setRoleDefinitions(fromCloud: RoleDefinition[]) {
   fromCloud.forEach((r) => {
     if (r.id === 'super_admin') return; // Super admin can never be narrowed
     const base = next.get(r.id);
-    // Modules added in later versions fall back to the built-in default until saved explicitly
-    next.set(r.id, { ...base, ...r, modules: { ...(base?.modules ?? {}), ...r.modules } });
+    // For system roles: Firestore may change access *levels* but cannot add back modules that
+    // DEFAULT_ROLES no longer lists (prevents stale Firestore data re-adding removed modules).
+    // For custom roles: merge freely so admin-added modules are preserved.
+    const baseModules = base?.modules ?? {};
+    const mergedModules = base?.isSystem
+      ? Object.fromEntries(
+          Object.entries({ ...baseModules, ...r.modules }).filter(([k]) => k in baseModules)
+        ) as Partial<Record<ModuleKey, AccessLevel>>
+      : { ...baseModules, ...r.modules };
+    next.set(r.id, { ...base, ...r, modules: mergedModules });
   });
   registry = next;
 }

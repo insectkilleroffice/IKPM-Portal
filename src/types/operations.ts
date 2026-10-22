@@ -100,6 +100,9 @@ export interface ServiceJob extends FolderMeta {
   assignedTechnicianNames: string[];
   leadPcoId: string;
   leadPcoName: string;
+  /** Team leader accountable for this service visit. */
+  assignedTeamLeaderId?: string;
+  assignedTeamLeaderName?: string;
   status: JobStatus;
   rescheduledReason?: string;
   cancellationReason?: string;
@@ -143,6 +146,9 @@ export interface Contract extends FolderMeta, TemplateStamp {
   status: 'active' | 'expired' | 'renewed' | 'cancelled';
   renewalAlertDate: string;
   isRenewalInitiated?: boolean;
+  /** Team leader responsible for delivering this contract's service visits. */
+  assignedTeamLeaderId?: string;
+  assignedTeamLeaderName?: string;
 
   // ---- Copied from the accepted proposal so nothing is retyped (all optional for older contracts)
   servicePlan?: ServicePlanItem[];
