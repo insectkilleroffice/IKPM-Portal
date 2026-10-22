@@ -42,6 +42,8 @@ export interface Team {
   description?: string;
   leadUid?: string;
   leadName?: string;
+  leaderId?: string;
+  leaderName?: string;
   color?: string;
   isActive: boolean;
   createdAt: string;

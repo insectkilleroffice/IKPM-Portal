@@ -101,8 +101,8 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
             </div>
             <dl className="detail-list">
               <dt>Visits / month</dt><dd>{p.serviceVisitsPerMonth ?? '—'} service · {p.followUpVisitsPerMonth ?? 0} follow-up</dd>
-              <dt>PCOs</dt><dd>{p.pcoCountMin === p.pcoCountMax ? p.pcoCountMin : `${p.pcoCountMin}–${p.pcoCountMax}`}</dd>
-              <dt>Tenure</dt><dd>{p.tenureMonths} months · {formatDate(p.tenureStart)} to {formatDate(p.tenureEnd)}</dd>
+              <dt>PCOs per visit (as per client requirement)</dt><dd>{p.pcoCountMin === p.pcoCountMax ? p.pcoCountMin : `${p.pcoCountMin}–${p.pcoCountMax}`}</dd>
+              <dt>Tenure</dt><dd>{p.tenureMonths} months</dd>
               <dt>Monthly</dt><dd>{formatPKR(pricing!.monthlyBase)} + tax {p.taxPercent}% = <strong>{formatPKR(pricing!.monthlyTotal)}</strong> ({p.taxMode === 'inclusive' ? 'entered inclusive of tax' : 'exclusive of tax'})</dd>
               <dt>Payment</dt><dd>Within {p.paymentTermsDays ?? 15} days of invoice</dd>
               {p.documentationIncluded?.length ? (<><dt>Documentation</dt><dd>{p.documentationIncluded.join(', ')}</dd></>) : null}

@@ -14,27 +14,47 @@ export type LeadSource =
   | 'field_canvassing';
 
 /**
- * Pipeline: new → contacted → engaged → inspection_scheduled → inspection_completed
- *           → proposal_sent → won | lost.
- * 'qualified' and 'proposal_drafted' are older names kept so existing records still load
- * (treated as 'engaged' and 'proposal_sent').
+ * Pipeline:
+ *   new → contacted → engaged → meeting_scheduled → meeting_done → profile_sent
+ *   → proposal_sent → negotiation → won | lost
+ *
+ * Legacy names kept for backwards-compat (stageOf() maps them):
+ *   'qualified'         → 'engaged'
+ *   'proposal_drafted'  → 'proposal_sent'
+ *   'inspection_scheduled' → 'meeting_scheduled'
+ *   'inspection_completed' → 'meeting_done'
  */
 export type LeadStage =
   | 'new'
   | 'contacted'
   | 'engaged'
-  | 'inspection_scheduled'
-  | 'inspection_completed'
+  | 'meeting_scheduled'
+  | 'meeting_done'
+  | 'profile_sent'
   | 'proposal_sent'
+  | 'negotiation'
   | 'won'
   | 'lost'
+  // Legacy aliases (still stored in Firestore on old records)
   | 'qualified'
-  | 'proposal_drafted';
+  | 'proposal_drafted'
+  | 'inspection_scheduled'
+  | 'inspection_completed';
+
+/** Why the lead is stuck — shown as a badge with how many days it has been stuck. */
+export type StuckAtReason =
+  | 'waiting_client_reply'
+  | 'asked_company_profile'
+  | 'meeting_pending'
+  | 'awaiting_proposal'
+  | 'price_bargaining'
+  | 'awaiting_decision'
+  | 'other';
 
 /** Result of the latest contact attempt. */
-export type ContactOutcome = 'no_response' | 'callback' | 'engaged' | 'not_interested' | 'wrong_contact';
+export type ContactOutcome = 'no_response' | 'callback' | 'interested' | 'engaged' | 'not_interested' | 'wrong_contact';
 
-export type ActivityChannel = 'call' | 'whatsapp' | 'email' | 'meeting' | 'visit' | 'note';
+export type ActivityChannel = 'call' | 'whatsapp' | 'email' | 'meeting' | 'visit' | 'note' | 'documents';
 
 export interface LeadContact {
   id: string;
@@ -43,6 +63,16 @@ export interface LeadContact {
   phone: string;
   email?: string;
   isPrimary: boolean;
+}
+
+/** A branch / site that belongs to the lead's company. */
+export interface LeadBranch {
+  id: string;
+  name: string;
+  address: string;
+  city?: string;
+  contactName?: string;
+  contactPhone?: string;
 }
 
 export interface LeadActivity {
@@ -56,8 +86,12 @@ export interface LeadActivity {
   outcome?: ContactOutcome;
   note?: string;
   nextFollowUp?: string; // ISO date
+  /** Amount quoted in a revision or negotiation round. */
+  quotedAmount?: number;
+  /** Client's counter-offer in a negotiation round. */
+  counterOffer?: number;
   /** System entries such as "Stage changed to Engaged". */
-  kind?: 'contact' | 'stage' | 'inspection' | 'proposal' | 'system';
+  kind?: 'contact' | 'stage' | 'inspection' | 'proposal' | 'system' | 'documents' | 'negotiation';
 }
 
 export type PestType =
@@ -96,7 +130,14 @@ export interface InspectionAssessment {
   inspectorNames?: string[];
   teamId?: string;
   teamName?: string;
+  /** The staff member who leads the team on this visit. */
+  assignedTeamLeaderId?: string;
+  assignedTeamLeaderName?: string;
   instructions?: string;
+  /** Notes added by the team leader / for technician follow-up. */
+  teamLeaderNotes?: string;
+  /** Address where the meeting / inspection takes place. */
+  meetingAddress?: string;
   findingsBy?: string;
   pestTypesFound: PestType[];
   infestationSeverity: 'low' | 'moderate' | 'high' | 'severe';
@@ -134,6 +175,9 @@ export interface Lead {
   nextFollowUp?: string;
   /** Mirrors inspection.inspectorIds at the top level so firestore.rules can match assigned inspectors. */
   inspectorIds?: string[];
+  /** All proposals ever created for this lead (newest first). */
+  proposalIds?: string[];
+  /** The latest active proposal. */
   proposalId?: string;
   /** Set when the team went from Engaged straight to a proposal without a site inspection. */
   inspectionSkipped?: { reason: string; at: string; by: string };
@@ -152,16 +196,35 @@ export interface Lead {
   city: string;
   area: string;
   propertyAddress: string;
+  /** Full head-office address (for multi-site companies). */
+  headquarterAddress?: string;
+  /** Branches / sites identified during the sales process or site visit. */
+  branches?: LeadBranch[];
   pestIssues: PestType[];
   estimatedValue?: number; // PKR
   assignedToUserId?: string;
   assignedToName?: string;
+  /** Team leader (staff user) who owns the meeting / site visit. */
+  assignedTeamLeaderId?: string;
+  assignedTeamLeaderName?: string;
   inspection?: InspectionAssessment;
   lostReason?: string;
   notes?: string;
-  /** Photos of the property taken when the lead was added or visited. */
+  /** Photos of the property — kept optional so old records still load; no longer captured in the form. */
   sitePhotos?: SitePhoto[];
   duplicateWarning?: string; // Flag if phone/email matches existing records
+  /** Current "stuck" status with when it was set. */
+  stuckAt?: StuckAtReason;
+  stuckAtDate?: string;
+  // ----- Negotiation tracking -----
+  /** Total number of negotiation rounds. */
+  negotiationRounds?: number;
+  /** Amount in PKR last quoted to the client. */
+  lastQuotedAmount?: number;
+  /** Client's last counter-offer. */
+  clientCounterOffer?: number;
+  /** Free-form notes on the price negotiation. */
+  bargainingNotes?: string;
   createdAt: string;
   createdBy: string;
   updatedAt: string;

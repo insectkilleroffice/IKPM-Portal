@@ -461,6 +461,40 @@ class DocBuilder {
     this.y += h + 4;
   }
 
+  /**
+   * Company stamp block: places the stamp image (if available) on the left and a
+   * client acceptance line on the right. When no stampUrl is configured only the
+   * client acceptance line is shown.
+   */
+  stampBlock(stamp: Img | null, clientLabel = 'Accepted by client', attName?: string, attDesignation?: string) {
+    const h = 32;
+    this.ensure(h + 4);
+    const half = (CONTENT_W - 10) / 2;
+    // Company side: stamp image
+    if (stamp) {
+      const maxSide = 24;
+      const scale = Math.min(maxSide / stamp.w, maxSide / stamp.h);
+      const sw = stamp.w * scale;
+      const sh = stamp.h * scale;
+      this.doc.addImage(stamp.data, 'PNG', M, this.y + 2, sw, sh, undefined, 'FAST');
+    }
+    // Client acceptance line on the right
+    const rx = M + half + 10;
+    const lineY = this.y + h - 8;
+    this.color([148, 163, 184], 'draw');
+    this.doc.setLineWidth(0.3);
+    this.doc.line(rx, lineY, rx + half, lineY);
+    this.font(7.2, 'bold', MUTED);
+    this.doc.text(clientLabel.toUpperCase(), rx, lineY + 4, { charSpace: 0.2 });
+    if (attName) {
+      this.font(8.6, 'bold', INK);
+      this.doc.text(attName, rx, lineY + 8.5, { maxWidth: half });
+    }
+    this.font(7.5, 'normal', MUTED);
+    this.doc.text(attDesignation ? `${attDesignation} · signature, stamp & date` : 'Name, signature, stamp & date', rx, attName ? lineY + 12 : lineY + 8.5, { maxWidth: half });
+    this.y += h + 4;
+  }
+
   /** Photo grid (two per row) with captions. */
   photos(items: { img: Img; caption: string }[]) {
     const gap = 6;
@@ -755,7 +789,7 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
   b.keyValues([
     ['Service visits per month', proposal.serviceVisitsPerMonth ? String(proposal.serviceVisitsPerMonth) : undefined],
     ['Follow-up visits per month', proposal.followUpVisitsPerMonth ? String(proposal.followUpVisitsPerMonth) : undefined],
-    ['PCOs per visit', pco],
+    ['PCOs per visit (as per client requirement)', pco],
   ], 3);
   if (proposal.documentationIncluded?.length) b.noteBox('Documentation included', proposal.documentationIncluded.map((d) => `•  ${d}`));
 
@@ -768,7 +802,7 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
       [`Monthly charges${proposal.taxMode === 'inclusive' ? ' (excluding tax)' : ''}`, money(pricing.monthlyBase)],
       [`${taxLabel} per month`, money(pricing.monthlyTax)],
       ['Monthly charges including tax', money(pricing.monthlyTotal)],
-      [`Tenure`, `${months} month${months === 1 ? '' : 's'}${proposal.tenureStart ? `: ${formatDate(proposal.tenureStart)} to ${formatDate(proposal.tenureEnd)}` : ''}`],
+      [`Tenure`, `${months} month${months === 1 ? '' : 's'}`],
     ],
     { columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right', cellWidth: 70 } } }
   );
@@ -783,14 +817,11 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
   b.section('Payment terms');
   b.paragraph(`${fill(snap.paymentTerms ?? current.paymentTerms)}${proposal.paymentTerms ? ` ${proposal.paymentTerms}` : ''}`);
 
-  const notes = [proposal.exclusions && `Exclusions: ${proposal.exclusions}`, proposal.deviceOwnership && `Devices: ${proposal.deviceOwnership}`].filter(Boolean) as string[];
-  if (notes.length) b.noteBox('Please note', notes, b.brandTint);
+  // Exclusions and device ownership are included in the Terms list (no separate note box)
 
   b.paragraph(`We look forward to serving you. For any questions please contact ${proposal.preparedByName}${profile.phone ? ` at ${profile.phone}` : ''}.`);
-  b.signatures([
-    { label: `For ${company}`, name: profile.signatoryName || proposal.preparedByName, sub: profile.signatoryTitle },
-    { label: 'Accepted by client', name: att?.name || ' ', sub: att?.designation ? `${att.designation} · signature, stamp & date` : 'Name, signature, stamp & date' },
-  ]);
+  const stamp = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
+  b.stampBlock(stamp, 'Accepted by client', att?.name || undefined, att?.designation);
   return b.finish();
 }
 
@@ -856,17 +887,20 @@ async function buildProposal(proposal: Proposal): Promise<jsPDF> {
   b.totals(rows, ['Total payable', proposal.totalAmount]);
 
   b.section('Terms & conditions');
+  // Move exclusions/device ownership into the terms list if present
+  const extraTerms: string[] = [];
+  if (proposal.exclusions) extraTerms.push(`Exclusions: ${proposal.exclusions}`);
+  if (proposal.deviceOwnership) extraTerms.push(`Devices: ${proposal.deviceOwnership}`);
   b.numbered([
     `Payment terms: ${proposal.paymentTerms}.`,
     `This proposal is valid for ${proposal.validityDays || 30} days from the date above.`,
     proposal.warrantyPeriodMonths ? `Warranty: ${proposal.warrantyPeriodMonths} months. Free re-treatment if the targeted pests recur within the warranty period, subject to agreed hygiene recommendations.` : '',
     ...(profile.proposalTerms || '').split('\n'),
+    ...extraTerms,
   ]);
 
-  b.signatures([
-    { label: `For ${profile.shortName || profile.legalName}`, name: profile.signatoryName || proposal.preparedByName, sub: profile.signatoryTitle },
-    { label: 'Accepted by client', name: ' ', sub: 'Name, signature, stamp & date' },
-  ]);
+  const stamp2 = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
+  b.stampBlock(stamp2, 'Accepted by client');
   return b.finish();
 }
 
@@ -942,12 +976,8 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
     profile.invoiceNotes || '',
   ].filter(Boolean) as string[]);
 
-  if (invoice.notes) b.noteBox('Notes', [invoice.notes]);
-
-  b.signatures([
-    { label: 'Prepared by', name: invoice.postedBy || ' ' },
-    { label: `For ${profile.shortName || profile.legalName}`, name: profile.signatoryName || ' ', sub: profile.signatoryTitle },
-  ]);
+  const invStamp = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
+  b.stampBlock(invStamp);
   return b.finish();
 }
 
@@ -990,10 +1020,8 @@ async function buildReceipt(receipt: PaymentReceipt): Promise<jsPDF> {
     rows.push(['Balance after this receipt', pkr(invoice.balanceDue)]);
   }
   b.totals(rows, ['Total credited', receipt.totalCreditApplied || receipt.cashAmountReceived + (wht?.amountDeducted || 0)]);
-  b.signatures([
-    { label: 'Received by', name: receipt.recordedByName },
-    { label: `For ${profile.shortName || profile.legalName}`, name: profile.signatoryName || ' ', sub: profile.signatoryTitle },
-  ]);
+  const recStamp = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
+  b.stampBlock(recStamp);
   return b.finish();
 }
 

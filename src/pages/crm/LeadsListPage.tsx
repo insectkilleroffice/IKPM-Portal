@@ -24,6 +24,7 @@ import {
   Users2,
   ArrowRight,
   MapPin,
+  PauseCircle,
 } from 'lucide-react';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { Modal } from '../../components/common/Modal';
@@ -58,10 +59,13 @@ import {
   stageMeta,
   stageOf,
   READ_ONLY_ACTIONS,
+  daysSince,
+  stuckAtLabel,
+  STUCK_AT_REASONS,
   type LeadActionId,
   type PipelineStage,
 } from '../../lib/leadWorkflow';
-import type { Lead, LeadActivity } from '../../types/crm';
+import type { Lead, LeadActivity, StuckAtReason } from '../../types/crm';
 
 type Tab = 'all' | PipelineStage;
 
@@ -84,6 +88,8 @@ const ACTION_ICONS: Record<LeadActionId, React.ComponentType<{ size?: number }>>
   open_proposal: FileSpreadsheet,
   skip_inspection: SkipForward,
   send_documents: Send,
+  set_stuck_at: PauseCircle,
+  create_revision: RotateCcw,
   mark_won: Star,
   mark_lost: XCircle,
   open_customer: ExternalLink,
@@ -115,6 +121,7 @@ export const LeadsListPage: React.FC = () => {
   const [lostLead, setLostLead] = useState<Lead | null>(null);
   const [skipLead, setSkipLead] = useState<Lead | null>(null);
   const [sendLead, setSendLead] = useState<Lead | null>(null);
+  const [stuckLead, setStuckLead] = useState<Lead | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
 
   const leads = store.getLeads();
@@ -168,7 +175,6 @@ export const LeadsListPage: React.FC = () => {
   };
 
   const createProposal = (lead: Lead) => {
-    if (lead.proposalId) return navigate(`/proposals?view=${lead.proposalId}`);
     try {
       const { customerId, customerType } = store.ensureLeadCustomer(lead.id, userProfile?.email);
       const params = new URLSearchParams({
@@ -202,6 +208,9 @@ export const LeadsListPage: React.FC = () => {
       case 'create_proposal': return createProposal(lead);
       case 'skip_inspection': return lead.inspectionSkipped ? createProposal(lead) : setSkipLead(lead);
       case 'send_documents': return setSendLead(lead);
+      case 'set_stuck_at': return setStuckLead(lead);
+      case 'create_revision':
+        return navigate(lead.proposalId ? `/proposals?view=${lead.proposalId}&action=revision` : '/proposals');
       case 'mark_lost': return setLostLead(lead);
       case 'mark_won': return; // Won happens when the proposal is accepted
       case 'open_proposal': return navigate(lead.proposalId ? `/proposals?view=${lead.proposalId}` : '/proposals');
@@ -353,7 +362,20 @@ export const LeadsListPage: React.FC = () => {
                         </>
                       ) : <span className="cell-sub">No contact</span>}
                     </td>
-                    <td><StagePill lead={l} /></td>
+                    <td>
+                      <StagePill lead={l} />
+                      {l.stuckAt && (
+                        <div style={{ marginTop: 4 }}>
+                          <span
+                            className="badge-status badge-amber"
+                            style={{ fontSize: '0.72rem' }}
+                            title={`Stuck: ${stuckAtLabel(l.stuckAt)} (${daysSince(l.stuckAtDate)} days)`}
+                          >
+                            {stuckAtLabel(l.stuckAt)} · {daysSince(l.stuckAtDate)}d
+                          </span>
+                        </div>
+                      )}
+                    </td>
                     <td className="cell-sub">
                       {st === 'inspection_scheduled' && l.inspection
                         ? <>{formatDate(l.inspection.scheduledDate)} · {l.inspection.teamName || l.inspection.inspectorName}</>
@@ -464,15 +486,83 @@ export const LeadsListPage: React.FC = () => {
             recipient={{ name: p?.name || sendLead.title, phone: p?.phone, email: p?.email || sendLead.companyEmail }}
             related={{ kind: 'lead', id: sendLead.id, title: sendLead.title }}
             onSent={(results) => {
-              const current = store.getLeadById(sendLead.id) ?? sendLead;
-              if (results.some((r) => r.ok) && stageOf(current) === 'new') {
-                store.logLeadContact(sendLead.id, { channel: results.some((r) => r.channel === 'whatsapp') ? 'whatsapp' : 'email', note: 'Sent company documents' }, userProfile?.email);
+              if (results.some((r) => r.ok)) {
+                store.sendLeadDocuments(
+                  sendLead.id,
+                  results.some((r) => r.channel === 'whatsapp') ? 'whatsapp' : 'email',
+                  'Sent company documents',
+                  userProfile?.email
+                );
               }
             }}
           />
         );
       })()}
+
+      {stuckLead && (
+        <SetStuckAtModal
+          lead={stuckLead}
+          onClose={() => setStuckLead(null)}
+          onSaved={(updated) => {
+            setStuckLead(null);
+            if (detailId === updated.id) openDetail(updated.id);
+          }}
+        />
+      )}
     </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Set Stuck At Modal
+// ---------------------------------------------------------------------------
+const SetStuckAtModal: React.FC<{ lead: Lead; onClose: () => void; onSaved: (updated: Lead) => void }> = ({ lead, onClose, onSaved }) => {
+  const store = useDataStore();
+  const { userProfile } = useAuth();
+  const { success, error } = useNotification();
+  const [reason, setReason] = useState<string>(lead.stuckAt || '');
+
+  const save = () => {
+    try {
+      const updated = store.setLeadStuckAt(lead.id, (reason as StuckAtReason) || undefined, userProfile?.email);
+      if (updated) {
+        success('Status updated', `${lead.title} status updated.`);
+        onSaved(updated);
+      } else {
+        onClose();
+      }
+    } catch (err) {
+      error('Could not update status', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={`Set "Stuck at" status: ${lead.title}`}
+      subtitle="Track the exact reason this lead is delayed"
+      maxWidth="500px"
+      footer={
+        <>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={save}>Save status</button>
+        </>
+      }
+    >
+      <div className="form-group">
+        <label className="form-label">Current delay reason</label>
+        <select className="form-select" value={reason} onChange={(e) => setReason(e.target.value)}>
+          <option value="">Not stuck / in motion</option>
+          {STUCK_AT_REASONS.map((r) => (
+            <option key={r.value} value={r.value}>{r.label}</option>
+          ))}
+        </select>
+        <div className="form-hint" style={{ marginTop: '0.4rem' }}>
+          {lead.stuckAt && lead.stuckAtDate ? `Previously marked stuck on ${lead.stuckAtDate} (${daysSince(lead.stuckAtDate)} days ago)` : 'Selecting a reason resets the stuck-at timer to today.'}
+        </div>
+      </div>
+    </Modal>
   );
 };
 
@@ -534,6 +624,29 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onAction, m
           <SkipForward size={14} style={{ verticalAlign: '-2px' }} /> Inspection skipped by {lead.inspectionSkipped.by} on {formatDate(lead.inspectionSkipped.at)}: {lead.inspectionSkipped.reason}
         </div>
       )}
+      {lead.stuckAt && (
+        <div className="warning-hint" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <strong>Stuck at:</strong> {stuckAtLabel(lead.stuckAt)} (since {formatDate(lead.stuckAtDate)}, {daysSince(lead.stuckAtDate)} days stuck)
+          </div>
+          {canEdit && (
+            <button className="btn btn-sm btn-ghost" onClick={() => onAction('set_stuck_at')}>
+              Change
+            </button>
+          )}
+        </div>
+      )}
+      {(lead.negotiationRounds || lead.lastQuotedAmount || lead.clientCounterOffer || lead.bargainingNotes) && (
+        <div className="card" style={{ marginBottom: '1rem', background: '#FFFBEB', borderColor: '#FDE68A' }}>
+          <div className="section-title" style={{ marginTop: 0, color: '#92400E' }}>Negotiation details</div>
+          <dl className="detail-list">
+            {lead.negotiationRounds ? (<><dt>Rounds</dt><dd>{lead.negotiationRounds}</dd></>) : null}
+            {lead.lastQuotedAmount ? (<><dt>Last quoted</dt><dd>PKR {lead.lastQuotedAmount.toLocaleString()}</dd></>) : null}
+            {lead.clientCounterOffer ? (<><dt>Counter-offer</dt><dd>PKR {lead.clientCounterOffer.toLocaleString()}</dd></>) : null}
+            {lead.bargainingNotes ? (<><dt>Bargaining notes</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.bargainingNotes}</dd></>) : null}
+          </dl>
+        </div>
+      )}
       {st === 'lost' && <div className="error-hint" style={{ marginBottom: '1rem' }}><strong>Lost</strong>{lead.lostReason ? `: ${lead.lostReason}` : ''}{lead.lostAt ? ` (${formatDate(lead.lostAt)})` : ''}</div>}
 
       <div className="lead-detail-grid">
@@ -564,7 +677,14 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, onClose, onAction, m
           <div className="section-title">Company</div>
           <dl className="detail-list">
             <dt>Type</dt><dd>{lead.customerType === 'individual' ? 'Individual / household' : 'Company'}</dd>
+            {lead.headquarterAddress && (<><dt>Head office</dt><dd>{lead.headquarterAddress}</dd></>)}
             {lead.propertyAddress && (<><dt>Address</dt><dd><MapPin size={13} style={{ verticalAlign: '-2px' }} /> {lead.propertyAddress}{lead.area ? `, ${lead.area}` : ''}, {lead.city}</dd></>)}
+            {(lead.branches ?? []).length > 0 && (
+              <>
+                <dt>Branches</dt>
+                <dd>{lead.branches!.map((b) => `${b.name} (${b.city || b.address})`).join(', ')}</dd>
+              </>
+            )}
             {lead.companyPhone && (<><dt>Phone</dt><dd>{lead.companyPhone}</dd></>)}
             {lead.companyEmail && (<><dt>Email</dt><dd>{lead.companyEmail}</dd></>)}
             {lead.website && (<><dt>Website</dt><dd>{lead.website}</dd></>)}

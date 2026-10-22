@@ -74,10 +74,9 @@ function App() {
                 <Route path="/files" element={guard('files', <ClientFilesPage />)} />
                 <Route path="/documents" element={guard('documents', <DocumentLibraryPage />)} />
 
-                {/* Field operations & PCO */}
+                {/* Field operations */}
                 <Route path="/operations/jobs" element={guard('jobs', <JobsListPage />)} />
                 <Route path="/operations/calendar" element={guard('calendar', <DispatchCalendarPage />)} />
-                <Route path="/pco-field" element={guard('pco', <PcoMobilePage />)} />
 
                 {/* Finance, invoicing & tax */}
                 <Route path="/finance/invoices" element={guard('invoices', <InvoicesListPage />)} />

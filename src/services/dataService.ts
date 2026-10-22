@@ -915,6 +915,7 @@ class DataService {
     if (stage === 'won' || stage === 'lost') throw new StageTransitionError(`Contacts can't be logged on a ${stageMeta(stage).label} lead. Reopen it first.`);
     let nextStage: LeadStage = lead.stage;
     if (entry.outcome === 'engaged' && ['new', 'contacted'].includes(stage)) nextStage = 'engaged';
+    else if (entry.outcome === 'interested' && stage === 'new') nextStage = 'contacted';
     else if (entry.outcome === 'not_interested' || entry.outcome === 'wrong_contact') nextStage = 'lost';
     else if (stage === 'new' && entry.channel !== 'note') nextStage = 'contacted';
 
@@ -984,21 +985,30 @@ class DataService {
 
   public scheduleLeadInspection(
     leadId: string,
-    plan: { date: string; timeSlot: 'morning' | 'afternoon' | 'evening'; teamId?: string; inspectorIds: string[]; instructions?: string },
+    plan: {
+      date: string;
+      timeSlot: 'morning' | 'afternoon' | 'evening';
+      teamId?: string;
+      inspectorIds: string[];
+      teamLeaderId?: string;
+      meetingAddress?: string;
+      instructions?: string;
+    },
     userEmail = 'admin'
   ): Lead | undefined {
     const lead = this.getLeadById(leadId);
     if (!lead) return undefined;
     const stage = stageOf(lead);
-    if (stage !== 'engaged' && stage !== 'inspection_scheduled') {
+    if (stage !== 'engaged' && stage !== 'meeting_scheduled') {
       throw new StageTransitionError(
         stage === 'new' || stage === 'contacted'
-          ? 'Log a contact with an "engaged" outcome before scheduling an inspection.'
-          : `An inspection cannot be scheduled while the lead is ${stageMeta(stage).label}.`
+          ? 'Log a contact with an "engaged" outcome before scheduling a meeting / inspection.'
+          : `A meeting / inspection cannot be scheduled while the lead is ${stageMeta(stage).label}.`
       );
     }
     const team = this.s.teams.find((t) => t.id === plan.teamId);
     const people = plan.inspectorIds.map((uid) => this.s.users.find((u) => u.uid === uid)).filter(Boolean) as UserProfile[];
+    const leader = plan.teamLeaderId ? this.s.users.find((u) => u.uid === plan.teamLeaderId) : undefined;
     const inspection: InspectionAssessment = {
       ...(lead.inspection ?? {
         pestTypesFound: lead.pestIssues ?? [],
@@ -1014,45 +1024,51 @@ class DataService {
       timeSlot: plan.timeSlot,
       teamId: team?.id,
       teamName: team?.name,
+      assignedTeamLeaderId: leader?.uid,
+      assignedTeamLeaderName: leader?.displayName,
       inspectorIds: people.map((p) => p.uid),
       inspectorNames: people.map((p) => p.displayName),
-      inspectorId: people[0]?.uid || '',
-      inspectorName: people.map((p) => p.displayName).join(', ') || team?.name || 'Unassigned',
+      inspectorId: leader?.uid || people[0]?.uid || '',
+      inspectorName: leader?.displayName || people.map((p) => p.displayName).join(', ') || team?.name || 'Unassigned',
       instructions: plan.instructions,
+      meetingAddress: plan.meetingAddress,
       status: 'scheduled',
     } as InspectionAssessment;
     const rescheduled = lead.inspection?.status === 'scheduled';
     const updated: Lead = {
       ...lead,
-      stage: 'inspection_scheduled',
+      stage: 'meeting_scheduled',
       inspection,
-      inspectorIds: inspection.inspectorIds,
+      inspectorIds: [leader?.uid, ...people.map((p) => p.uid)].filter((v, i, a) => v && a.indexOf(v) === i) as string[],
+      assignedTeamLeaderId: leader?.uid,
+      assignedTeamLeaderName: leader?.displayName,
       activities: [
         this.activity({
           kind: 'inspection',
           channel: 'visit',
-          note: `${rescheduled ? 'Inspection rescheduled' : 'Inspection scheduled'} for ${formatDate(plan.date)} (${plan.timeSlot})${team ? ` · ${team.name}` : ''}${people.length ? ` · ${inspection.inspectorName}` : ''}`,
+          note: `${rescheduled ? 'Meeting / Inspection rescheduled' : 'Meeting / Inspection scheduled'} for ${formatDate(plan.date)} (${plan.timeSlot})${team ? ` · ${team.name}` : ''}${leader ? ` · Leader: ${leader.displayName}` : people.length ? ` · ${inspection.inspectorName}` : ''}${plan.meetingAddress ? ` @ ${plan.meetingAddress}` : ''}`,
         }),
         ...(lead.activities ?? []),
       ],
     };
-    return this.saveLead(updated, userEmail, `Inspection ${rescheduled ? 'rescheduled' : 'scheduled'} for ${plan.date}`);
+    return this.saveLead(updated, userEmail, `Meeting / Inspection ${rescheduled ? 'rescheduled' : 'scheduled'} for ${plan.date}`);
   }
 
   public recordInspectionFindings(
     leadId: string,
     findings: Pick<InspectionAssessment, 'pestTypesFound' | 'infestationSeverity' | 'areaSqFt' | 'criticalFindings' | 'recommendedTreatment' | 'photos'>
-      & Partial<Pick<InspectionAssessment, 'findings' | 'reportTitle' | 'siteName' | 'observedBy'>>,
-    userEmail = 'admin'
+      & Partial<Pick<InspectionAssessment, 'findings' | 'reportTitle' | 'siteName' | 'observedBy' | 'teamLeaderNotes'>>,
+    userEmail = 'admin',
+    branches?: LeadBranch[]
   ): Lead | undefined {
     const lead = this.getLeadById(leadId);
     if (!lead) return undefined;
     const stage = stageOf(lead);
-    if (stage !== 'inspection_scheduled' && stage !== 'inspection_completed') {
+    if (stage !== 'meeting_scheduled' && stage !== 'meeting_done') {
       throw new StageTransitionError(
         stage === 'engaged' || stage === 'new' || stage === 'contacted'
-          ? 'Schedule the inspection before recording findings.'
-          : `Inspection findings cannot be changed while the lead is ${stageMeta(stage).label}.`
+          ? 'Schedule the meeting / inspection before recording findings.'
+          : `Meeting / Inspection findings cannot be changed while the lead is ${stageMeta(stage).label}.`
       );
     }
     const base = lead.inspection;
@@ -1074,17 +1090,62 @@ class DataService {
       findingsBy: this.session?.name,
       status: 'completed',
     };
+    const mergedBranches = branches?.length
+      ? [...(lead.branches ?? []), ...branches.filter((b) => !(lead.branches ?? []).some((eb) => eb.name.toLowerCase() === b.name.toLowerCase()))]
+      : lead.branches;
     const updated: Lead = {
       ...lead,
-      stage: 'inspection_completed',
+      stage: 'meeting_done',
       inspection,
       pestIssues: findings.pestTypesFound,
+      branches: mergedBranches,
       activities: [
-        this.activity({ kind: 'inspection', channel: 'visit', note: `Inspection findings recorded (${findings.infestationSeverity} infestation, ${findings.areaSqFt || 0} sq ft${findings.findings?.length ? `, ${findings.findings.length} risk finding${findings.findings.length > 1 ? 's' : ''}` : ''}${findings.photos?.length ? `, ${findings.photos.length} photo${findings.photos.length > 1 ? 's' : ''}` : ''})` }),
+        this.activity({ kind: 'inspection', channel: 'visit', note: `Meeting / Inspection findings recorded (${findings.infestationSeverity} infestation, ${findings.areaSqFt || 0} sq ft${findings.findings?.length ? `, ${findings.findings.length} risk finding${findings.findings.length > 1 ? 's' : ''}` : ''}${findings.photos?.length ? `, ${findings.photos.length} photo${findings.photos.length > 1 ? 's' : ''}` : ''}${branches?.length ? `, ${branches.length} branch/site${branches.length > 1 ? 's' : ''} added` : ''})` }),
         ...(lead.activities ?? []),
       ],
     };
-    return this.saveLead(updated, userEmail, 'Inspection findings recorded');
+    return this.saveLead(updated, userEmail, 'Meeting / Inspection findings recorded');
+  }
+
+  /**
+   * Sends company documents (e.g. company profile) to the client.
+   * Logs a 'documents' activity and moves the lead to 'profile_sent'.
+   */
+  public sendLeadDocuments(leadId: string, note?: string, userEmail = 'admin'): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const stage = stageOf(lead);
+    const allowedStages = ['new', 'contacted', 'engaged', 'meeting_scheduled', 'meeting_done'];
+    const act = this.activity({
+      kind: 'documents',
+      channel: 'documents',
+      note: note?.trim() || 'Company profile / documents sent to client',
+    });
+    const moveToProfileSent = allowedStages.includes(stage);
+    const updated: Lead = {
+      ...lead,
+      stage: moveToProfileSent ? 'profile_sent' : lead.stage,
+      activities: [act, ...(lead.activities ?? [])],
+      stuckAt: 'waiting_client_reply',
+      stuckAtDate: now().slice(0, 10),
+    };
+    return this.saveLead(updated, userEmail, 'Company documents sent');
+  }
+
+  /** Sets or clears the "stuck at" status on a lead. Pass undefined to clear. */
+  public setLeadStuckAt(leadId: string, stuckAt: import('../types/crm').StuckAtReason | undefined, userEmail = 'admin'): Lead | undefined {
+    const lead = this.getLeadById(leadId);
+    if (!lead) return undefined;
+    const updated: Lead = {
+      ...lead,
+      stuckAt,
+      stuckAtDate: stuckAt ? now().slice(0, 10) : undefined,
+      activities: [
+        this.activity({ kind: 'system', channel: 'note', note: stuckAt ? `Stuck at: ${stuckAt.replace(/_/g, ' ')}` : 'Stuck status cleared' }),
+        ...(lead.activities ?? []),
+      ],
+    };
+    return this.saveLead(updated, userEmail);
   }
 
   private provinceFor(city: string): CompanyMaster['province'] {
@@ -1183,37 +1244,103 @@ class DataService {
     if (customerType === 'company') {
       const co = this.getCompanyById(customerId);
       if (co && co.status !== 'active') this.saveCompany({ ...co, status: 'active' }, userEmail);
+      if (lead.branches?.length) {
+        const existing = this.getBranches(customerId);
+        lead.branches.forEach((b, idx) => {
+          if (!existing.some((eb) => eb.branchName.toLowerCase() === b.name.toLowerCase())) {
+            const branchId = `BR-${new Date().getFullYear()}-${String(existing.length + idx + 1).padStart(4, '0')}`;
+            this.saveBranch({
+              id: branchId,
+              companyId: customerId,
+              companyName: co?.legalCompanyName || lead.companyName || lead.title,
+              branchName: b.name || `Branch ${idx + 1}`,
+              city: b.city || lead.city || 'Karachi',
+              area: b.address || lead.area || '',
+              province: (co?.province || 'Sindh') as any,
+              physicalAddress: b.address || '',
+              branchPhone: b.contactPhone || lead.phone || '',
+              branchManagerName: b.contactName || '',
+              branchManagerPhone: b.contactPhone || '',
+              billingType: 'company_invoice',
+              balance: 0,
+              contacts: b.contactName ? [{ id: `cont_${Date.now()}_${idx}`, fullName: b.contactName, phone: b.contactPhone || '', mobile: b.contactPhone || '', isPrimary: true }] : [],
+              status: 'active',
+              createdAt: now(),
+              createdBy: userEmail,
+              updatedAt: now(),
+            }, userEmail);
+          }
+        });
+      }
     } else {
       const cl = this.getClientById(customerId);
       if (cl && cl.status !== 'active') this.saveClient({ ...cl, status: 'active' }, userEmail);
+      if (lead.branches?.length) {
+        const existing = this.getSites(customerId);
+        lead.branches.forEach((b, idx) => {
+          if (!existing.some((es) => es.siteName.toLowerCase() === b.name.toLowerCase())) {
+            this.saveSite({
+              id: `SITE-${Date.now()}-${idx}`,
+              customerId,
+              siteName: b.name || `Site ${idx + 1}`,
+              address: b.address || '',
+              city: b.city || lead.city || 'Karachi',
+              area: b.address || '',
+              primaryContactPerson: b.contactName || lead.contactName || '',
+              primaryContactPhone: b.contactPhone || lead.phone || '',
+              isActive: true,
+              createdAt: now(),
+            });
+          }
+        });
+      }
     }
     return this.setLeadStage(leadId, 'won', note, userEmail);
   }
 
-  /** Keeps the lead in step with its proposal (created → proposal stage, accepted → won, declined → lost). */
+  /** Keeps the lead in step with its proposal. Declined proposal → negotiation (not lost). */
   private syncLeadWithProposal(proposal: Proposal, created: boolean, userEmail: string) {
     if (!proposal.leadId) return;
     const lead = this.getLeadById(proposal.leadId);
     if (!lead) return;
     const stage = stageOf(lead);
-    // Link the proposal first (moves the lead to the Proposal stage), so accepted/declined
-    // below always starts from proposal_sent.
-    if ((created || lead.proposalId !== proposal.id) && !['won', 'lost'].includes(stage)) {
-      this.saveLead({
-        ...lead,
-        stage: 'proposal_sent',
-        proposalId: proposal.id,
-        activities: [
-          this.activity({ kind: 'proposal', channel: 'note', note: `Proposal ${proposal.id} created (PKR ${Math.round(proposal.totalAmount).toLocaleString()})` }),
-          ...(lead.activities ?? []),
-        ],
-      }, userEmail, `Proposal ${proposal.id} created`);
+    const proposalIds = Array.from(new Set([proposal.id, ...(lead.proposalIds ?? [])].filter(Boolean)));
+    // Link the proposal (moves lead to proposal_sent) unless lead is already won/lost.
+    if (!['won', 'lost'].includes(stage)) {
+      const isNew = created || !lead.proposalIds?.includes(proposal.id);
+      if (isNew) {
+        this.saveLead({
+          ...lead,
+          stage: 'proposal_sent',
+          proposalId: proposal.id,
+          proposalIds,
+          activities: [
+            this.activity({ kind: 'proposal', channel: 'note', note: `Proposal ${proposal.id}${proposal.revisionNumber ? ` R${proposal.revisionNumber}` : ''} created (PKR ${Math.round(proposal.totalAmount).toLocaleString()})`, quotedAmount: proposal.totalAmount }),
+            ...(lead.activities ?? []),
+          ],
+        }, userEmail, `Proposal ${proposal.id} created`);
+      } else {
+        // Editing an existing proposal — keep proposalIds in sync
+        this.saveLead({ ...this.getLeadById(lead.id) ?? lead, proposalIds, proposalId: proposal.id }, userEmail);
+      }
     }
     const current = stageOf(this.getLeadById(lead.id) ?? lead);
-    if (proposal.status === 'accepted' && current === 'proposal_sent') {
+    if (proposal.status === 'accepted' && (current === 'proposal_sent' || current === 'negotiation')) {
       this.markLeadWon(lead.id, `Proposal ${proposal.id} accepted`, userEmail);
     } else if (proposal.status === 'declined' && current !== 'lost' && current !== 'won') {
-      this.setLeadStage(lead.id, 'lost', `Proposal ${proposal.id} declined`, userEmail);
+      // Declined → negotiation with stuckAt = price_bargaining (not lost)
+      const latestLead = this.getLeadById(lead.id) ?? lead;
+      const updatedLead: Lead = {
+        ...latestLead,
+        stage: 'negotiation',
+        stuckAt: 'price_bargaining',
+        stuckAtDate: now().slice(0, 10),
+        activities: [
+          this.activity({ kind: 'negotiation', channel: 'note', note: `Proposal ${proposal.id} declined by client — moved to negotiation` }),
+          ...(latestLead.activities ?? []),
+        ],
+      };
+      this.saveLead(updatedLead, userEmail, `Proposal ${proposal.id} declined — negotiation`);
     }
   }
 
@@ -1231,7 +1358,7 @@ class DataService {
   }
 
   public saveProposal(proposal: Proposal, userEmail = 'admin'): Proposal {
-    // New proposal from a lead: the lead must be ready for one and must not already have one.
+    // New proposal from a lead: the lead must be at a stage that allows a proposal.
     if (proposal.leadId && !this.getProposalById(proposal.id)) {
       const lead = this.getLeadById(proposal.leadId);
       if (lead) assertCanCreateProposal(lead);
@@ -1283,14 +1410,15 @@ class DataService {
   ): Proposal {
     const base = this.getProposalById(baseProposalId);
     if (!base) throw new Error('Base proposal not found');
+    if (!changeReason?.trim()) throw new Error('A change reason is required to create a revision.');
 
     const nextRevisionNum = (base.revisionNumber || 0) + 1;
     const revisionRecord: ProposalRevision = {
       revisionNumber: nextRevisionNum,
       timestamp: now(),
       changedBy: userEmail,
-      changedByName: userEmail,
-      changeReason,
+      changedByName: this.session?.name || userEmail,
+      changeReason: changeReason.trim(),
       subtotal: updates.subtotal ?? base.subtotal,
       discountPercent: updates.discountPercent ?? base.discountPercent,
       totalAmount: updates.totalAmount ?? base.totalAmount,
@@ -1300,9 +1428,34 @@ class DataService {
       ...base,
       ...updates,
       revisionNumber: nextRevisionNum,
+      status: 'sent_to_client',
       revisionsHistory: [...base.revisionsHistory, revisionRecord],
       updatedAt: now(),
     };
+
+    // Log revision on the lead timeline
+    if (base.leadId) {
+      const lead = this.getLeadById(base.leadId);
+      if (lead) {
+        const negRound = (lead.negotiationRounds ?? 0) + 1;
+        const updatedLead: Lead = {
+          ...lead,
+          stage: 'negotiation',
+          negotiationRounds: negRound,
+          lastQuotedAmount: updatedProposal.totalAmount,
+          activities: [
+            this.activity({
+              kind: 'negotiation',
+              channel: 'note',
+              note: `Revision R${nextRevisionNum} sent — ${changeReason.trim()} (PKR ${Math.round(updatedProposal.totalAmount).toLocaleString()})`,
+              quotedAmount: updatedProposal.totalAmount,
+            }),
+            ...(lead.activities ?? []),
+          ],
+        };
+        this.saveLead(updatedLead, userEmail);
+      }
+    }
 
     this.saveProposal(updatedProposal, userEmail);
     return updatedProposal;

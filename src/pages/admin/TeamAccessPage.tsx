@@ -236,6 +236,8 @@ export const TeamAccessPage: React.FC = () => {
         description: team.description?.trim() || undefined,
         leadUid: lead?.uid,
         leadName: lead?.displayName,
+        leaderId: lead?.uid,
+        leaderName: lead?.displayName,
         color: team.color,
         isActive: true,
         createdAt: team.createdAt,

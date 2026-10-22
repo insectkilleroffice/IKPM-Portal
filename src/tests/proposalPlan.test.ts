@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultTenureStart, frequencyForVisits, planFromPreset, planPricing, SERVICE_PLAN_PRESETS, tenureEnd } from '../lib/proposalPlan';
+import { DEFAULT_COVER_LETTER, defaultTenureStart, frequencyForVisits, planFromPreset, planPricing, SERVICE_PLAN_PRESETS, tenureEnd } from '../lib/proposalPlan';
 
 describe('tenure dates', () => {
   it('ends the day before the same date N months later', () => {
@@ -58,5 +58,13 @@ describe('presets', () => {
     expect(frequencyForVisits(2)).toBe('fortnightly');
     expect(frequencyForVisits(1)).toBe('monthly');
     expect(frequencyForVisits(undefined)).toBe('monthly');
+  });
+});
+
+describe('DEFAULT_COVER_LETTER', () => {
+  it('does not contain price or tenure date placeholders', () => {
+    expect(DEFAULT_COVER_LETTER).not.toContain('{{monthlyRate}}');
+    expect(DEFAULT_COVER_LETTER).not.toContain('{{tenureMonths}}');
+    expect(DEFAULT_COVER_LETTER).not.toContain('{{tenureStart}}');
   });
 });

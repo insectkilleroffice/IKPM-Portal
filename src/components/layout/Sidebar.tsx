@@ -37,7 +37,6 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
   {
     items: [
       { to: '/', label: 'Dashboard', icon: LayoutDashboard, module: 'dashboard', end: true },
-      { to: '/pco-field', label: 'My Field Jobs', icon: Smartphone, module: 'pco', badge: 'PCO' },
     ],
   },
   {

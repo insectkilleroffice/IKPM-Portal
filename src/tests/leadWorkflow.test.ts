@@ -40,22 +40,34 @@ describe('stage transitions', () => {
   const allowed: [PipelineStage, PipelineStage][] = [
     ['new', 'contacted'],
     ['contacted', 'engaged'],
-    ['engaged', 'inspection_scheduled'],
-    ['inspection_scheduled', 'inspection_completed'],
-    ['inspection_completed', 'proposal_sent'],
+    ['engaged', 'meeting_scheduled'],
+    ['engaged', 'profile_sent'],
+    ['engaged', 'proposal_sent'],
+    ['engaged', 'negotiation'],
+    ['meeting_scheduled', 'meeting_done'],
+    ['meeting_done', 'profile_sent'],
+    ['meeting_done', 'proposal_sent'],
+    ['meeting_done', 'negotiation'],
+    ['profile_sent', 'proposal_sent'],
+    ['profile_sent', 'negotiation'],
+    ['proposal_sent', 'negotiation'],
     ['proposal_sent', 'won'],
-    ['proposal_sent', 'lost'],
+    ['negotiation', 'proposal_sent'],
+    ['negotiation', 'won'],
     ['lost', 'contacted'],
     // any open stage → lost
     ['new', 'lost'],
     ['contacted', 'lost'],
     ['engaged', 'lost'],
-    ['inspection_scheduled', 'lost'],
-    ['inspection_completed', 'lost'],
+    ['meeting_scheduled', 'lost'],
+    ['meeting_done', 'lost'],
+    ['profile_sent', 'lost'],
+    ['proposal_sent', 'lost'],
+    ['negotiation', 'lost'],
   ];
 
   it.each(allowed)('%s → %s is allowed', (from, to) => {
-    expect(() => assertStageTransition(lead(from), to)).not.toThrow();
+    expect(() => assertStageTransition(lead(from, SKIPPED), to, SKIPPED)).not.toThrow();
   });
 
   it('engaged → proposal is allowed only with a skip reason', () => {
@@ -73,14 +85,14 @@ describe('stage transitions', () => {
   STAGES.forEach((from) =>
     STAGES.forEach((to) => {
       if (from === to) return;
-      const ok = allowed.some(([a, b]) => a === from && b === to) || (from === 'engaged' && to === 'proposal_sent');
+      const ok = allowed.some(([a, b]) => a === from && b === to);
       if (!ok) illegal.push([from, to]);
     })
   );
 
   it('the map matches the documented rules exactly', () => {
     const fromMap = STAGES.flatMap((from) => ALLOWED_TRANSITIONS[from].map((to) => `${from}>${to}`)).sort();
-    const documented = [...allowed.map(([a, b]) => `${a}>${b}`), 'engaged>proposal_sent'].sort();
+    const documented = allowed.map(([a, b]) => `${a}>${b}`).sort();
     expect(fromMap).toEqual(documented);
   });
 
@@ -101,7 +113,7 @@ describe('legacy stage names', () => {
   });
 
   it('follow the same transition rules', () => {
-    expect(() => assertStageTransition(lead('qualified'), 'inspection_scheduled')).not.toThrow();
+    expect(() => assertStageTransition(lead('qualified'), 'meeting_scheduled')).not.toThrow();
     expect(() => assertStageTransition(lead('proposal_drafted'), 'won')).not.toThrow();
     expect(() => assertStageTransition(lead('qualified'), 'won')).toThrow(StageTransitionError);
     // proposal_drafted is the same stage as proposal_sent
@@ -116,7 +128,7 @@ describe('legacy stage names', () => {
 
 describe('proposal creation', () => {
   it('is allowed after inspection findings', () => {
-    expect(() => assertCanCreateProposal(lead('inspection_completed'))).not.toThrow();
+    expect(() => assertCanCreateProposal(lead('meeting_done'))).not.toThrow();
   });
 
   it('is allowed from engaged only when the inspection was skipped with a reason', () => {
@@ -124,11 +136,11 @@ describe('proposal creation', () => {
     expect(() => assertCanCreateProposal(lead('engaged', SKIPPED))).not.toThrow();
   });
 
-  it('blocks a duplicate proposal', () => {
-    expect(() => assertCanCreateProposal(lead('inspection_completed', { proposalId: 'P-2026-0001' }))).toThrow(/already has proposal/);
+  it.each(['profile_sent', 'proposal_sent', 'negotiation', 'lost'] as PipelineStage[])('is allowed at %s', (s) => {
+    expect(() => assertCanCreateProposal(lead(s))).not.toThrow();
   });
 
-  it.each(['new', 'contacted', 'inspection_scheduled', 'proposal_sent', 'won', 'lost'] as PipelineStage[])('is blocked at %s', (s) => {
+  it.each(['new', 'contacted', 'meeting_scheduled', 'won'] as PipelineStage[])('is blocked at %s', (s) => {
     expect(() => assertCanCreateProposal(lead(s))).toThrow(StageTransitionError);
   });
 });

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Building2, Eye, ImagePlus, Landmark, FileText, RotateCcw, Save } from 'lucide-react';
-import { companyProfile, DEFAULT_ACCENT_COLOR, DEFAULT_BRAND_COLOR, DEFAULT_INVOICE_NOTES, DEFAULT_PROPOSAL_TERMS, type CompanyProfile } from '../../services/companyProfile';
+import { Building2, Eye, ImagePlus, Landmark, FileText, Plus, RotateCcw, Save, Trash2, Stamp as StampIcon } from 'lucide-react';
+import { companyProfile, DEFAULT_ACCENT_COLOR, DEFAULT_BRAND_COLOR, DEFAULT_INVOICE_NOTES, DEFAULT_PROPOSAL_TERMS, type CompanyBranchInfo, type CompanyProfile } from '../../services/companyProfile';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { uploadFile, validateFile } from '../../lib/cloudinary';
 import { integrations } from '../../config/env';
@@ -23,8 +23,10 @@ export const CompanyProfileForm: React.FC = () => {
   const [form, setForm] = useState<CompanyProfile>(live);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [uploadingStamp, setUploadingStamp] = useState(false);
   const logoInput = useRef<HTMLInputElement>(null);
+  const stampInput = useRef<HTMLInputElement>(null);
 
   // Pick up changes saved elsewhere until the person starts editing
   useEffect(() => {
@@ -69,7 +71,7 @@ export const CompanyProfileForm: React.FC = () => {
     if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) return error('Unsupported logo', 'Use a PNG or JPG image (transparent PNG looks best).');
     const problem = validateFile(file);
     if (problem) return error('Logo not accepted', problem);
-    setUploading(true);
+    setUploadingLogo(true);
     try {
       const stored = await uploadFile(file, { scope: { ownerScope: 'company', category: 'other' }, subPath: 'branding', fileName: `logo_${Date.now()}.${file.type.split('/')[1]}` });
       set('logoUrl', stored.url);
@@ -77,9 +79,52 @@ export const CompanyProfileForm: React.FC = () => {
     } catch (err) {
       error('Logo upload failed', err instanceof Error ? err.message : String(err));
     } finally {
-      setUploading(false);
+      setUploadingLogo(false);
       if (logoInput.current) logoInput.current.value = '';
     }
+  };
+
+  const uploadStamp = async (file?: File) => {
+    if (!file) return;
+    if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) return error('Unsupported stamp image', 'Use a PNG or JPG image (transparent PNG recommended).');
+    const problem = validateFile(file);
+    if (problem) return error('Stamp not accepted', problem);
+    setUploadingStamp(true);
+    try {
+      const stored = await uploadFile(file, { scope: { ownerScope: 'company', category: 'other' }, subPath: 'branding', fileName: `stamp_${Date.now()}.${file.type.split('/')[1]}` });
+      set('stampUrl', stored.url);
+      pdfGenerator.clearImageCache();
+    } catch (err) {
+      error('Stamp upload failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploadingStamp(false);
+      if (stampInput.current) stampInput.current.value = '';
+    }
+  };
+
+  const addBranch = () => {
+    const branches = form.branches ?? [];
+    const newB: CompanyBranchInfo = {
+      id: `cb_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: '',
+      address: '',
+      city: '',
+      phone: '',
+    };
+    set('branches', [...branches, newB]);
+  };
+
+  const updateBranch = (index: number, patch: Partial<CompanyBranchInfo>) => {
+    const branches = [...(form.branches ?? [])];
+    if (branches[index]) {
+      branches[index] = { ...branches[index], ...patch };
+      set('branches', branches);
+    }
+  };
+
+  const removeBranch = (index: number) => {
+    const branches = (form.branches ?? []).filter((_, i) => i !== index);
+    set('branches', branches);
   };
 
   // Preview what is on screen, even before saving
@@ -93,34 +138,66 @@ export const CompanyProfileForm: React.FC = () => {
       <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1rem' }}>
           <Building2 size={20} color="var(--ikpm-navy-700)" />
-          <div className="card-title">Letterhead</div>
+          <div className="card-title">Letterhead & Head Office</div>
           <span className="cell-sub" style={{ marginLeft: 'auto' }}>Printed on proposals, invoices, receipts and reports</span>
         </div>
 
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>
-          <div className="logo-preview">
-            <img src={form.logoUrl || '/ik_logo.svg'} alt="Company logo" />
-          </div>
-          {isSuperAdmin && (
-            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <button className="btn btn-secondary" onClick={() => logoInput.current?.click()} disabled={uploading || !integrations.cloudinary}>
-                <ImagePlus size={15} /> {uploading ? 'Uploading…' : 'Upload logo'}
-              </button>
-              {form.logoUrl && (
-                <button className="btn btn-ghost" onClick={() => set('logoUrl', '')}>
-                  <RotateCcw size={15} /> Use built-in logo
-                </button>
+        <div style={{ display: 'flex', gap: '2rem', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
+          <div>
+            <label className="form-label">Company Logo</label>
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+              <div className="logo-preview">
+                <img src={form.logoUrl || '/ik_logo.svg'} alt="Company logo" />
+              </div>
+              {isSuperAdmin && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => logoInput.current?.click()} disabled={uploadingLogo || !integrations.cloudinary}>
+                    <ImagePlus size={14} /> {uploadingLogo ? 'Uploading…' : 'Upload logo'}
+                  </button>
+                  {form.logoUrl && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => set('logoUrl', '')}>
+                      <RotateCcw size={13} /> Use built-in
+                    </button>
+                  )}
+                  <input ref={logoInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => uploadLogo(e.target.files?.[0])} />
+                </div>
               )}
-              <input ref={logoInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => uploadLogo(e.target.files?.[0])} />
             </div>
-          )}
+          </div>
+
+          <div>
+            <label className="form-label">Official Company Stamp</label>
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+              <div className="logo-preview" style={{ width: 90, height: 90, border: '1px dashed var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F8FAFC' }}>
+                {form.stampUrl ? (
+                  <img src={form.stampUrl} alt="Company stamp" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                ) : (
+                  <StampIcon size={28} color="var(--text-muted)" />
+                )}
+              </div>
+              {isSuperAdmin && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => stampInput.current?.click()} disabled={uploadingStamp || !integrations.cloudinary}>
+                    <StampIcon size={14} /> {uploadingStamp ? 'Uploading…' : form.stampUrl ? 'Change stamp' : 'Upload stamp'}
+                  </button>
+                  {form.stampUrl && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => set('stampUrl', '')}>
+                      <Trash2 size={13} /> Remove stamp
+                    </button>
+                  )}
+                  <input ref={stampInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => uploadStamp(e.target.files?.[0])} />
+                </div>
+              )}
+            </div>
+            <div className="form-hint" style={{ marginTop: '0.35rem' }}>Replaces signature lines at the end of proposals, invoices and receipts.</div>
+          </div>
         </div>
 
         <div className="form-grid-2">
           <Field label="Legal company name *">{input('legalName', 'Insect Killer Pest Management')}</Field>
           <Field label="Short name">{input('shortName', 'IKPM')}</Field>
           <Field label="Tagline" span>{input('tagline', 'Integrated Pest Management & Fumigation Services')}</Field>
-          <Field label="Address">{input('address', 'Office 12, Main Boulevard')}</Field>
+          <Field label="Head office address">{input('address', 'Office 12, Main Boulevard')}</Field>
           <Field label="City / country">{input('city', 'Karachi, Pakistan')}</Field>
           <Field label="Phone / UAN">{input('phone', '021-111-000-000')}</Field>
           <Field label="Mobile / WhatsApp">{input('mobile', '0300 0000000')}</Field>
@@ -129,6 +206,41 @@ export const CompanyProfileForm: React.FC = () => {
           <Field label="Document colour" hint="Company name, headings, tables and totals">{color('brandColor', DEFAULT_BRAND_COLOR)}</Field>
           <Field label="Accent colour" hint="Section labels, card edges and highlights">{color('accentColor', DEFAULT_ACCENT_COLOR)}</Field>
         </div>
+      </div>
+
+      {/* Branch offices */}
+      <div className="card">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+          <div>
+            <div className="card-title">Branch offices</div>
+            <div className="cell-sub">Printed in the PDF letterhead footer and company profile document</div>
+          </div>
+          {isSuperAdmin && (
+            <button type="button" className="btn btn-sm btn-secondary" onClick={addBranch}>
+              <Plus size={14} /> Add branch
+            </button>
+          )}
+        </div>
+
+        {(form.branches ?? []).length === 0 ? (
+          <div className="cell-sub" style={{ padding: '0.75rem 0' }}>No branch offices configured. Only head office will be printed.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+            {(form.branches ?? []).map((b, idx) => (
+              <div key={b.id || idx} style={{ display: 'grid', gridTemplateColumns: '1.2fr 2fr 1fr 1fr auto', gap: '0.5rem', alignItems: 'center', padding: '0.5rem', background: 'var(--bg-surface-elevated, #f9fafb)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                <input className="form-input" placeholder="Branch name (e.g. Lahore Office)" value={b.name} onChange={(e) => updateBranch(idx, { name: e.target.value })} disabled={!isSuperAdmin} />
+                <input className="form-input" placeholder="Address" value={b.address} onChange={(e) => updateBranch(idx, { address: e.target.value })} disabled={!isSuperAdmin} />
+                <input className="form-input" placeholder="City" value={b.city || ''} onChange={(e) => updateBranch(idx, { city: e.target.value })} disabled={!isSuperAdmin} />
+                <input className="form-input" placeholder="Phone" value={b.phone || ''} onChange={(e) => updateBranch(idx, { phone: e.target.value })} disabled={!isSuperAdmin} />
+                {isSuperAdmin && (
+                  <button type="button" className="icon-btn" onClick={() => removeBranch(idx)} title="Remove branch">
+                    <Trash2 size={15} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -147,7 +259,7 @@ export const CompanyProfileForm: React.FC = () => {
       <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1rem' }}>
           <Landmark size={20} color="var(--ikpm-navy-700)" />
-          <div className="card-title">Bank details & signatory</div>
+          <div className="card-title">Bank details</div>
           <span className="cell-sub" style={{ marginLeft: 'auto' }}>Shown on invoices</span>
         </div>
         <div className="form-grid-2">
@@ -156,8 +268,6 @@ export const CompanyProfileForm: React.FC = () => {
           <Field label="Branch">{input('bankBranch', 'Shahrah-e-Faisal, Karachi')}</Field>
           <Field label="Account number">{input('bankAccountNo')}</Field>
           <Field label="IBAN" span>{input('bankIban', 'PK00 XXXX 0000 0000 0000 0000')}</Field>
-          <Field label="Authorised signatory name">{input('signatoryName', 'e.g. Salman Ahmed')}</Field>
-          <Field label="Signatory title">{input('signatoryTitle', 'Chief Executive')}</Field>
         </div>
       </div>
 

@@ -6,10 +6,20 @@ import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { outreachEnv } from '../config/env';
 
+/** A company branch printed in the letterhead / company profile document. */
+export interface CompanyBranchInfo {
+  id: string;
+  name: string;
+  address: string;
+  city?: string;
+  phone?: string;
+}
+
 export interface CompanyProfile {
   legalName: string;
   shortName: string;
   tagline: string;
+  /** Head-office address line (street, plot, building). */
   address: string;
   city: string;
   phone: string;
@@ -29,13 +39,22 @@ export interface CompanyProfile {
   bankBranch?: string;
   /** Custom logo (PNG/JPG URL). Empty = the portal's built-in logo. */
   logoUrl?: string;
+  /**
+   * Company stamp image (PNG URL). Shown at the end of proposals, invoices and receipts
+   * instead of a signature block. If absent the documents still generate; no stamp is printed.
+   */
+  stampUrl?: string;
   /** Document colours as hex (#0B1F3A): headings, tables and totals use the primary, accents use the second. */
   brandColor?: string;
   accentColor?: string;
+  /** @deprecated Use stampUrl instead. Kept so older Firestore documents still load without errors. */
   signatoryName?: string;
+  /** @deprecated Use stampUrl instead. */
   signatoryTitle?: string;
   proposalTerms?: string;
   invoiceNotes?: string;
+  /** Branch offices printed in the letterhead and the company-profile document. */
+  branches?: CompanyBranchInfo[];
   updatedAt?: string;
   updatedBy?: string;
 }
@@ -67,6 +86,7 @@ const defaults = (): CompanyProfile => ({
   strn: (import.meta.env.VITE_COMPANY_STRN as string | undefined) || '',
   proposalTerms: DEFAULT_PROPOSAL_TERMS,
   invoiceNotes: DEFAULT_INVOICE_NOTES,
+  // signatoryTitle kept for backwards-compat reads of old Firestore data
   signatoryTitle: 'Authorised Signatory',
 });
 

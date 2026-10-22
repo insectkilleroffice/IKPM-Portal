@@ -374,11 +374,11 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
               <input type="number" min={0} className="form-input" value={followUps} onChange={(e) => setFollowUps(Number(e.target.value))} />
             </div>
             <div className="form-group">
-              <label className="form-label">PCOs (min)</label>
+              <label className="form-label">PCOs per visit (as per client requirement) (min)</label>
               <input type="number" min={1} className="form-input" value={pcoMin} onChange={(e) => setPcoMin(Number(e.target.value))} />
             </div>
             <div className="form-group">
-              <label className="form-label">PCOs (max)</label>
+              <label className="form-label">PCOs per visit (as per client requirement) (max)</label>
               <input type="number" min={1} className="form-input" value={pcoMax} onChange={(e) => setPcoMax(Number(e.target.value))} />
             </div>
           </div>
@@ -417,11 +417,6 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
             <div className="form-group">
               <label className="form-label">Tenure (months)</label>
               <input type="number" min={1} className="form-input" value={tenureMonths} onChange={(e) => setTenureMonths(Number(e.target.value))} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Tenure starts</label>
-              <input type="date" className="form-input" value={tenureStart} onChange={(e) => setTenureStart(e.target.value)} />
-              <div className="cell-sub">Ends {formatDate(end)}</div>
             </div>
             <div className="form-group">
               <label className="form-label">Payment within (days)</label>

@@ -118,7 +118,7 @@ export const DEFAULT_TERMS: string[] = [
 ];
 
 export const DEFAULT_COVER_LETTER =
-  'Thank you for the opportunity to inspect your premises. {{companyName}} is pleased to submit this proposal for Integrated Pest Management (IPM) services at {{clientName}}. The proposal covers the scope of services, our terms, the monthly service plan and the charges of PKR {{monthlyRate}} per month for {{tenureMonths}} months from {{tenureStart}}.';
+  'Thank you for the opportunity to inspect your premises. {{companyName}} is pleased to submit this proposal for Integrated Pest Management (IPM) services at {{clientName}}. The proposal covers the scope of services, our terms, the monthly service plan and the charges for the agreed tenure.';
 
 // ---------------------------------------------------------------------------
 // Dates & money

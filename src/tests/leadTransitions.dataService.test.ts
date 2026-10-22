@@ -92,9 +92,9 @@ describe('dataService lead stage enforcement', () => {
     toEngaged(l);
     expect(stage(l)).toBe('engaged');
     dataService.scheduleLeadInspection(l.id, { date: '2026-02-01', timeSlot: 'morning', inspectorIds: [] }, 'tester@ikpm.pk');
-    expect(stage(l)).toBe('inspection_scheduled');
+    expect(stage(l)).toBe('meeting_scheduled');
     dataService.recordInspectionFindings(l.id, findings, 'tester@ikpm.pk');
-    expect(stage(l)).toBe('inspection_completed');
+    expect(stage(l)).toBe('meeting_done');
     dataService.saveProposal(proposalFor(l, 'P-T-1'), 'tester@ikpm.pk');
     expect(stage(l)).toBe('proposal_sent');
     dataService.saveProposal(proposalFor(l, 'P-T-1', 'accepted'), 'tester@ikpm.pk');
@@ -104,9 +104,9 @@ describe('dataService lead stage enforcement', () => {
     expect(changes.map((a) => `${a.beforeData?.stage}>${a.afterData?.stage}`)).toEqual([
       'new>contacted',
       'contacted>engaged',
-      'engaged>inspection_scheduled',
-      'inspection_scheduled>inspection_completed',
-      'inspection_completed>proposal_sent',
+      'engaged>meeting_scheduled',
+      'meeting_scheduled>meeting_done',
+      'meeting_done>proposal_sent',
       'proposal_sent>won',
     ]);
     expect(changes.every((a) => a.userEmail === 'tester@ikpm.pk')).toBe(true);
@@ -118,6 +118,13 @@ describe('dataService lead stage enforcement', () => {
     expect(stage(l)).toBe('engaged');
     const steps = dataService.getAuditLogs('lead', l.id).filter((a) => a.action === 'status_change').map((a) => a.afterData?.stage);
     expect(steps).toContain('contacted');
+  });
+
+  it('call ending "interested" moves to contacted (not engaged)', () => {
+    const l = newLead();
+    dataService.logLeadContact(l.id, { channel: 'call', outcome: 'interested' }, 'tester@ikpm.pk');
+    expect(stage(l)).toBe('contacted');
+    expect(dataService.getLeadById(l.id)?.contactOutcome).toBe('interested');
   });
 
   it('markLeadWon throws before the proposal stage and creates no customer', () => {
@@ -151,7 +158,7 @@ describe('dataService lead stage enforcement', () => {
     const l = newLead();
     expect(() => dataService.scheduleLeadInspection(l.id, { date: '2026-02-01', timeSlot: 'morning', inspectorIds: [] }, 'tester@ikpm.pk')).toThrow();
     toEngaged(l);
-    expect(() => dataService.recordInspectionFindings(l.id, findings, 'tester@ikpm.pk')).toThrow(/Schedule the inspection/);
+    expect(() => dataService.recordInspectionFindings(l.id, findings, 'tester@ikpm.pk')).toThrow(/Schedule the meeting \/ inspection/);
   });
 
   it('blocks a proposal before inspection findings', () => {
@@ -161,12 +168,15 @@ describe('dataService lead stage enforcement', () => {
     expect(dataService.getProposalById('P-T-2')).toBeUndefined();
   });
 
-  it('blocks a duplicate proposal for the same lead', () => {
+  it('tracks proposals and allows new proposals on lead', () => {
     const l = newLead();
     toInspected(l);
     dataService.saveProposal(proposalFor(l, 'P-T-3'), 'tester@ikpm.pk');
-    expect(() => dataService.saveProposal(proposalFor(l, 'P-T-4'), 'tester@ikpm.pk')).toThrow(/already has proposal/);
-    expect(dataService.getProposalById('P-T-4')).toBeUndefined();
+    dataService.saveProposal(proposalFor(l, 'P-T-4'), 'tester@ikpm.pk');
+    const updated = dataService.getLeadById(l.id);
+    expect(updated?.proposalId).toBe('P-T-4');
+    expect(updated?.proposalIds).toContain('P-T-3');
+    expect(updated?.proposalIds).toContain('P-T-4');
     // Editing the existing proposal is fine
     expect(() => dataService.saveProposal({ ...proposalFor(l, 'P-T-3'), scopeOfWork: 'edited' }, 'tester@ikpm.pk')).not.toThrow();
   });
@@ -184,12 +194,13 @@ describe('dataService lead stage enforcement', () => {
     expect(stage(l)).toBe('proposal_sent');
   });
 
-  it('declined proposal moves the lead to lost', () => {
+  it('declined proposal moves the lead to negotiation with price_bargaining', () => {
     const l = newLead();
     toInspected(l);
     dataService.saveProposal(proposalFor(l, 'P-T-6'), 'tester@ikpm.pk');
     dataService.saveProposal(proposalFor(l, 'P-T-6', 'declined'), 'tester@ikpm.pk');
-    expect(stage(l)).toBe('lost');
+    expect(stage(l)).toBe('negotiation');
+    expect(dataService.getLeadById(l.id)?.stuckAt).toBe('price_bargaining');
   });
 });
 

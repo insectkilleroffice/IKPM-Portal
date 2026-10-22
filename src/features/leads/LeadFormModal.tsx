@@ -4,11 +4,9 @@ import { Modal } from '../../components/common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { dataService } from '../../services/dataService';
-import { contactsOf, INDUSTRIES, INSPECTION_PHOTO_TYPES, SOURCES, syncLeadFields } from '../../lib/leadWorkflow';
+import { blankLeadBranch, contactsOf, INDUSTRIES, SOURCES, syncLeadFields } from '../../lib/leadWorkflow';
 import { normalizePakistaniPhone } from '../../lib/formatters';
-import type { Lead, LeadContact, LeadSource } from '../../types/crm';
-import type { SitePhoto } from '../../types/operations';
-import { PhotoCapture } from '../field/PhotoCapture';
+import type { Lead, LeadBranch, LeadContact, LeadSource } from '../../types/crm';
 
 interface Props {
   isOpen: boolean;
@@ -39,12 +37,13 @@ interface FormState {
   city: string;
   area: string;
   propertyAddress: string;
+  headquarterAddress: string;
   companyPhone: string;
   companyEmail: string;
   website: string;
   notes: string;
   contacts: LeadContact[];
-  sitePhotos: SitePhoto[];
+  branches: LeadBranch[];
 }
 
 const fromLead = (lead?: Lead | null): FormState => ({
@@ -55,12 +54,13 @@ const fromLead = (lead?: Lead | null): FormState => ({
   city: lead?.city || 'Karachi',
   area: lead?.area || '',
   propertyAddress: lead?.propertyAddress || '',
+  headquarterAddress: lead?.headquarterAddress || lead?.propertyAddress || '',
   companyPhone: lead?.companyPhone || '',
   companyEmail: lead?.companyEmail || '',
   website: lead?.website || '',
   notes: lead?.notes || '',
   contacts: lead ? contactsOf(lead).map((c) => ({ ...c })) : [blankContact(true)],
-  sitePhotos: lead?.sitePhotos ?? [],
+  branches: lead?.branches?.length ? lead.branches.map((b) => ({ ...b })) : [],
 });
 
 const validEmail = (e?: string) => !e || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
@@ -71,14 +71,11 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
   const { userProfile } = useAuth();
   const [form, setForm] = useState<FormState>(fromLead(lead));
   const [touched, setTouched] = useState(false);
-  // New leads get their id on save, so their photos upload under a draft folder
-  const [draftKey, setDraftKey] = useState(() => `new_${Date.now().toString(36)}`);
 
   useEffect(() => {
     if (isOpen) {
       setForm(fromLead(lead));
       setTouched(false);
-      setDraftKey(`new_${Date.now().toString(36)}`);
     }
   }, [isOpen, lead]);
 
@@ -93,14 +90,18 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
       if (rest.length && !rest.some((c) => c.isPrimary)) rest[0] = { ...rest[0], isPrimary: true };
       return { ...f, contacts: rest };
     });
+  const setBranch = (id: string, patch: Partial<LeadBranch>) =>
+    setForm((f) => ({ ...f, branches: f.branches.map((b) => (b.id === id ? { ...b, ...patch } : b)) }));
+  const removeBranch = (id: string) =>
+    setForm((f) => ({ ...f, branches: f.branches.filter((b) => b.id !== id) }));
 
   const primary = form.contacts.find((c) => c.isPrimary) ?? form.contacts[0];
   const problems: string[] = [];
-  if (!form.companyName.trim()) problems.push(isCompany ? 'Enter the company name.' : 'Enter the client’s name.');
+  if (!form.companyName.trim()) problems.push(isCompany ? 'Enter the company name.' : 'Enter the client\u2019s name.');
   if (!form.city.trim()) problems.push('Enter the city.');
   if (!primary?.name.trim()) problems.push('The primary contact needs a name.');
   if (!primary?.phone.trim()) problems.push('The primary contact needs a phone number.');
-  else if (!validPhone(primary.phone)) problems.push('The primary contact’s phone number looks incomplete.');
+  else if (!validPhone(primary.phone)) problems.push('The primary contact\u2019s phone number looks incomplete.');
   form.contacts.forEach((c, i) => {
     if (!c.isPrimary && (c.name || c.phone) && c.phone && !validPhone(c.phone)) problems.push(`Contact ${i + 1}: phone number looks incomplete.`);
     if (!validEmail(c.email)) problems.push(`Contact ${i + 1}: email is not valid.`);
@@ -117,6 +118,14 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
       email: c.email?.trim() || undefined,
       designation: c.designation?.trim() || undefined,
     }));
+    const branches = form.branches.filter((b) => b.name.trim() || b.address.trim()).map((b) => ({
+      ...b,
+      name: b.name.trim(),
+      address: b.address.trim(),
+      city: b.city?.trim() || undefined,
+      contactName: b.contactName?.trim() || undefined,
+      contactPhone: b.contactPhone?.trim() || undefined,
+    }));
     const fields = {
       customerType: form.customerType,
       companyName: isCompany ? form.companyName.trim() : undefined,
@@ -126,12 +135,13 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
       city: form.city.trim(),
       area: form.area.trim(),
       propertyAddress: form.propertyAddress.trim(),
+      headquarterAddress: form.headquarterAddress.trim() || undefined,
       companyPhone: form.companyPhone.trim() || undefined,
       companyEmail: form.companyEmail.trim() || undefined,
       website: form.website.trim() || undefined,
       notes: form.notes.trim() || undefined,
       contacts,
-      sitePhotos: form.sitePhotos,
+      branches: branches.length ? branches : undefined,
     };
 
     const dups = dataService.findLeadDuplicates(primary.phone, primary.email, lead?.id);
@@ -153,7 +163,7 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
       isOpen={isOpen}
       onClose={onClose}
       title={lead ? `Edit ${lead.title}` : 'New lead'}
-      subtitle="Company details and who to contact. Pricing comes later, after the inspection."
+      subtitle="Company details and who to contact. Pricing comes later, after the meeting / inspection."
       maxWidth="820px"
       footer={
         <>
@@ -195,6 +205,12 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
           <label className="form-label">Address</label>
           <input className="form-input" value={form.propertyAddress} onChange={(e) => set('propertyAddress', e.target.value)} placeholder="Plot / building, street" />
         </div>
+        {isCompany && (
+          <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+            <label className="form-label">Head office address</label>
+            <input className="form-input" value={form.headquarterAddress} onChange={(e) => set('headquarterAddress', e.target.value)} placeholder="Full head-office address (if different from above)" />
+          </div>
+        )}
         {isCompany && (
           <>
             <div className="form-group">
@@ -263,23 +279,53 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
       </div>
       <datalist id="lead-designations">{DESIGNATIONS.map((d) => <option key={d} value={d} />)}</datalist>
 
+      {isCompany && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '1rem 0 0.6rem' }}>
+            <div className="section-title" style={{ margin: 0 }}>Branches</div>
+            <button type="button" className="btn btn-sm btn-secondary" onClick={() => set('branches', [...form.branches, blankLeadBranch()])}>
+              <Plus size={14} /> Add branch
+            </button>
+          </div>
+          <div className="form-hint" style={{ marginTop: '-0.35rem', marginBottom: '0.75rem' }}>
+            Optional. Add branches or sites that need service. More can be added after the meeting.
+          </div>
+          {form.branches.map((br, i) => (
+            <div key={br.id} className="contact-card" style={{ marginBottom: '0.5rem' }}>
+              <div className="contact-card-head">
+                <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Branch {i + 1}</span>
+                <button type="button" className="icon-btn danger" onClick={() => removeBranch(br.id)} title="Remove branch"><Trash2 size={15} /></button>
+              </div>
+              <div className="form-grid-2">
+                <div className="form-group">
+                  <label className="form-label">Branch name</label>
+                  <input className="form-input" value={br.name} onChange={(e) => setBranch(br.id, { name: e.target.value })} placeholder="e.g. Johar Town branch" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">City</label>
+                  <input className="form-input" list="lead-cities" value={br.city || ''} onChange={(e) => setBranch(br.id, { city: e.target.value })} />
+                </div>
+                <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                  <label className="form-label">Address</label>
+                  <input className="form-input" value={br.address} onChange={(e) => setBranch(br.id, { address: e.target.value })} placeholder="Full branch address" />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Contact person</label>
+                  <input className="form-input" value={br.contactName || ''} onChange={(e) => setBranch(br.id, { contactName: e.target.value })} placeholder="Branch manager name" />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Contact phone</label>
+                  <input className="form-input" value={br.contactPhone || ''} onChange={(e) => setBranch(br.id, { contactPhone: e.target.value })} placeholder="03XX XXXXXXX" inputMode="tel" />
+                </div>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
       <div className="form-group" style={{ marginTop: '1rem', marginBottom: 0 }}>
         <label className="form-label">Notes</label>
         <textarea className="form-textarea" rows={2} value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="What they asked about, pests mentioned, best time to call…" />
-      </div>
-
-      <div className="form-group" style={{ marginTop: '1rem', marginBottom: 0 }}>
-        <label className="form-label">Site photos (optional)</label>
-        <PhotoCapture<SitePhoto>
-          scope={{ ownerScope: 'client', clientId: lead?.existingCustomerId || lead?.id || draftKey, category: 'inspection_report' }}
-          subPath={`${lead?.id ?? draftKey}/site`}
-          idPrefix={lead?.id ?? draftKey}
-          categories={INSPECTION_PHOTO_TYPES}
-          photos={form.sitePhotos}
-          onChange={(next) => set('sitePhotos', next)}
-          onNotify={(kind, title, message) => (kind === 'error' ? error(title, message) : kind === 'warning' ? warning(title, message) : success(title, message))}
-          emptyText="Photos of the property or the problem the client showed you."
-        />
       </div>
 
       {touched && problems.length > 0 && <ul className="form-problems">{problems.map((p) => <li key={p}>{p}</li>)}</ul>}
