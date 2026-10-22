@@ -1084,6 +1084,9 @@ export const SiteInspectionFindingsModal: React.FC<{ lead: Lead | null; onClose:
                   subPath={`${lead.id}/site-inspection`}
                   photo={r.photo}
                   onChange={(p) => setRow(r.id, { photo: p ?? undefined })}
+                  fileNamePrefix={`risk_${r.id}`}
+                  caption="Risk assessment photo"
+                  offlineCount={rows.filter((x) => x.photo?.imageUrl?.startsWith('data:')).length}
                   onNotify={notify}
                 />
               </div>
