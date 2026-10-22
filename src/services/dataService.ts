@@ -34,7 +34,7 @@ import type {
   CompanyBranch,
   SiteAddress,
 } from '../types/customer';
-import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadActivity, LeadContact, LeadStage } from '../types/crm';
+import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadActivity, LeadBranch, LeadContact, LeadStage } from '../types/crm';
 import type { Proposal, ProposalRevision } from '../types/proposal';
 import type { Contract, PhotoEvidence, ServiceJob } from '../types/operations';
 import type { Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
@@ -1282,12 +1282,15 @@ class DataService {
             this.saveSite({
               id: `SITE-${Date.now()}-${idx}`,
               customerId,
+              customerType: 'company',
+              propertyType: 'commercial_office',
               siteName: b.name || `Site ${idx + 1}`,
-              address: b.address || '',
+              addressLine1: b.address || '',
               city: b.city || lead.city || 'Karachi',
               area: b.address || '',
-              primaryContactPerson: b.contactName || lead.contactName || '',
-              primaryContactPhone: b.contactPhone || lead.phone || '',
+              province: 'Sindh',
+              contactPersonName: b.contactName || lead.contactName || '',
+              contactPersonPhone: b.contactPhone || lead.phone || '',
               isActive: true,
               createdAt: now(),
             });

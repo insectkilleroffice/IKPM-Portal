@@ -165,7 +165,7 @@ describe('availableActions / nextStep', () => {
 
   it('next step is always an enabled action of the stage', () => {
     const samples = [
-      ...STAGES.map((s) => lead(s, { existingCustomerId: 'CO-1', proposalId: s === 'proposal_sent' ? 'P-1' : undefined, inspection: s === 'inspection_scheduled' ? ({ status: 'scheduled' } as Lead['inspection']) : undefined })),
+      ...STAGES.map((s) => lead(s, { existingCustomerId: 'CO-1', proposalId: s === 'proposal_sent' ? 'P-1' : undefined, inspection: (s as LeadStage) === 'meeting_scheduled' ? ({ status: 'scheduled' } as Lead['inspection']) : undefined })),
       lead('inspection_completed', { proposalId: 'P-1' }),
     ];
     samples.forEach((l) => {

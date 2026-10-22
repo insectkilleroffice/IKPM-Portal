@@ -377,9 +377,9 @@ export const LeadsListPage: React.FC = () => {
                       )}
                     </td>
                     <td className="cell-sub">
-                      {st === 'inspection_scheduled' && l.inspection
+                      {(l.stage === 'inspection_scheduled' || st === 'meeting_scheduled') && l.inspection
                         ? <>{formatDate(l.inspection.scheduledDate)} · {l.inspection.teamName || l.inspection.inspectorName}</>
-                        : st === 'inspection_completed' && l.inspection
+                        : (l.stage === 'inspection_completed' || st === 'meeting_done') && l.inspection
                           ? <>{l.inspection.infestationSeverity} · {l.inspection.pestTypesFound.map((x) => PEST_OPTIONS.find((o) => o.value === x)?.label || x).join(', ')}</>
                           : st === 'proposal_sent'
                             ? <>Proposal {l.proposalId || ''}</>
@@ -489,8 +489,7 @@ export const LeadsListPage: React.FC = () => {
               if (results.some((r) => r.ok)) {
                 store.sendLeadDocuments(
                   sendLead.id,
-                  results.some((r) => r.channel === 'whatsapp') ? 'whatsapp' : 'email',
-                  'Sent company documents',
+                  results.some((r) => r.channel === 'whatsapp') ? 'Sent via WhatsApp' : 'Sent company documents',
                   userProfile?.email
                 );
               }
