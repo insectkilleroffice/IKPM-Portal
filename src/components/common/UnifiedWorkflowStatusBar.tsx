@@ -146,7 +146,7 @@ export const UnifiedWorkflowStatusBar: React.FC<UnifiedWorkflowStatusBarProps> =
           }}
         />
 
-        {stages.map((st, idx) => {
+        {stages.map((st, _idx) => {
           const isDone = st.status === 'completed';
           const isCurrent = st.id === currentStageId;
           const isSelected = selectedStage?.id === st.id;

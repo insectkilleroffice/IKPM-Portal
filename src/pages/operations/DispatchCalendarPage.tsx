@@ -2,16 +2,10 @@ import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   CalendarDays,
-  Truck,
   Plus,
-  AlertTriangle,
-  ChevronLeft,
-  ChevronRight,
   MapPin,
-  Clock,
   User,
   Download,
-  FileText,
   Layers,
   Calendar,
   Store,
@@ -206,7 +200,7 @@ export const DispatchCalendarPage: React.FC = () => {
                   onChange={(e) => setSelectedTechnician(e.target.value)}
                 >
                   <option value="all">All Team Leaders</option>
-                  {dataService.getStaff(['team_leader']).map((t) => (
+                  {dataService.getStaff(['team_leader', 'technician']).map((t) => (
                     <option key={t.uid} value={t.displayName}>
                       {t.displayName}
                     </option>

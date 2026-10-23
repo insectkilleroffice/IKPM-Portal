@@ -127,7 +127,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
   const [monthlyRate, setMonthlyRate] = useState<number>(0);
   const [taxMode, setTaxMode] = useState<'exclusive' | 'inclusive'>('exclusive');
   const [tenureMonths, setTenureMonths] = useState(12);
-  const [tenureStart, setTenureStart] = useState(defaultTenureStart());
+  const [tenureStart, _setTenureStart] = useState(defaultTenureStart());
   const [paymentTermsDays, setPaymentTermsDays] = useState(15);
   const [discountPercent, setDiscountPercent] = useState(0);
   const [exclusions, setExclusions] = useState(DEFAULT_EXCLUSIONS);
@@ -300,6 +300,20 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
       }
     >
       {/* Client */}
+      {(() => {
+        const dupes = dataService.getProposals().filter(
+          (p) => p.customerId === customerId &&
+            (p.branchId || undefined) === (branchId || undefined) &&
+            !['declined', 'expired', 'rejected'].includes(p.status)
+        );
+        return dupes.length > 0 ? (
+          <div className="error-hint" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <span style={{ flex: 1 }}>
+              {dupes.length} active proposal{dupes.length > 1 ? 's' : ''} already exist{dupes.length === 1 ? 's' : ''} for this client{branchId ? ' / branch' : ''} ({dupes.map((p) => p.id).join(', ')}). Creating another may cause duplication.
+            </span>
+          </div>
+        ) : null;
+      })()}
       <div className="form-grid-3">
         <div className="form-group">
           <label className="form-label">Client type</label>
@@ -319,13 +333,18 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
             ))}
           </select>
         </div>
-        {branches.length > 0 && (
+        {customerType === 'company' && (
           <div className="form-group">
             <label className="form-label">Branch</label>
             <select className="form-select" value={branchId} onChange={(e) => changeCustomer(customerType, customerId, e.target.value)}>
-              <option value="">Head office / all</option>
+              <option value="">Head office / all branches</option>
               {branches.map((b) => <option key={b.id} value={b.id}>{b.branchName}</option>)}
             </select>
+            {customerId && (
+              <div style={{ fontSize: '0.72rem', marginTop: '0.2rem' }}>
+                <a href={`/customers/company/${customerId}?tab=branches`} style={{ color: 'var(--ikpm-emerald-600)' }}>＋ Add new branch</a>
+              </div>
+            )}
           </div>
         )}
       </div>

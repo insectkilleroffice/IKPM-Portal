@@ -112,7 +112,7 @@ export const TeamAccessPage: React.FC = () => {
   store.getRoles(); // keep role list reactive
   const roles = getRoleDefinitions();
   // Only the super admin can hand out the Super Admin role
-  const assignableRoles = roles.filter((r) => isSuperAdmin || r.id !== 'super_admin');
+  const assignableRoles = roles.filter((r) => isSuperAdmin || (r.id !== 'super_admin' && !r.isHidden));
 
   const visibleUsers = useMemo(() => {
     const q = query.toLowerCase().trim();

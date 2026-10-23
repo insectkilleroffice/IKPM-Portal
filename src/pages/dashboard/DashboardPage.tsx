@@ -6,34 +6,21 @@ import {
   FileSignature,
   Truck,
   Receipt,
-  FileSpreadsheet,
-  AlertCircle,
-  ArrowUpRight,
-  Clock,
-  CheckCircle2,
-  AlertTriangle,
-  Eye,
-  ArrowRight,
-  Phone,
-  Send,
   ShieldCheck,
-  Calendar,
-  DollarSign,
   Briefcase,
-  Layers,
+  MessageSquareWarning,
 } from 'lucide-react';
+import { isComplaintOverdue } from '../../types/complaints';
 import { dataService } from '../../services/dataService';
 import { formatPKR, formatDate } from '../../lib/formatters';
-import { StatusBadge } from '../../components/common/StatusBadge';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
-import { getLeadNextAction, getJobNextAction } from '../../lib/workflow';
 
-type RoleQueueTab = 'sales' | 'operations' | 'finance' | 'team_leader';
+type RoleQueueTab = 'sales' | 'operations' | 'finance' | 'team_leader' | 'management' | 'admin';
 
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
-  const { userProfile, effectiveRole, isSuperAdmin, setSimulatedRole } = useAuth();
+  const { userProfile, effectiveRole } = useAuth();
   useDataStore();
 
   // Determine default queue tab based on active role
@@ -41,6 +28,8 @@ export const DashboardPage: React.FC = () => {
     if (effectiveRole === 'finance') return 'finance';
     if (effectiveRole === 'sales') return 'sales';
     if (effectiveRole === 'team_leader') return 'team_leader';
+    if (effectiveRole === 'management') return 'management';
+    if (effectiveRole === 'admin') return 'admin';
     return 'operations';
   };
 
@@ -54,7 +43,8 @@ export const DashboardPage: React.FC = () => {
   const contracts = dataService.getContracts();
   const jobs = dataService.getJobs();
   const invoices = dataService.getInvoices();
-  const auditLogs = dataService.getAuditLogs().slice(0, 8);
+  const _auditLogs = dataService.getAuditLogs().slice(0, 8);
+  const complaints = dataService.getComplaints();
 
   const totalActiveCustomers =
     companies.filter((c) => c.status === 'active').length +
@@ -64,11 +54,11 @@ export const DashboardPage: React.FC = () => {
   const activeContractsCount = contracts.filter((c) => c.status === 'active').length;
   const scheduledJobsCount = jobs.filter((j) => ['scheduled', 'in_progress'].includes(j.status)).length;
 
-  const totalOutstandingBalance = invoices
+  const _totalOutstandingBalance = invoices
     .filter((i) => i.status !== 'void_reversed')
     .reduce((acc, curr) => acc + (curr.balanceDue || 0), 0);
 
-  const pendingApprovals = proposals.filter((p) => p.status === 'pending_approval');
+  const _pendingApprovals = proposals.filter((p) => p.status === 'pending_approval');
 
   // Dates for queue evaluation
   const todayStr = new Date().toISOString().split('T')[0];
@@ -201,9 +191,11 @@ export const DashboardPage: React.FC = () => {
           <div style={{ display: 'flex', backgroundColor: 'var(--bg-surface-alt)', padding: '3px', borderRadius: 'var(--radius-md)', gap: '2px' }}>
             {[
               { id: 'operations', label: 'Operations Queue' },
-              { id: 'sales', label: 'Sales Queue' },
-              { id: 'finance', label: 'Finance Queue' },
-              { id: 'team_leader', label: 'Team Leader Queue' },
+              { id: 'sales', label: 'CRO Queue' },
+              { id: 'finance', label: 'Accounts Queue' },
+              { id: 'team_leader', label: 'Ops Manager Queue' },
+              { id: 'management', label: 'Manager Queue' },
+              { id: 'admin', label: 'Admin Queue' },
             ].map((t) => (
               <button
                 key={t.id}
@@ -681,6 +673,127 @@ export const DashboardPage: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* 5. MANAGER QUEUE */}
+        {activeQueueTab === 'management' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Proposals Needing Approval ({salesProposalsNeedApproval.length})
+                </strong>
+                <Link to="/proposals" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Proposals</Link>
+              </div>
+              {salesProposalsNeedApproval.length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No proposals pending your approval.</p>
+              ) : (
+                salesProposalsNeedApproval.slice(0, 4).map((p) => (
+                  <div key={p.id} onClick={() => navigate(`/proposals?proposal=${p.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.4rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{p.customerName}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{p.id} · {formatPKR(p.totalAmount)}</div>
+                  </div>
+                ))
+              )}
+            </div>
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Open Complaints ({complaints.filter((c) => c.status !== 'closed').length})
+                </strong>
+                <Link to="/complaints" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Complaints</Link>
+              </div>
+              {complaints.filter((c) => c.status !== 'closed').length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No open complaints.</p>
+              ) : (
+                complaints.filter((c) => c.status !== 'closed').slice(0, 4).map((c) => (
+                  <div key={c.id} onClick={() => navigate(`/complaints?id=${c.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: `1px solid ${isComplaintOverdue(c) ? 'var(--ikpm-amber-400)' : 'var(--border-subtle)'}`, marginBottom: '0.4rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{c.customerName}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{c.category} · {c.status.replace(/_/g, ' ')}</div>
+                    {isComplaintOverdue(c) && <div style={{ fontSize: '0.7rem', color: '#D97706' }}>⚠ Overdue</div>}
+                  </div>
+                ))
+              )}
+            </div>
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Overdue Invoices ({financeOverdueInvoices.length})
+                </strong>
+                <Link to="/finance/invoices" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Invoices</Link>
+              </div>
+              {financeOverdueInvoices.length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No overdue invoices.</p>
+              ) : (
+                financeOverdueInvoices.slice(0, 4).map((i) => (
+                  <div key={i.id} onClick={() => navigate(`/finance/invoices?invoice=${i.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid #FCA5A5', marginBottom: '0.4rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{i.customerName || i.id}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{formatPKR(i.balanceDue)} overdue · due {formatDate(i.dueDate)}</div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 6. ADMIN QUEUE */}
+        {activeQueueTab === 'admin' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Open Leads ({leads.filter((l) => !['won', 'lost'].includes(l.stage)).length})
+                </strong>
+                <Link to="/crm" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>CRM</Link>
+              </div>
+              {leads.filter((l) => !['won', 'lost'].includes(l.stage)).length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No open leads.</p>
+              ) : (
+                leads.filter((l) => !['won', 'lost'].includes(l.stage)).slice(0, 4).map((l) => (
+                  <div key={l.id} onClick={() => navigate(`/crm?lead=${l.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.4rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{l.title}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{l.contactName} · {l.stage.replace(/_/g, ' ')}</div>
+                  </div>
+                ))
+              )}
+            </div>
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Jobs Today / Tomorrow ({opsJobsTodayAndTomorrow.length})
+                </strong>
+                <Link to="/operations/jobs" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Jobs</Link>
+              </div>
+              {opsJobsTodayAndTomorrow.length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No jobs scheduled today or tomorrow.</p>
+              ) : (
+                opsJobsTodayAndTomorrow.slice(0, 4).map((j) => (
+                  <div key={j.id} onClick={() => navigate(`/operations/jobs?job=${j.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.4rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{j.customerName}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{j.siteName} · {j.scheduledDate}</div>
+                  </div>
+                ))
+              )}
+            </div>
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Open Complaints ({complaints.filter((c) => c.status !== 'closed').length})
+                </strong>
+                <Link to="/complaints" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Complaints</Link>
+              </div>
+              {complaints.filter((c) => c.status !== 'closed').length === 0 ? (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No open complaints.</p>
+              ) : (
+                complaints.filter((c) => c.status !== 'closed').slice(0, 4).map((c) => (
+                  <div key={c.id} onClick={() => navigate(`/complaints?id=${c.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: `1px solid ${isComplaintOverdue(c) ? 'var(--ikpm-amber-400)' : 'var(--border-subtle)'}`, marginBottom: '0.4rem' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{c.customerName}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{c.category} · {c.status.replace(/_/g, ' ')}</div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Real KPI Metrics Cards */}
@@ -737,6 +850,41 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Open Complaints Widget — shown for sales, management, operations and super admin */}
+      {['sales', 'management', 'operations', 'super_admin'].includes(effectiveRole ?? '') && (() => {
+        const openComplaints = complaints.filter((c) => !['closed'].includes(c.status));
+        const overdueComplaints = complaints.filter(isComplaintOverdue);
+        if (openComplaints.length === 0 && overdueComplaints.length === 0) return null;
+        return (
+          <div className="card" style={{ padding: '1rem 1.25rem', marginTop: '1.25rem', borderLeft: `4px solid ${overdueComplaints.length > 0 ? '#DC2626' : 'var(--ikpm-amber-500)'}` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <MessageSquareWarning size={18} color={overdueComplaints.length > 0 ? '#DC2626' : 'var(--ikpm-amber-600)'} />
+                <strong style={{ fontSize: '0.925rem' }}>Open Complaints</strong>
+                {overdueComplaints.length > 0 && <span className="badge-status badge-rose">{overdueComplaints.length} overdue</span>}
+              </div>
+              <button className="btn btn-sm btn-secondary" onClick={() => navigate('/complaints')}>View all</button>
+            </div>
+            <div style={{ display: 'flex', gap: '1.5rem' }}>
+              <div><div style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--ikpm-amber-600)' }}>{openComplaints.length}</div><div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Open / Active</div></div>
+              {overdueComplaints.length > 0 && <div><div style={{ fontSize: '1.75rem', fontWeight: 800, color: '#DC2626' }}>{overdueComplaints.length}</div><div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Overdue</div></div>}
+            </div>
+            {openComplaints.slice(0, 3).map((c) => (
+              <div key={c.id} onClick={() => navigate('/complaints')} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.45rem 0', borderBottom: '1px solid var(--border-subtle)', cursor: 'pointer' }}>
+                <div>
+                  <span style={{ fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--text-muted)' }}>{c.id}</span>
+                  {' '}<span style={{ fontSize: '0.82rem' }}>{c.customerName}</span>
+                  {' '}<span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>— {c.subject}</span>
+                </div>
+                <span className={`badge-status ${isComplaintOverdue(c) ? 'badge-rose' : 'badge-amber'}`} style={{ fontSize: '0.65rem' }}>
+                  {isComplaintOverdue(c) ? 'Overdue' : c.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
     </div>
   );
 };

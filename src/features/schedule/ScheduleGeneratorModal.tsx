@@ -1,14 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import {
   Calendar,
-  Clock,
   Download,
   AlertTriangle,
   CheckCircle,
   Save,
-  Users,
   Store,
-  Layers,
 } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { useDataStore } from '../../hooks/useDataStore';
@@ -45,9 +42,9 @@ const DEFAULT_HOLIDAYS = [
 export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) => {
   const store = useDataStore();
   const { userProfile } = useAuth();
-  const { success, warning, error } = useNotification();
+  const { success, error } = useNotification();
 
-  const technicians = store.getStaff(['team_leader']);
+  const technicians = store.getStaff(['team_leader', 'technician']);
   const existingJobs = store.getJobs();
 
   // Load branches for the contract
@@ -93,6 +90,8 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
 
   const rates = useMemo(() => visitsPerMonth(contract), [contract]);
 
+  const isOneOff = contract.frequency === 'one_off' || contract.contractType === 'one_time';
+
   // Generate initial planned visits
   const initialVisits = useMemo(() => {
     const holidays = holidaysText
@@ -111,6 +110,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
       skipSundays,
       holidays,
       followUpGapDays,
+      maxVisits: isOneOff ? 1 : undefined,
     });
 
     return planned.map((v) => ({
@@ -140,6 +140,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
       skipSundays,
       holidays,
       followUpGapDays,
+      maxVisits: isOneOff ? 1 : undefined,
     });
 
     setVisits(

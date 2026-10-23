@@ -7,7 +7,7 @@ import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { EmptyState } from '../../components/common/EmptyState';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
-import { InspectionFindingsModal, PEST_OPTIONS } from '../../features/leads/LeadActionModals';
+import { SiteInspectionFindingsModal, PEST_OPTIONS } from '../../features/leads/LeadActionModals';
 import { canAccessModule, canEditModule } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { primaryContact } from '../../lib/leadWorkflow';
@@ -18,35 +18,36 @@ type Tab = 'upcoming' | 'today' | 'completed';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-/** Site inspections assigned from the Leads pipeline. Inspectors only see the visits assigned to them. */
+/** Separate technical pest site inspections scheduled from the Leads pipeline. */
 export const InspectionsPage: React.FC = () => {
-  const store = useDataStore();
   const { userProfile, effectiveRole } = useAuth();
   const [tab, setTab] = useState<Tab>('upcoming');
   const [mine, setMine] = useState(!canAccessModule(effectiveRole, 'crm'));
   const [query, setQuery] = useState('');
   const [findingsLead, setFindingsLead] = useState<Lead | null>(null);
   const pdfAction = usePdfAction();
-  const canRecord = canEditModule(effectiveRole, 'inspections') || canEditModule(effectiveRole, 'crm');
+  const canRecord = canEditModule(effectiveRole, 'inspections') || canEditModule(effectiveRole, 'pco');
   const canOpenLeads = canAccessModule(effectiveRole, 'crm');
+  const store = useDataStore();
 
-  const all = store.getLeads().filter((l) => l.inspection && l.inspection.status !== 'cancelled');
+  const all = store.getLeads().filter((l) => l.siteInspection && l.siteInspection.status !== 'cancelled');
   const filtered = useMemo(() => {
     const q = query.toLowerCase().trim();
+    const uid = userProfile?.uid || '';
     return all
-      .filter((l) => !mine || (l.inspection?.inspectorIds ?? l.inspectorIds ?? []).includes(userProfile?.uid || ''))
-      .filter((l) => !q || [l.title, l.city, l.area, l.inspection?.teamName, l.inspection?.inspectorName].filter(Boolean).join(' ').toLowerCase().includes(q));
+      .filter((l) => !mine || (l.siteInspection!.assignedTechIds ?? []).includes(uid) || l.siteInspection!.teamLeaderId === uid)
+      .filter((l) => !q || [l.title, l.city, l.area, l.siteInspection!.branchName, l.siteInspection!.teamLeaderName, l.siteInspection!.assignedTechNames?.join(' ')].filter(Boolean).join(' ').toLowerCase().includes(q));
   }, [all, mine, query, userProfile?.uid]);
 
   const byTab = {
-    today: filtered.filter((l) => l.inspection!.status === 'scheduled' && l.inspection!.scheduledDate <= today()),
-    upcoming: filtered.filter((l) => l.inspection!.status === 'scheduled'),
-    completed: filtered.filter((l) => l.inspection!.status === 'completed'),
+    today: filtered.filter((l) => l.siteInspection!.status === 'scheduled' && l.siteInspection!.scheduledDate <= today()),
+    upcoming: filtered.filter((l) => l.siteInspection!.status === 'scheduled'),
+    completed: filtered.filter((l) => l.siteInspection!.status === 'completed'),
   };
   const rows = [...byTab[tab]].sort((a, b) =>
     tab === 'completed'
-      ? (b.inspection!.completedDate || '').localeCompare(a.inspection!.completedDate || '')
-      : a.inspection!.scheduledDate.localeCompare(b.inspection!.scheduledDate)
+      ? (b.siteInspection!.completedDate || '').localeCompare(a.siteInspection!.completedDate || '')
+      : a.siteInspection!.scheduledDate.localeCompare(b.siteInspection!.scheduledDate)
   );
 
   return (
@@ -55,7 +56,7 @@ export const InspectionsPage: React.FC = () => {
       <div className="page-header">
         <div className="page-title-wrap">
           <h1>Site inspections</h1>
-          <p className="page-subtitle">Visits scheduled from the Leads pipeline. After the visit, record the findings here so sales can prepare the proposal.</p>
+          <p className="page-subtitle">Technical pest inspections scheduled from the Leads pipeline. Record findings so sales can prepare the proposal.</p>
         </div>
       </div>
 
@@ -74,7 +75,7 @@ export const InspectionsPage: React.FC = () => {
       <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>
         <div className="drive-search" style={{ flex: '1 1 260px', maxWidth: 420 }}>
           <Search size={16} color="var(--text-muted)" />
-          <input placeholder="Search company, city, team…" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input placeholder="Search company, city, branch…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
         {canOpenLeads && (
           <button type="button" className={`chip ${mine ? 'chip-on' : ''}`} onClick={() => setMine((v) => !v)}>Assigned to me</button>
@@ -84,8 +85,8 @@ export const InspectionsPage: React.FC = () => {
       {rows.length === 0 ? (
         <EmptyState
           icon={ClipboardCheck}
-          title={tab === 'completed' ? 'No completed inspections' : 'No inspections scheduled'}
-          description={canOpenLeads ? 'Schedule inspections for engaged leads from the Leads pipeline.' : 'Inspections assigned to you will appear here.'}
+          title={tab === 'completed' ? 'No completed inspections' : 'No site inspections scheduled'}
+          description={canOpenLeads ? 'Schedule site inspections from the Leads pipeline after the client meeting.' : 'Site inspections assigned to you will appear here.'}
         />
       ) : (
         <div className="table-container">
@@ -93,29 +94,31 @@ export const InspectionsPage: React.FC = () => {
             <thead>
               <tr>
                 <th>Date</th>
-                <th>Site</th>
-                <th>Contact on site</th>
-                <th>Team / inspectors</th>
-                <th>{tab === 'completed' ? 'Findings' : 'Instructions'}</th>
+                <th>Company / site</th>
+                <th>Contact</th>
+                <th>Team</th>
+                <th>{tab === 'completed' ? 'Findings' : 'Notes'}</th>
                 <th style={{ width: 170 }} />
               </tr>
             </thead>
             <tbody>
               {rows.map((l) => {
-                const i = l.inspection!;
+                const si = l.siteInspection!;
                 const p = primaryContact(l);
-                const overdue = i.status === 'scheduled' && i.scheduledDate < today();
+                const overdue = si.status === 'scheduled' && si.scheduledDate < today();
                 return (
                   <tr key={l.id}>
                     <td>
-                      <div className="cell-title">{formatDate(i.status === 'completed' ? i.completedDate : i.scheduledDate)}</div>
-                      <div className="cell-sub" style={{ textTransform: 'capitalize' }}>
-                        {overdue ? <span className="badge-status badge-rose">Overdue</span> : i.timeSlot || ''}
+                      <div className="cell-title">{formatDate(si.status === 'completed' ? si.completedDate : si.scheduledDate)}</div>
+                      <div className="cell-sub">
+                        {overdue ? <span className="badge-status badge-rose">Overdue</span> : null}
                       </div>
                     </td>
                     <td>
                       <div className="cell-title">{canOpenLeads ? <Link to={`/crm?lead=${l.id}`}>{l.title}</Link> : l.title}</div>
-                      <div className="cell-sub"><MapPin size={12} style={{ verticalAlign: '-1px' }} /> {[l.propertyAddress, l.area, l.city].filter(Boolean).join(', ')}</div>
+                      {si.branchName
+                        ? <div className="cell-sub"><MapPin size={12} style={{ verticalAlign: '-1px' }} /> {si.branchName}{si.branchAddress ? ` · ${si.branchAddress}` : ''}</div>
+                        : <div className="cell-sub"><MapPin size={12} style={{ verticalAlign: '-1px' }} /> {[l.propertyAddress, l.area, l.city].filter(Boolean).join(', ')}</div>}
                     </td>
                     <td>
                       {p ? (
@@ -130,24 +133,24 @@ export const InspectionsPage: React.FC = () => {
                       ) : '—'}
                     </td>
                     <td className="cell-sub">
-                      {i.teamName && <div className="cell-title">{i.teamName}</div>}
-                      {i.inspectorNames?.join(', ') || i.inspectorName}
+                      {si.teamLeaderName && <div className="cell-title">{si.teamLeaderName}</div>}
+                      {si.assignedTechNames?.join(', ') || '—'}
                     </td>
                     <td className="cell-sub" style={{ maxWidth: 320 }}>
-                      {i.status === 'completed'
-                        ? <>{i.infestationSeverity} · {i.pestTypesFound.map((x) => PEST_OPTIONS.find((o) => o.value === x)?.label || x).join(', ')}</>
-                        : i.instructions || '—'}
+                      {si.status === 'completed'
+                        ? <>{si.infestationSeverity} · {(si.pestTypesFound ?? []).map((x) => PEST_OPTIONS.find((o) => o.value === x)?.label || x).join(', ')}</>
+                        : si.notes || '—'}
                     </td>
                     <td>
                       <div className="cell-actions">
-                        {i.status === 'completed' && (
+                        {si.status === 'completed' && (
                           <button className="icon-btn" title="Download inspection report PDF" onClick={() => pdfAction.run(l.id, () => pdfGenerator.generateInspectionReportPDF(l))} disabled={pdfAction.busy === l.id}>
                             <Download size={15} />
                           </button>
                         )}
                         {canRecord && (
-                          <button className={`btn btn-sm ${i.status === 'completed' ? 'btn-secondary' : 'btn-primary'}`} onClick={() => setFindingsLead(l)}>
-                            <ClipboardCheck size={14} /> {i.status === 'completed' ? 'Edit findings' : 'Record findings'}
+                          <button className={`btn btn-sm ${si.status === 'completed' ? 'btn-secondary' : 'btn-primary'}`} onClick={() => setFindingsLead(l)}>
+                            <ClipboardCheck size={14} /> {si.status === 'completed' ? 'Edit findings' : 'Record findings'}
                           </button>
                         )}
                       </div>
@@ -160,7 +163,7 @@ export const InspectionsPage: React.FC = () => {
         </div>
       )}
 
-      <InspectionFindingsModal lead={findingsLead} onClose={() => setFindingsLead(null)} />
+      <SiteInspectionFindingsModal lead={findingsLead} onClose={() => setFindingsLead(null)} onDone={() => setFindingsLead(null)} />
     </div>
   );
 };

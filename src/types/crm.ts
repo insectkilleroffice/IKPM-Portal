@@ -106,6 +106,9 @@ export type PestType =
   | 'snake_reptile'
   | 'other';
 
+export type MeetingType = 'first_meeting' | 'negotiation' | 'renewal';
+export type InspectionHandling = 'done_inline' | 'tl_schedule' | 'separate_visit';
+
 export type MeetingFollowUpType =
   | 'company_profile'
   | 'proposal'
@@ -219,6 +222,12 @@ export interface InspectionAssessment {
   siteName?: string;
   /** Who observed on the client's side (or alongside the inspector). */
   observedBy?: string;
+  /** Whether this is a first meeting, a negotiation follow-up, or a renewal discussion. */
+  meetingType?: MeetingType;
+  /** How the technical inspection will be / was handled for a first meeting. */
+  inspectionHandling?: InspectionHandling;
+  /** For negotiation/renewal meetings: new terms or price discussed. */
+  negotiationTermsNote?: string;
   status: 'scheduled' | 'completed' | 'cancelled';
 }
 
@@ -251,6 +260,8 @@ export interface Lead {
   source: LeadSource;
   stage: LeadStage;
   customerType: CustomerType;
+  /** B2B goes through TL meeting + inspection; residential skips directly to proposal. Missing = b2b. */
+  clientType?: 'residential' | 'b2b';
   existingCustomerId?: string; // If linked to existing Client or Company
   branchId?: string; // If linked to a corporate branch
   contactName: string;

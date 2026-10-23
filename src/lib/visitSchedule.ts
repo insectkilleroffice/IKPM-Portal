@@ -37,6 +37,8 @@ export interface PlanInput {
   holidays?: string[];
   /** Days between a service visit and its follow-up (default 3). */
   followUpGapDays?: number;
+  /** Hard cap on total service visits across all branches (use 1 for one-off jobs). */
+  maxVisits?: number;
 }
 
 const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -89,6 +91,7 @@ export function planVisits(input: PlanInput): PlannedVisit[] {
   const gap = input.followUpGapDays ?? 3;
   const start = parse(input.start);
   const end = input.end.slice(0, 10);
+  let totalService = 0;
   input.branches.forEach((b, bi) => {
     const slot = slotFor(b);
     // Branches are staggered by a day so one team can cover them
@@ -96,11 +99,13 @@ export function planVisits(input: PlanInput): PlannedVisit[] {
     for (let mi = 0; ; mi++) {
       const monthStart = new Date(start.getFullYear(), start.getMonth() + mi, mi === 0 ? start.getDate() : 1);
       if (ymd(monthStart) > end) break;
+      if (input.maxVisits !== undefined && totalService >= input.maxVisits) break;
       const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0);
       const span = monthEnd.getDate() - monthStart.getDate() + 1;
       const n = visitsIn(input.serviceVisitsPerMonth, mi);
       const f = Math.min(n, visitsIn(input.followUpVisitsPerMonth, mi));
       for (let i = 0; i < n; i++) {
+        if (input.maxVisits !== undefined && totalService >= input.maxVisits) break;
         const offset = Math.floor((i * span) / n) + stagger;
         const date = workingDay(ymd(new Date(monthStart.getFullYear(), monthStart.getMonth(), monthStart.getDate() + Math.min(offset, span - 1))), input);
         if (date > end) continue;
@@ -108,6 +113,7 @@ export function planVisits(input: PlanInput): PlannedVisit[] {
         const base = { branchId: b.id, branchName: b.name, timeSlot: slot, windowStart: b.windowStart, windowEnd: b.windowEnd, closingTime: b.closingTime };
         const visit: PlannedVisit = { ...base, key, date, kind: 'service' };
         out.push(visit);
+        totalService++;
         if (i < f) {
           const fuDate = workingDay(addDays(date, gap), input);
           if (fuDate <= end) {

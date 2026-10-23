@@ -4,15 +4,11 @@ import {
   Plus,
   Search,
   Calendar,
-  CheckCircle2,
   Clock,
-  MapPin,
   Download,
   AlertTriangle,
-  UserCheck,
   ArrowRight,
   ShieldCheck,
-  Receipt,
   FileCheck2,
   CheckCircle,
 } from 'lucide-react';
@@ -36,9 +32,9 @@ import type { DocumentOwner } from '../../types/document';
 export const JobsListPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { success, warning, error } = useNotification();
+  const { success, warning } = useNotification();
   const pdfAction = usePdfAction();
-  const { userProfile, effectiveRole } = useAuth();
+  const { userProfile } = useAuth();
   useDataStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -48,9 +44,45 @@ export const JobsListPage: React.FC = () => {
     searchParams.get('action') === 'new_job' || Boolean(searchParams.get('fromProposal'))
   );
 
+  // Reschedule modal (team leader)
+  const [rescheduleJob, setRescheduleJob] = useState<ServiceJob | null>(null);
+  const [rescheduleDate, setRescheduleDate] = useState('');
+  const [rescheduleSlot, setRescheduleSlot] = useState<'morning' | 'afternoon' | 'evening' | 'night_shift'>('morning');
+  const [rescheduleReason, setRescheduleReason] = useState('');
+  const [rescheduleReasonOther, setRescheduleReasonOther] = useState('');
+
+  const RESCHEDULE_REASONS = [
+    'Client requested a different date',
+    'Team unavailable on scheduled date',
+    'Chemical / equipment not ready',
+    'Client site access issue',
+    'Weather / safety conditions',
+    'Other',
+  ];
+
+  const handleReschedule = () => {
+    if (!rescheduleJob || !rescheduleDate) return;
+    const reason = rescheduleReason === 'Other' ? rescheduleReasonOther.trim() : rescheduleReason;
+    if (!reason) return warning('Reason required', 'Please provide a reason for rescheduling.');
+    const updated: ServiceJob = {
+      ...rescheduleJob,
+      scheduledDate: rescheduleDate,
+      timeSlot: rescheduleSlot,
+      status: 'scheduled',
+      rescheduledReason: reason,
+      updatedAt: new Date().toISOString(),
+    };
+    dataService.saveJob(updated, userProfile?.email);
+    success('Job rescheduled', `${rescheduleJob.id} moved to ${formatDate(rescheduleDate)} (${rescheduleSlot}). Reason: ${reason}`);
+    if (selectedJob?.id === updated.id) setSelectedJob(updated);
+    setRescheduleJob(null);
+    setRescheduleReason('');
+    setRescheduleReasonOther('');
+  };
+
   // Supervisor QC Verification Modal
   const [showVerifyModal, setShowVerifyModal] = useState<ServiceJob | null>(null);
-  // Service report submission modal (replaces /pco-field)
+  // Service report submission modal
   const [showReportModal, setShowReportModal] = useState<ServiceJob | null>(null);
   const [reportMember, setReportMember] = useState('');
   type ReportItem = { id: string; name: string; qty: number; unit: ChemicalUsageRecord['unit'] };
@@ -78,7 +110,7 @@ export const JobsListPage: React.FC = () => {
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const jobs = dataService.getJobs();
-  const technicians = dataService.getStaff(['team_leader']);
+  const technicians = dataService.getStaff(['team_leader', 'technician']);
 
   // If fromProposal or customerId query params are provided, pre-fill
   const fromPropId = searchParams.get('fromProposal');
@@ -437,7 +469,23 @@ export const JobsListPage: React.FC = () => {
                   </td>
                   <td><StatusBadge status={j.status} /></td>
                   <td>
-                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                      {j.status === 'scheduled' && (
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
+                          title="Reschedule this job with a reason"
+                          onClick={() => {
+                            setRescheduleJob(j);
+                            setRescheduleDate(j.scheduledDate);
+                            setRescheduleSlot(j.timeSlot as any);
+                            setRescheduleReason(j.rescheduledReason || '');
+                            setRescheduleReasonOther('');
+                          }}
+                        >
+                          <Calendar size={12} /> Reschedule
+                        </button>
+                      )}
                       <button
                         className={`btn ${
                           nextAct.actionType === 'create_invoice'
@@ -604,6 +652,56 @@ export const JobsListPage: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      {/* Modal: Reschedule Job */}
+      {rescheduleJob && (
+        <Modal
+          isOpen
+          onClose={() => setRescheduleJob(null)}
+          title={`Reschedule: ${rescheduleJob.id}`}
+          subtitle={`${rescheduleJob.customerName} · Currently: ${formatDate(rescheduleJob.scheduledDate)} (${rescheduleJob.timeSlot})`}
+          maxWidth="500px"
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" onClick={() => setRescheduleJob(null)}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={handleReschedule} disabled={!rescheduleDate || !rescheduleReason}>Save reschedule</button>
+            </>
+          }
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <div className="form-group">
+              <label className="form-label">New date <span className="required">*</span></label>
+              <input type="date" className="form-input" value={rescheduleDate} onChange={(e) => setRescheduleDate(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Time slot</label>
+              <select className="form-select" value={rescheduleSlot} onChange={(e) => setRescheduleSlot(e.target.value as any)}>
+                <option value="morning">Morning (09:00 – 13:00)</option>
+                <option value="afternoon">Afternoon (14:00 – 18:00)</option>
+                <option value="evening">Evening (18:00 – 22:00)</option>
+                <option value="night_shift">Night Shift</option>
+              </select>
+            </div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Reason for rescheduling <span className="required">*</span></label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+              {RESCHEDULE_REASONS.map((r) => (
+                <label key={r} className="doc-check" style={{ border: `1px solid ${rescheduleReason === r ? 'var(--ikpm-emerald-600)' : 'var(--border-subtle)'}`, background: rescheduleReason === r ? 'var(--ikpm-emerald-50)' : undefined }}>
+                  <input type="radio" name="reschedReason" checked={rescheduleReason === r} onChange={() => setRescheduleReason(r)} />
+                  <span style={{ fontSize: '0.82rem' }}>{r}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          {rescheduleReason === 'Other' && (
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Specify reason</label>
+              <input className="form-input" value={rescheduleReasonOther} onChange={(e) => setRescheduleReasonOther(e.target.value)} placeholder="Describe the reason…" />
+            </div>
+          )}
+        </Modal>
+      )}
 
       {/* Modal: Supervisor QC Verification (Guard Rail 1: Unlocks Invoicing) */}
       {showVerifyModal && (

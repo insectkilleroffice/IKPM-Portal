@@ -1,10 +1,7 @@
 import React, { useState } from 'react';
 import {
-  FileCheck2,
   Plus,
   ShieldCheck,
-  AlertCircle,
-  Calendar,
   CheckCircle,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
@@ -19,7 +16,7 @@ import { useDataStore } from '../../hooks/useDataStore';
 export const TaxRulesPage: React.FC = () => {
   useDataStore(); // re-render when Firestore data arrives
   const { success } = useNotification();
-  const { userProfile, effectiveRole } = useAuth();
+  const { userProfile } = useAuth();
 
   const [taxRules, setTaxRules] = useState(dataService.getTaxRules());
   const [showModal, setShowModal] = useState(false);

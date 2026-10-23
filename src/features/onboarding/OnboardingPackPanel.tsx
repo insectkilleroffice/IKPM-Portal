@@ -47,7 +47,7 @@ export const OnboardingPackPanel: React.FC<Props> = ({ clientId, clientType, cli
   const clientLayouts = clientDocs.filter((d) => d.fileCategory === 'layout');
   const accepted = store.getProposals(clientId).filter((p) => p.status === 'accepted').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const contract = store.getContracts(clientId).filter((c) => c.status === 'active').sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  const technicians = store.getStaff(['team_leader']);
+  const technicians = store.getStaff(['team_leader', 'technician']);
   const assignedFromJobs = Array.from(new Set(store.getJobs(clientId).flatMap((j) => j.assignedTechnicianIds ?? [])));
 
   const docById = new Map([...library, ...clientDocs].map((d) => [d.id, d]));

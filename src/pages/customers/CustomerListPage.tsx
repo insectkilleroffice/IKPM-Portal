@@ -3,20 +3,15 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Building2,
   User,
-  Plus,
   Search,
-  Filter,
-  ArrowUpRight,
   ChevronRight,
   GitFork,
   MapPin,
   Phone,
-  FileCheck2,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { formatPKR, formatNTN, formatCNIC, generatePermanentId } from '../../lib/formatters';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
-import { StatusBadge } from '../../components/common/StatusBadge';
 import { Modal } from '../../components/common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -26,7 +21,7 @@ import { useDataStore } from '../../hooks/useDataStore';
 export const CustomerListPage: React.FC = () => {
   useDataStore(); // re-render when Firestore data arrives
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const { success, warning } = useNotification();
   const { userProfile } = useAuth();
 

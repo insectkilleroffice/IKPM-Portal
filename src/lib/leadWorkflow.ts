@@ -38,7 +38,7 @@ export const PIPELINE: { stage: PipelineStage; label: string; short: string; hin
   { stage: 'contacted', label: 'Contacted', short: 'Contacted', hint: 'Step 2 — Sales / CRO reached out, awaiting client interest', color: '#0891B2' },
   { stage: 'engaged', label: 'Engaged', short: 'Engaged', hint: 'Step 3 — Client is interested. CRO aligns a Team Leader and schedules a meeting', color: '#7C3AED' },
   { stage: 'meeting_scheduled', label: 'Meeting scheduled', short: 'Meeting', hint: 'Step 4 — Team Leader (and any assigned team member) is confirmed for the client meeting. Inspection can be done during the meeting', color: '#D97706' },
-  { stage: 'meeting_done', label: 'Meeting done — report pending', short: 'Inspected', hint: 'Step 5 — Team Leader submits meeting report: what the client asked for (proposal, company profile, or other). Proceed based on the client request', color: '#B45309' },
+  { stage: 'meeting_done', label: 'Meeting done', short: 'Meeting done', hint: 'Step 5 — Team Leader submitted the meeting report. Proceed based on client request and complete any pending inspection.', color: '#B45309' },
   { stage: 'profile_sent', label: 'Company profile sent', short: 'Profile sent', hint: 'Step 6a — Client asked for the company profile. Profile sent; follow up for proposal interest', color: '#0E7490' },
   { stage: 'proposal_sent', label: 'Proposal sent', short: 'Proposal', hint: 'Step 6b — Client asked for a proposal. Proposal created and shared', color: '#0E8A5F' },
   { stage: 'negotiation', label: 'Negotiation', short: 'Negotiation', hint: 'Step 7 — Price / terms bargaining in progress', color: '#EA580C' },
@@ -176,22 +176,23 @@ export type LeadActionId =
   | 'change_stage'
   | 'record_meeting'
   | 'schedule_site_inspection'
-  | 'record_site_inspection';
+  | 'record_site_inspection'
+  | 'schedule_negotiation_meeting';
 
 /**
  * Actions offered at each stage, in menu order. 'mark_won' is never in a stage menu:
  * a lead becomes won when its proposal is accepted.
  */
 export const STAGE_ACTIONS: Record<PipelineStage, LeadActionId[]> = {
-  new: ['edit', 'log_contact', 'send_documents', 'set_stuck_at', 'mark_lost'],
-  contacted: ['edit', 'log_contact', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
-  engaged: ['edit', 'log_contact', 'schedule_inspection', 'schedule_site_inspection', 'record_site_inspection', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
-  meeting_scheduled: ['edit', 'reschedule_inspection', 'record_meeting', 'schedule_site_inspection', 'record_site_inspection', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
-  meeting_done: ['edit', 'record_meeting', 'schedule_site_inspection', 'record_site_inspection', 'create_proposal', 'open_proposal', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
-  profile_sent: ['edit', 'log_contact', 'create_proposal', 'open_proposal', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
-  proposal_sent: ['edit', 'open_proposal', 'create_proposal', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
-  negotiation: ['edit', 'open_proposal', 'create_proposal', 'create_revision', 'log_contact', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
-  won: ['open_customer', 'open_proposal', 'send_documents'],
+  new: ['edit', 'log_contact', 'schedule_negotiation_meeting', 'send_documents', 'set_stuck_at', 'mark_lost'],
+  contacted: ['edit', 'log_contact', 'schedule_negotiation_meeting', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
+  engaged: ['edit', 'log_contact', 'schedule_inspection', 'schedule_negotiation_meeting', 'schedule_site_inspection', 'record_site_inspection', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
+  meeting_scheduled: ['edit', 'reschedule_inspection', 'schedule_negotiation_meeting', 'record_meeting', 'schedule_site_inspection', 'record_site_inspection', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
+  meeting_done: ['edit', 'record_meeting', 'schedule_negotiation_meeting', 'schedule_site_inspection', 'record_site_inspection', 'create_proposal', 'open_proposal', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
+  profile_sent: ['edit', 'log_contact', 'schedule_negotiation_meeting', 'record_meeting', 'create_proposal', 'open_proposal', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
+  proposal_sent: ['edit', 'schedule_negotiation_meeting', 'record_meeting', 'open_proposal', 'create_proposal', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
+  negotiation: ['edit', 'schedule_negotiation_meeting', 'record_meeting', 'open_proposal', 'create_proposal', 'create_revision', 'log_contact', 'send_documents', 'change_stage', 'set_stuck_at', 'mark_lost'],
+  won: ['open_customer', 'open_proposal', 'schedule_negotiation_meeting', 'send_documents'],
   lost: ['reopen', 'create_proposal'],
 };
 
@@ -215,6 +216,7 @@ export const ACTION_LABELS: Record<LeadActionId, string> = {
   record_meeting: 'Submit meeting report',
   schedule_site_inspection: 'Schedule site inspection',
   record_site_inspection: 'Record inspection findings',
+  schedule_negotiation_meeting: 'Schedule meeting',
 };
 
 /** Actions that only open existing records, so view-only users may use them. */
@@ -230,8 +232,14 @@ export interface AvailableAction {
 /** Actions for a lead's current stage, with the reason when one can't be used yet. */
 export function availableActions(lead: Lead): AvailableAction[] {
   const stage = stageOf(lead);
+  const isResidential = lead.clientType === 'residential';
+  // For residential leads add create_proposal to any stage where it is not already listed.
+  const stageActions = (STAGE_ACTIONS[stage] ?? []).slice();
+  if (isResidential && !stageActions.includes('create_proposal') && !['won'].includes(stage)) {
+    stageActions.unshift('create_proposal');
+  }
   const out: AvailableAction[] = [];
-  for (const id of STAGE_ACTIONS[stage] ?? []) {
+  for (const id of stageActions) {
     let label = ACTION_LABELS[id];
     let enabled = true;
     let disabledReason: string | undefined;
@@ -240,16 +248,30 @@ export function availableActions(lead: Lead): AvailableAction[] {
         if (lead.inspection?.status === 'completed') label = 'Edit meeting / inspection findings';
         break;
       case 'create_proposal':
+        if (isResidential) {
+          if (lead.proposalId) {
+            enabled = false;
+            disabledReason = `Proposal ${lead.proposalId} already exists — open or revise it instead.`;
+          }
+          break;
+        }
         if (lead.proposalId) {
           enabled = false;
           disabledReason = `Proposal ${lead.proposalId} already exists — open or revise it instead.`;
         } else if (stage === 'meeting_done') {
+          const meetingType = lead.inspection?.meetingType;
+          const skipInspCheck = meetingType === 'negotiation' || meetingType === 'renewal';
+          const inlineInspDone = Boolean(lead.inspection?.pestTypesFound?.length);
+          const siteInspDone = lead.siteInspection?.status === 'completed';
+          const inspectionDone = inlineInspDone || siteInspDone;
           const tl = lead.inspection?.tlStatus;
-          const inspectionDone = Boolean(lead.inspection?.pestTypesFound?.length);
-          if (tl === 'waiting') {
+          if (!skipInspCheck && !inspectionDone) {
+            enabled = false;
+            disabledReason = 'A completed inspection is required. Record findings during the meeting or complete the site inspection first.';
+          } else if (tl === 'waiting') {
             enabled = false;
             disabledReason = 'Team Leader set status to "Hold — need more steps". Update the meeting report when ready.';
-          } else if (!tl && !inspectionDone) {
+          } else if (!skipInspCheck && !tl) {
             enabled = false;
             disabledReason = 'Team Leader must submit their report and set decision to "Ready — send proposal" first.';
           }
@@ -272,6 +294,20 @@ export function availableActions(lead: Lead): AvailableAction[] {
       case 'record_meeting':
         if (lead.inspection?.status === 'completed') label = 'Edit meeting report';
         break;
+      case 'schedule_negotiation_meeting': {
+        const mt = lead.inspection?.meetingType;
+        const ist = lead.inspection?.status;
+        if (ist === 'scheduled') {
+          label = mt === 'negotiation' ? 'Reschedule negotiation meeting' : mt === 'renewal' ? 'Reschedule renewal meeting' : 'Reschedule meeting';
+        } else if (stage === 'won') {
+          label = 'Schedule renewal meeting';
+        } else if (stage === 'negotiation') {
+          label = ist === 'completed' ? 'Schedule another negotiation meeting' : 'Schedule negotiation meeting';
+        } else if (ist === 'completed') {
+          label = 'Schedule another meeting';
+        }
+        break;
+      }
       case 'schedule_site_inspection':
         if (lead.siteInspection?.status === 'completed') {
           enabled = false;
@@ -322,21 +358,17 @@ export const isActionAllowed = (lead: Lead, id: LeadActionId) => availableAction
 /**
  * Stage changes the data layer accepts. Staying on the same stage (e.g. rescheduling an
  * inspection, editing findings) is always allowed.
- * engaged → proposal_sent is only allowed when the inspection was skipped with a reason.
+ * engaged → proposal_sent / negotiation are allowed (skip path or residential).
  */
 export const ALLOWED_TRANSITIONS: Record<PipelineStage, PipelineStage[]> = {
   new: ['contacted', 'lost'],
-  contacted: ['new', 'engaged', 'lost'],
-  engaged: ['contacted', 'meeting_scheduled', 'profile_sent', 'lost'],
-  // can go back to 'engaged' when a meeting is cancelled
-  meeting_scheduled: ['engaged', 'meeting_done', 'lost'],
-  // can go back to reschedule another meeting
-  meeting_done: ['meeting_scheduled', 'engaged', 'profile_sent', 'proposal_sent', 'negotiation', 'lost'],
-  // can go back when client wants to revisit before proposal
-  profile_sent: ['meeting_done', 'proposal_sent', 'negotiation', 'lost'],
-  // can step back if client not ready for proposal
-  proposal_sent: ['profile_sent', 'meeting_done', 'negotiation', 'won', 'lost'],
-  negotiation: ['proposal_sent', 'profile_sent', 'meeting_done', 'won', 'lost'],
+  contacted: ['engaged', 'lost'],
+  engaged: ['meeting_scheduled', 'profile_sent', 'proposal_sent', 'negotiation', 'lost'],
+  meeting_scheduled: ['meeting_done', 'lost'],
+  meeting_done: ['profile_sent', 'proposal_sent', 'negotiation', 'lost'],
+  profile_sent: ['proposal_sent', 'negotiation', 'lost'],
+  proposal_sent: ['negotiation', 'won', 'lost'],
+  negotiation: ['proposal_sent', 'won', 'lost'],
   won: [],
   lost: ['contacted'],
 };
@@ -352,17 +384,29 @@ const stageLabel = (s: PipelineStage) => PIPELINE.find((p) => p.stage === s)?.la
 
 /**
  * Throws a StageTransitionError when `lead` may not move to `to`.
+ * For engaged → proposal_sent: B2B leads require a valid inspection-skipped reason in `next`.
+ * Residential leads bypass this check.
  */
-export function assertStageTransition(lead: Pick<Lead, 'stage'>, to: LeadStage, _next?: Pick<Lead, 'inspectionSkipped'>): void {
+export function assertStageTransition(
+  lead: Pick<Lead, 'stage'> & { clientType?: Lead['clientType'] },
+  to: LeadStage,
+  next?: Pick<Lead, 'inspectionSkipped'>,
+): void {
   const from = stageOf(lead);
   const target = stageOf({ stage: to });
   if (from === target) return;
   if (!(ALLOWED_TRANSITIONS[from] ?? []).includes(target)) {
     throw new StageTransitionError(`A lead cannot move from ${stageLabel(from)} to ${stageLabel(target)}.`);
   }
+  // engaged → proposal_sent without TL meeting requires a skip reason for B2B
+  if (from === 'engaged' && target === 'proposal_sent' && lead.clientType !== 'residential') {
+    if (!next?.inspectionSkipped?.reason?.trim()) {
+      throw new StageTransitionError('Skipping the TL meeting to send a proposal requires an inspection-skipped reason.');
+    }
+  }
 }
 
-export const canTransition = (lead: Pick<Lead, 'stage'>, to: LeadStage, next?: Pick<Lead, 'inspectionSkipped'>) => {
+export const canTransition = (lead: Pick<Lead, 'stage'> & { clientType?: Lead['clientType'] }, to: LeadStage, next?: Pick<Lead, 'inspectionSkipped'>) => {
   try {
     assertStageTransition(lead, to, next);
     return true;
@@ -374,19 +418,22 @@ export const canTransition = (lead: Pick<Lead, 'stage'>, to: LeadStage, next?: P
 /**
  * Throws when a new proposal may not be created for this lead.
  * Allowed stages: meeting_done, profile_sent, proposal_sent, negotiation, lost (reopen).
- * Also allowed from engaged when the inspection was skipped with a reason.
+ * Also allowed from any stage for residential leads and from engaged when inspection was skipped.
+ * Note: fine-grained UI guards (TL status, inspection done) live in availableActions(), not here.
  */
 export function assertCanCreateProposal(lead: Lead): void {
   const stage = stageOf(lead);
-  const alwaysAllowed: PipelineStage[] = ['profile_sent', 'proposal_sent', 'negotiation', 'lost'];
-  if (alwaysAllowed.includes(stage)) return;
-  if (stage === 'meeting_done') {
+  // Residential leads: proposal allowed from any active stage — no TL meeting or inspection needed.
+  if (lead.clientType === 'residential') {
+    if (stage === 'won') throw new StageTransitionError('Lead is already won.');
     if (lead.proposalId) throw new StageTransitionError(`Proposal ${lead.proposalId} already exists. Open or revise it instead.`);
-    const tl = lead.inspection?.tlStatus;
-    const inspectionDone = Boolean(lead.inspection?.pestTypesFound?.length);
-    if (tl === 'send_proposal' || inspectionDone) return;
-    throw new StageTransitionError('The Team Leader must set their decision to "Ready — send proposal" in the meeting report first.');
+    return;
   }
+  // B2B always-allowed stages
+  const alwaysAllowed: PipelineStage[] = ['meeting_done', 'profile_sent', 'proposal_sent', 'negotiation', 'lost'];
+  if (alwaysAllowed.includes(stage)) return;
+  // engaged → allowed only when inspection was explicitly skipped with a reason
+  if (stage === 'engaged' && lead.inspectionSkipped?.reason?.trim()) return;
   throw new StageTransitionError(`A proposal cannot be created while the lead is ${stageLabel(stage)}.`);
 }
 
@@ -399,7 +446,7 @@ const NEXT_ACTION: Record<PipelineStage, { action: LeadActionId; label: string }
   meeting_done: { action: 'create_proposal', label: 'Create proposal' },
   profile_sent: { action: 'create_proposal', label: 'Create proposal' },
   proposal_sent: { action: 'open_proposal', label: 'Open proposal' },
-  negotiation: { action: 'create_revision', label: 'Revise & resend' },
+  negotiation: { action: 'schedule_negotiation_meeting', label: 'Schedule negotiation meeting' },
   won: { action: 'open_customer', label: 'Open customer' },
   lost: { action: 'reopen', label: 'Reopen lead' },
 };
@@ -408,6 +455,11 @@ const NEXT_ACTION: Record<PipelineStage, { action: LeadActionId; label: string }
 export function nextStep(lead: Lead): { label: string; action: LeadActionId } {
   const stage = stageOf(lead);
   const actions = availableActions(lead);
+  // Residential shortcut: propose directly without TL meeting.
+  if (lead.clientType === 'residential' && !lead.proposalId && !['won', 'lost'].includes(stage)) {
+    const cp = actions.find((a) => a.id === 'create_proposal' && a.enabled);
+    if (cp) return { action: 'create_proposal', label: 'Create proposal' };
+  }
   const preferred = NEXT_ACTION[stage] ?? NEXT_ACTION.new;
   if (actions.some((a) => a.id === preferred.action && a.enabled)) return preferred;
   // e.g. meeting done but a proposal already exists → open it rather than create another

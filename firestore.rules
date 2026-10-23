@@ -41,26 +41,32 @@
       // Used when a built-in role's Firestore document hasn't been seeded yet (e.g. team_leader
       // was added after initial seeding). Keep in sync with permissions.ts whenever roles change.
       function defaultModulesFor(r) {
-        return r == 'management'
+        return r == 'admin'
+          ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
+            'contracts':'edit','files':'edit','documents':'edit','company_files':'edit','calendar':'edit',
+            'jobs':'edit','pco':'edit','complaints':'edit','invoices':'view','settings':'view','approvals':'view'}
+          : r == 'management'
           ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
             'contracts':'edit','files':'edit','documents':'edit','calendar':'edit','jobs':'edit',
-            'pco':'edit','invoices':'edit','tax':'edit','settings':'view','company_files':'view','templates':'edit'}
+            'pco':'edit','invoices':'edit','tax':'edit','complaints':'edit','settings':'view','company_files':'view','templates':'edit','approvals':'edit'}
           : r == 'sales'
           ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
-            'contracts':'edit','files':'edit','documents':'view','company_files':'view'}
+            'contracts':'edit','files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
           : r == 'operations'
           ? {'dashboard':'edit','inspections':'edit','calendar':'edit','jobs':'edit','pco':'edit',
-            'files':'edit','customers':'view','contracts':'view','documents':'view','company_files':'view'}
+            'files':'edit','complaints':'edit','customers':'view','contracts':'view','documents':'view','company_files':'view'}
           : r == 'finance'
           ? {'dashboard':'edit','invoices':'edit','tax':'edit','customers':'view','contracts':'view',
-            'files':'view','jobs':'view'}
+            'files':'view','jobs':'view','complaints':'view','approvals':'view'}
           : r == 'team_leader'
           ? {'dashboard':'edit','crm':'view','inspections':'edit','pco':'edit',
-            'customers':'view','proposals':'view'}
+            'customers':'view','proposals':'view','contracts':'view'}
           : r == 'auditor'
           ? {'dashboard':'view','customers':'view','crm':'view','inspections':'view','proposals':'view',
             'contracts':'view','files':'view','documents':'view','company_files':'view',
-            'calendar':'view','jobs':'view','invoices':'view','settings':'view'}
+            'calendar':'view','jobs':'view','invoices':'view','settings':'view','complaints':'view','approvals':'view'}
+          : r == 'technician'
+          ? {'pco':'edit'}
           : {};
       }
 
@@ -295,7 +301,9 @@
       }
 
       match /contracts/{id} {
-        allow read: if readMod('contracts');
+        // Assigned team leaders may read their own contracts even if company scope is restricted
+        allow read: if readMod('contracts')
+          || (canView('pco') && resource.data.get('assignedTeamLeaderId', '') == request.auth.uid);
         allow create: if createMod('contracts');
         allow update: if updateMod('contracts') || (canEdit('contracts') && filingOnly());
         allow delete: if isSuperAdmin();
@@ -304,7 +312,10 @@
       // ---------- Field operations ----------
       match /service_jobs/{id} {
         allow read: if readMod('jobs')
-          || (canView('pco') && request.auth.uid in resource.data.assignedTechnicianIds);
+          || (canView('pco') && (
+               request.auth.uid in resource.data.assignedTechnicianIds
+               || resource.data.get('assignedTeamLeaderId', '') == request.auth.uid
+             ));
         // Contracts generate their visit schedule, so contract editors may create jobs too
         allow create: if (canEdit('jobs') || canEdit('contracts')) && ownsNew();
         allow update: if updateMod('jobs')
@@ -418,6 +429,27 @@
           || (resource.data.get('ownerScope', 'company') == 'client' && canEdit('files'))
           || filingOnly()
         );
+        allow delete: if isSuperAdmin();
+      }
+
+      // ---------- Approvals ----------
+      // Managers (edit) see all; requesters (view) see only their own.
+      // Nobody can decide their own request.
+      match /approvals/{id} {
+        allow read: if active() && canView('approvals')
+          && (canEdit('approvals') || resource.data.ownerUid == request.auth.uid);
+        allow create: if active()
+          && request.resource.data.ownerUid == request.auth.uid;
+        allow update: if active() && canEdit('approvals')
+          && resource.data.ownerUid != request.auth.uid;
+        allow delete: if isSuperAdmin();
+      }
+
+      // ---------- Complaints ----------
+      match /complaints/{id} {
+        allow read: if canView('complaints') && inScope(resource.data);
+        allow create: if canEdit('complaints') && ownsNew();
+        allow update: if canEdit('complaints') && inScope(resource.data) && keepsOwner();
         allow delete: if isSuperAdmin();
       }
 

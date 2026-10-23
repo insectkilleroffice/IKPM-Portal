@@ -1,20 +1,13 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  Building2,
-  GitFork,
   MapPin,
   Phone,
-  Mail,
   Truck,
   FileSpreadsheet,
   FileSignature,
   Receipt,
-  FileText,
   Paperclip,
-  History,
-  ArrowLeft,
-  ChevronRight,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';

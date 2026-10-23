@@ -66,7 +66,7 @@ export const offlineStorage = {
     this.saveSyncQueue(queue);
   },
 
-  // Drafts for PCO field reports
+  // Drafts for field service reports
   saveDraft(key: string, data: unknown): void {
     try {
       const drafts = this.getAllDrafts();

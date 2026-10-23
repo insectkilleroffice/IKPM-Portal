@@ -84,7 +84,7 @@ export function formatNTN(ntn: string): string {
 /**
  * Generates human-friendly permanent IDs (e.g. CL-2026-0042)
  */
-export function generatePermanentId(prefix: 'CL' | 'CO' | 'BR' | 'SITE' | 'LD' | 'P' | 'CT' | 'JOB' | 'INV' | 'REC', seqNumber: number): string {
+export function generatePermanentId(prefix: 'CL' | 'CO' | 'BR' | 'SITE' | 'LD' | 'P' | 'CT' | 'JOB' | 'INV' | 'REC' | 'CMP', seqNumber: number): string {
   const year = new Date().getFullYear();
   const padded = String(seqNumber).padStart(4, '0');
   return `${prefix}-${year}-${padded}`;

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Search, Download, Send, FileSignature } from 'lucide-react';
+import { Plus, Search, Download, Send, FileSignature, RotateCw } from 'lucide-react';
 import { useDataStore } from '../../hooks/useDataStore';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import { ProposalBuilderModal, type ProposalPrefill } from '../../features/proposals/ProposalBuilderModal';
@@ -10,7 +10,7 @@ import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
-import { formatPKR, formatDate } from '../../lib/formatters';
+import { formatPKR, formatDate, generatePermanentId } from '../../lib/formatters';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -71,6 +71,35 @@ export const ProposalsListPage: React.FC = () => {
       ok?.();
     } catch (err) {
       error('Could not update proposal', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const reviseProposal = (p: Proposal) => {
+    const now = new Date().toISOString();
+    const id = generatePermanentId('P', proposals.length + 1);
+    const revised: Proposal = {
+      ...p,
+      id,
+      revisionNumber: p.revisionNumber + 1,
+      parentProposalId: p.parentProposalId || p.id,
+      status: 'draft',
+      approval: undefined,
+      sentDate: undefined,
+      acceptedDate: undefined,
+      pdfUrl: undefined,
+      revisionsHistory: [
+        ...p.revisionsHistory,
+        { revisionNumber: p.revisionNumber + 1, timestamp: now, changedBy: userProfile?.email || 'admin', changedByName: userProfile?.displayName || 'Staff', changeReason: 'Revision', subtotal: p.subtotal, discountPercent: p.discountPercent, totalAmount: p.totalAmount },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+    try {
+      dataService.saveProposal(revised, userProfile?.email);
+      success('Revision created', `${id} (R${revised.revisionNumber}) is a draft. Open it to adjust pricing or scope before sending.`);
+      setSelectedId(id);
+    } catch (err) {
+      error('Could not create revision', err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -171,10 +200,15 @@ export const ProposalsListPage: React.FC = () => {
                 </td>
                 <td><StatusBadge status={p.status} /></td>
                 <td onClick={(e) => e.stopPropagation()}>
-                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
                     {p.status === 'accepted' && (
                       <button className="btn btn-sm btn-primary" title="Create the contract from this proposal" onClick={() => navigate(`/contracts?action=new_contract&fromProposal=${p.id}`)}>
                         <FileSignature size={12} /> <span>Contract</span>
+                      </button>
+                    )}
+                    {['sent_to_client', 'declined', 'rejected', 'expired', 'accepted', 'negotiation'].includes(p.status) && (
+                      <button className="btn btn-sm btn-secondary" title="Create a revised version of this proposal" onClick={() => reviseProposal(p)}>
+                        <RotateCw size={12} /> <span>Revise</span>
                       </button>
                     )}
                     <button className="icon-btn" title="Download PDF" onClick={() => pdfAction.run(p.id, () => pdfGenerator.generateProposalPDF(p))} disabled={pdfAction.busy === p.id}>
@@ -210,7 +244,7 @@ export const ProposalsListPage: React.FC = () => {
               success('Accepted', selected.leadId ? `Lead ${selected.leadId} is now Won. Next: onboarding pack and contract.` : 'Proposal accepted by the client.')
             )
           }
-          onDecline={() => save({ ...selected, status: 'declined' }, () => warning('Declined', selected.leadId ? `Lead ${selected.leadId} moved to Lost.` : 'Proposal declined by the client.'))}
+          onDecline={() => save({ ...selected, status: 'declined' }, () => warning('Declined', selected.leadId ? `Lead ${selected.leadId} moved to Negotiation. Schedule a negotiation meeting as the next step.` : 'Proposal declined by the client.'))}
           onSend={canSend(selected) ? () => setSendTarget(selected) : undefined}
         />
       )}

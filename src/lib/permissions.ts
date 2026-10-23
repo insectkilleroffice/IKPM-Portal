@@ -6,7 +6,7 @@
 
 import type { DataScope, UserRole } from '../types';
 
-export type SystemRole = 'super_admin' | 'management' | 'sales' | 'team_leader' | 'operations' | 'finance' | 'auditor';
+export type SystemRole = 'super_admin' | 'admin' | 'management' | 'sales' | 'team_leader' | 'operations' | 'finance' | 'auditor' | 'technician';
 
 export type ModuleKey =
   | 'dashboard'
@@ -26,7 +26,9 @@ export type ModuleKey =
   | 'settings'
   | 'templates'
   | 'team'
-  | 'roles';
+  | 'roles'
+  | 'complaints'
+  | 'approvals';
 
 export type AccessLevel = 'none' | 'view' | 'edit';
 
@@ -41,6 +43,8 @@ export interface RoleDefinition {
   /** Data access given to new staff with this role. */
   defaultScope: DataScope;
   isSystem?: boolean;
+  /** Hidden from the default role picker; only Super Admin can assign this role. */
+  isHidden?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -64,6 +68,8 @@ export const MODULES: { key: ModuleKey; label: string; group: string; hint?: str
   { key: 'templates', label: 'Document templates', group: 'Administration', hint: 'Edit = proposal, scope and SOP wording. Commercial / legal wording stays super admin only' },
   { key: 'team', label: 'Manage staff & teams', group: 'Administration', hint: 'Add people, set passwords, build teams' },
   { key: 'roles', label: 'Customize roles', group: 'Administration', hint: 'Change what each role can do' },
+  { key: 'complaints', label: 'Complaints', group: 'Field operations', hint: 'CRO logs, Ops Manager resolves, re-service visits' },
+  { key: 'approvals', label: 'Approvals queue', group: 'Administration', hint: 'Manager approves discounts, voids, cancellations and refunds. Others can view their own requests.' },
 ];
 
 const all = (level: AccessLevel, keys: ModuleKey[]) => Object.fromEntries(keys.map((k) => [k, level])) as Partial<Record<ModuleKey, AccessLevel>>;
@@ -75,34 +81,48 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     modules: all('edit', MODULES.map((m) => m.key)),
   },
   {
-    id: 'management', name: 'Management', basedOn: 'management', isSystem: true, defaultScope: 'company', color: '#1B3A63',
-    description: 'Sees everything, approves proposals, views reports',
-    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'pco', 'invoices', 'tax']), settings: 'view', company_files: 'view', templates: 'edit' },
+    id: 'admin', name: 'Admin', basedOn: 'admin', isSystem: true, defaultScope: 'company', color: '#0F766E',
+    description: 'Daily office control — edits all operational records and can send documents. Cannot manage roles, staff, or finances.',
+    modules: {
+      ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'pco', 'complaints']),
+      invoices: 'view', settings: 'view', approvals: 'view',
+    },
   },
   {
-    id: 'sales', name: 'Sales / CRO', basedOn: 'sales', isSystem: true, defaultScope: 'own', color: '#1A73E8',
-    description: 'Leads pipeline, proposals and their own customers. Assigns Team Leaders for meetings.',
-    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files']), documents: 'view', company_files: 'view' },
+    id: 'management', name: 'Manager', basedOn: 'management', isSystem: true, defaultScope: 'company', color: '#1B3A63',
+    description: 'Approves proposals, discounts, contract changes, invoice voids and complaint escalations. Sees all reports.',
+    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'pco', 'invoices', 'tax', 'complaints', 'approvals']), settings: 'view', company_files: 'view', templates: 'edit' },
+  },
+  {
+    id: 'sales', name: 'CRO', basedOn: 'sales', isSystem: true, defaultScope: 'own', color: '#1A73E8',
+    description: 'Leads, inspections, proposals and own customers. Logs complaints and manages renewals.',
+    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'complaints']), documents: 'view', company_files: 'view', approvals: 'view' },
   },
   {
     id: 'operations', name: 'Operations', basedOn: 'operations', isSystem: true, defaultScope: 'company', color: '#D97706',
     description: 'Dispatch, service jobs and field teams',
-    modules: { ...all('edit', ['dashboard', 'inspections', 'calendar', 'jobs', 'pco', 'files']), customers: 'view', contracts: 'view', documents: 'view', company_files: 'view' },
+    modules: { ...all('edit', ['dashboard', 'inspections', 'calendar', 'jobs', 'pco', 'files', 'complaints']), customers: 'view', contracts: 'view', documents: 'view', company_files: 'view' },
   },
   {
-    id: 'finance', name: 'Finance', basedOn: 'finance', isSystem: true, defaultScope: 'company', color: '#0E8A5F',
-    description: 'Invoices, receipts, WHT and tax rules',
-    modules: { ...all('edit', ['dashboard', 'invoices', 'tax']), customers: 'view', contracts: 'view', files: 'view', jobs: 'view' },
+    id: 'finance', name: 'Accounts Manager', basedOn: 'finance', isSystem: true, defaultScope: 'company', color: '#0E8A5F',
+    description: 'Invoices, receipts, WHT and tax rules. Read-only on customers, contracts, jobs and complaints.',
+    modules: { ...all('edit', ['dashboard', 'invoices', 'tax']), customers: 'view', contracts: 'view', files: 'view', jobs: 'view', complaints: 'view', approvals: 'view' },
   },
   {
-    id: 'team_leader', name: 'Team Leader', basedOn: 'team_leader', isSystem: true, defaultScope: 'team', color: '#9A3412',
-    description: 'Conducts client meetings, assigns team members, records findings and submits reports. Escalates to proposals or company profile based on client request.',
-    modules: { dashboard: 'edit', crm: 'view', inspections: 'edit', pco: 'edit', customers: 'view', proposals: 'view' },
+    id: 'team_leader', name: 'Operations Manager', basedOn: 'team_leader', isSystem: true, defaultScope: 'team', color: '#9A3412',
+    description: 'Manages field visits, schedules service jobs, assigns team members, submits service reports and handles team complaints.',
+    modules: { dashboard: 'edit', crm: 'view', inspections: 'edit', pco: 'edit', customers: 'view', proposals: 'view', contracts: 'view', complaints: 'edit', files: 'edit' },
   },
   {
     id: 'auditor', name: 'Auditor (read-only)', basedOn: 'auditor', isSystem: true, defaultScope: 'company', color: '#4B5563',
-    description: 'Read-only access for compliance review',
-    modules: all('view', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'invoices', 'settings']),
+    isHidden: true,
+    description: 'Read-only access for compliance review. Hidden from the default role picker.',
+    modules: all('view', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'invoices', 'settings', 'complaints', 'approvals']),
+  },
+  {
+    id: 'technician', name: 'Technician (PCO)', basedOn: 'technician', isSystem: true, defaultScope: 'own', color: '#0891B2',
+    description: 'Field technician — sees and updates only the service jobs assigned to them.',
+    modules: { pco: 'edit', jobs: 'view' },
   },
 ];
 
@@ -175,7 +195,7 @@ export const SCOPE_LABELS: Partial<Record<DataScope, string>> = {
 
 const MODULE_HOME: Partial<Record<ModuleKey, string>> = {
   dashboard: '/',
-  pco: '/pco-field',
+  pco: '/operations/jobs',
   customers: '/customers',
   crm: '/crm',
   inspections: '/inspections',

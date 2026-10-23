@@ -62,3 +62,77 @@ describe('firestore.rules: folders', () => {
     expect(block('outreach_logs')).toMatch(/allow update: if filingOnly\(\)/);
   });
 });
+
+describe('firestore.rules: complaints', () => {
+  it('complaints collection rule block exists', () => {
+    expect(rules).toMatch(/match \/complaints\/\{id\}/);
+  });
+
+  it('complaints require complaints module access to read', () => {
+    const c = block('complaints');
+    expect(c).toMatch(/canView\('complaints'\)/);
+  });
+
+  it('complaints require edit access to create', () => {
+    const c = block('complaints');
+    expect(c).toMatch(/canEdit\('complaints'\)/);
+  });
+
+  it('complaints are scoped (inScope check on read)', () => {
+    const c = block('complaints');
+    expect(c).toMatch(/inScope/);
+  });
+
+  it('complaints can only be deleted by super admin', () => {
+    const c = block('complaints');
+    expect(c).toMatch(/isSuperAdmin\(\)/);
+  });
+
+  it('defaultModulesFor includes complaints for management, sales, operations', () => {
+    expect(rules).toMatch(/'complaints':'edit'.*'settings':'view'/s);
+    const mgmt = rules.match(/r == 'management'[\s\S]*?complaints.*?edit/)?.[0];
+    expect(mgmt).toBeTruthy();
+  });
+
+  it('defaultModulesFor includes complaints view for finance and auditor', () => {
+    expect(rules).toMatch(/'complaints':'view'/);
+  });
+
+  it('defaultModulesFor includes admin role with edit on operational modules and view on invoices/settings', () => {
+    const adminBlock = rules.match(/r == 'admin'[\s\S]*?'approvals':'view'\}/)?.[0];
+    expect(adminBlock).toBeTruthy();
+    expect(adminBlock).toMatch(/'dashboard':'edit'/);
+    expect(adminBlock).toMatch(/'customers':'edit'/);
+    expect(adminBlock).toMatch(/'complaints':'edit'/);
+    expect(adminBlock).toMatch(/'invoices':'view'/);
+    expect(adminBlock).toMatch(/'approvals':'view'/);
+  });
+
+  it('defaultModulesFor gives management edit on approvals', () => {
+    const mgmtBlock = rules.match(/r == 'management'[\s\S]*?'approvals':'edit'\}/)?.[0];
+    expect(mgmtBlock).toBeTruthy();
+  });
+
+  it('approvals rules: managers can update; nobody can approve own request', () => {
+    expect(rules).toMatch(/match \/approvals\/\{id\}/);
+    expect(rules).toMatch(/canEdit\('approvals'\)/);
+    expect(rules).toMatch(/resource\.data\.ownerUid != request\.auth\.uid/);
+  });
+
+  it('approvals rules: requesters can only read their own; managers read all', () => {
+    const appBlock = rules.match(/match \/approvals\/\{id\}[\s\S]*?allow delete/)?.[0];
+    expect(appBlock).toBeTruthy();
+    expect(appBlock).toMatch(/canEdit\('approvals'\)/);
+    expect(appBlock).toMatch(/resource\.data\.ownerUid == request\.auth\.uid/);
+  });
+
+  it('contracts rule allows canEdit write (required for approval-triggered cancel/reactivate)', () => {
+    const contractBlock = block('contracts');
+    expect(contractBlock).toMatch(/canEdit\('contracts'\)/);
+    expect(contractBlock).toMatch(/allow (create|update|write)/);
+  });
+
+  it('contracts are protected by updateMod (folder ownership preserved on update)', () => {
+    expect(block('contracts')).toMatch(/updateMod\(/);
+  });
+});

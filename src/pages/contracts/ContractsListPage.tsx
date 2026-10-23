@@ -8,7 +8,9 @@ import {
   AlertTriangle,
   Truck,
   RotateCw,
-  ShieldCheck,
+  UserCheck,
+  Ban,
+  RefreshCw,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -18,7 +20,10 @@ import { formatPKR, formatDate, generatePermanentId } from '../../lib/formatters
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
+import { canEditModule } from '../../lib/permissions';
+import { effectiveContractStatus } from '../../lib/contractUtils';
 import type { Contract, ContractType, ServiceFrequency } from '../../types/operations';
+import type { Approval } from '../../types/approvals';
 import { getContractNextAction } from '../../lib/workflow';
 import { frequencyForVisits } from '../../lib/proposalPlan';
 import { packStatus } from '../../lib/onboarding';
@@ -71,19 +76,31 @@ function planFieldsFrom(p: Proposal | undefined): Partial<Contract> {
   };
 }
 
+type ContractStatusFilter = 'all' | 'active' | 'expiring' | 'expired' | 'renewed' | 'cancelled';
+
 export const ContractsListPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { success, warning, info } = useNotification();
-  const { userProfile } = useAuth();
+  const { success, warning, error } = useNotification();
+  const { userProfile, effectiveRole } = useAuth();
   useDataStore();
 
+  const canEdit = canEditModule(effectiveRole, 'contracts');
+  const canDirectAction = canEditModule(effectiveRole, 'approvals');
+
   const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<ContractStatusFilter>('all');
   const [selectedContract, setSelectedContract] = useState<Contract | null>(null);
   const [scheduleFor, setScheduleFor] = useState<Contract | null>(null);
   const [showNewContractModal, setShowNewContractModal] = useState(
     searchParams.get('action') === 'new_contract' || Boolean(searchParams.get('fromProposal'))
   );
+  const [assignOpsModal, setAssignOpsModal] = useState<Contract | null>(null);
+  const [selectedOpsUserId, setSelectedOpsUserId] = useState('');
+  const [cancelModal, setCancelModal] = useState<Contract | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [reactivateModal, setReactivateModal] = useState<Contract | null>(null);
+  const [reactivateNote, setReactivateNote] = useState('');
 
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
@@ -124,6 +141,8 @@ export const ContractsListPage: React.FC = () => {
   }, [linkedId]);
 
   const contracts = dataService.getContracts();
+  const allComplaints = dataService.getComplaints();
+  const today = new Date().toISOString().split('T')[0];
 
   // Check 60-day AMC expiry warnings (Step 15)
   const expiringContracts = contracts.filter((c) => {
@@ -135,11 +154,15 @@ export const ContractsListPage: React.FC = () => {
 
   const filtered = contracts.filter((c) => {
     const q = searchQuery.toLowerCase();
-    return (
+    const nameHit =
       c.id.toLowerCase().includes(q) ||
       c.customerName.toLowerCase().includes(q) ||
-      (c.branchName && c.branchName.toLowerCase().includes(q))
-    );
+      (c.branchName && c.branchName.toLowerCase().includes(q));
+    if (!nameHit) return false;
+    const eff = effectiveContractStatus(c, today);
+    if (statusFilter === 'all') return true;
+    if (statusFilter === 'expiring') return eff === 'active' && expiringContracts.some((ec) => ec.id === c.id);
+    return eff === statusFilter;
   });
 
   const handleCreateContract = (e: React.FormEvent) => {
@@ -277,9 +300,90 @@ export const ContractsListPage: React.FC = () => {
 
     success(
       'AMC Renewal Completed',
-      `Cloned as Contract ${clonedContract.id} & generated Renewal Proposal ${renewalProposal.id} for term ${formatDate(newStart)} to ${formatDate(newEnd)}.`
+      `Contract ${clonedContract.id} & Renewal Proposal ${renewalProposal.id} created for ${formatDate(newStart)}–${formatDate(newEnd)}. Next: schedule a renewal meeting with the client to discuss terms.`
     );
   };
+
+  const handleAssignOpsManager = () => {
+    if (!assignOpsModal || !selectedOpsUserId) return;
+    const opsUser = dataService.getStaff().find((u) => u.uid === selectedOpsUserId);
+    if (!opsUser) return;
+    const now = new Date().toISOString();
+    const updated: Contract = {
+      ...assignOpsModal,
+      assignedOperationsManagerId: opsUser.uid,
+      assignedOperationsManagerName: opsUser.displayName,
+      assignedAt: now,
+      updatedAt: now,
+    };
+    dataService.saveContract(updated, userProfile?.email);
+    // Copy assignment to all pending jobs for this contract
+    const contractJobs = dataService.getJobs().filter((j) => j.contractId === assignOpsModal.id && j.status === 'scheduled');
+    contractJobs.forEach((job) => {
+      dataService.saveJob({ ...job, assignedTeamLeaderId: opsUser.uid, assignedTeamLeaderName: opsUser.displayName, updatedAt: now }, userProfile?.email);
+    });
+    success('Operations Manager assigned', `${opsUser.displayName} is now managing ${assignOpsModal.id}.`);
+    setAssignOpsModal(null);
+    setSelectedOpsUserId('');
+  };
+
+  function handleCancelContract() {
+    if (!cancelModal || !cancelReason.trim()) { error('Reason required', 'Please state the cancellation reason.'); return; }
+    if (canDirectAction) {
+      const updated: Contract = { ...cancelModal, status: 'cancelled', updatedAt: new Date().toISOString() };
+      dataService.saveContract(updated, userProfile?.email);
+      success('Contract cancelled', `${cancelModal.id} has been cancelled.`);
+    } else {
+      const approvalId = `AP-${new Date().getFullYear()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      const approval: Approval = {
+        id: approvalId,
+        type: 'contract_cancel',
+        entityType: 'contract',
+        entityId: cancelModal.id,
+        entityTitle: `${cancelModal.id} — ${cancelModal.customerName}`,
+        ownerUid: userProfile?.uid ?? '',
+        requestedBy: userProfile?.email ?? '',
+        requestedByName: userProfile?.displayName ?? 'Staff',
+        requestedAt: new Date().toISOString(),
+        reason: cancelReason,
+        status: 'pending',
+        updatedAt: new Date().toISOString(),
+      };
+      dataService.saveApproval(approval, userProfile?.email);
+      success('Cancellation requested', `Approval ${approvalId} submitted — awaiting manager decision.`);
+    }
+    setCancelModal(null);
+    setCancelReason('');
+  }
+
+  function handleReactivateContract() {
+    if (!reactivateModal) return;
+    if (canDirectAction) {
+      const updated: Contract = { ...reactivateModal, status: 'active', updatedAt: new Date().toISOString() };
+      dataService.saveContract(updated, userProfile?.email);
+      success('Contract reactivated', `${reactivateModal.id} is now active.`);
+    } else {
+      const approvalId = `AP-${new Date().getFullYear()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      const approval: Approval = {
+        id: approvalId,
+        type: 'contract_reactivate',
+        entityType: 'contract',
+        entityId: reactivateModal.id,
+        entityTitle: `${reactivateModal.id} — ${reactivateModal.customerName}`,
+        ownerUid: userProfile?.uid ?? '',
+        requestedBy: userProfile?.email ?? '',
+        requestedByName: userProfile?.displayName ?? 'Staff',
+        requestedAt: new Date().toISOString(),
+        reason: reactivateNote.trim() || 'Reactivation requested',
+        status: 'pending',
+        updatedAt: new Date().toISOString(),
+      };
+      dataService.saveApproval(approval, userProfile?.email);
+      success('Reactivation requested', `Approval ${approvalId} submitted — awaiting manager decision.`);
+    }
+    setReactivateModal(null);
+    setReactivateNote('');
+  }
 
   return (
     <div className="animate-fade-in">
@@ -341,6 +445,24 @@ export const ContractsListPage: React.FC = () => {
         </div>
       )}
 
+      {/* Status filter chips */}
+      <div className="card" style={{ padding: '0.65rem 1.25rem', marginBottom: '0.75rem' }}>
+        <div className="chip-row" style={{ marginBottom: 0 }}>
+          {([
+            ['all', 'All'],
+            ['active', 'Active'],
+            ['expiring', 'Expiring (60d)'],
+            ['expired', 'Expired'],
+            ['renewed', 'Renewed'],
+            ['cancelled', 'Cancelled'],
+          ] as [ContractStatusFilter, string][]).map(([val, label]) => (
+            <button key={val} type="button" className={`chip ${statusFilter === val ? 'chip-on' : ''}`} onClick={() => setStatusFilter(val)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Search Bar */}
       <div className="card" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ position: 'relative', width: '320px' }}>
@@ -378,8 +500,9 @@ export const ContractsListPage: React.FC = () => {
           </thead>
           <tbody>
             {filtered.map((c) => {
-              const nextAct = getContractNextAction(c);
+              const _nextAct = getContractNextAction(c);
               const hasJobs = (c.totalJobsScheduled || 0) > 0;
+              const openComplaintCount = allComplaints.filter((cmp) => cmp.contractId === c.id && !['closed'].includes(cmp.status)).length;
 
               return (
                 <tr key={c.id}>
@@ -421,7 +544,17 @@ export const ContractsListPage: React.FC = () => {
                       </div>
                     )}
                   </td>
-                  <td><StatusBadge status={c.status} /></td>
+                  <td>
+                    <StatusBadge status={effectiveContractStatus(c, today)} />
+                    {openComplaintCount > 0 && (
+                      <div style={{ marginTop: 3 }}>
+                        <button className="btn-link" style={{ fontSize: '0.7rem', color: 'var(--ikpm-rose-600)' }}
+                          onClick={() => navigate(`/complaints?contractId=${c.id}`)}>
+                          ⚠ {openComplaintCount} complaint{openComplaintCount > 1 ? 's' : ''}
+                        </button>
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
                       {!hasJobs ? (
@@ -449,10 +582,38 @@ export const ContractsListPage: React.FC = () => {
                       <button
                         className="btn btn-secondary"
                         style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem' }}
+                        onClick={() => { setAssignOpsModal(c); setSelectedOpsUserId(c.assignedOperationsManagerId || ''); }}
+                        title={c.assignedOperationsManagerName ? `Ops: ${c.assignedOperationsManagerName}` : 'Assign Operations Manager'}
+                      >
+                        <UserCheck size={12} />
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem' }}
                         onClick={() => setSelectedContract(c)}
                       >
                         Details
                       </button>
+                      {canEdit && effectiveContractStatus(c, today) !== 'cancelled' && effectiveContractStatus(c, today) !== 'renewed' && (
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem', color: 'var(--ikpm-rose-600)' }}
+                          title="Cancel contract"
+                          onClick={() => { setCancelModal(c); setCancelReason(''); }}
+                        >
+                          <Ban size={12} />
+                        </button>
+                      )}
+                      {canEdit && effectiveContractStatus(c, today) === 'cancelled' && (
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}
+                          title="Reactivate contract"
+                          onClick={() => { setReactivateModal(c); setReactivateNote(''); }}
+                        >
+                          <RefreshCw size={12} />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -471,6 +632,47 @@ export const ContractsListPage: React.FC = () => {
         maxWidth="680px"
       >
         <form onSubmit={handleCreateContract}>
+          {/* Primary path: select an accepted proposal and auto-fill everything */}
+          {(() => {
+            const accepted = proposals.filter((p) => p.status === 'accepted');
+            return accepted.length > 0 ? (
+              <div className="form-group" style={{ marginBottom: '1.25rem', padding: '0.85rem 1rem', background: 'var(--bg-surface-alt)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)' }}>
+                <label className="form-label" style={{ fontWeight: 700 }}>
+                  From accepted proposal <span style={{ color: 'var(--ikpm-emerald-600)', fontSize: '0.78rem', fontWeight: 400 }}>(recommended — auto-fills the form)</span>
+                </label>
+                <select
+                  className="form-select"
+                  value={newContract.proposalId}
+                  onChange={(e) => {
+                    const p = proposals.find((x) => x.id === e.target.value);
+                    if (!p) { setNewContract({ ...newContract, proposalId: '' }); return; }
+                    setNewContract({
+                      ...newContract,
+                      proposalId: p.id,
+                      customerType: p.customerType,
+                      customerId: p.customerId,
+                      branchId: p.branchId || '',
+                      startDate: p.tenureStart || newContract.startDate,
+                      endDate: p.tenureEnd || newContract.endDate,
+                      frequency: p.serviceVisitsPerMonth ? (p.serviceVisitsPerMonth >= 4 ? 'weekly' : p.serviceVisitsPerMonth >= 2 ? 'fortnightly' : 'monthly') : 'monthly',
+                      totalContractValue: p.totalAmount,
+                      serviceScope: p.scopeOfWork || newContract.serviceScope,
+                    });
+                  }}
+                >
+                  <option value="">— Manual entry (no proposal) —</option>
+                  {accepted.map((p) => (
+                    <option key={p.id} value={p.id}>{p.id} · {p.customerName}{p.branchName ? ` / ${p.branchName}` : ''} · {new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', maximumFractionDigits: 0 }).format(p.totalAmount)}</option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="error-hint" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <AlertTriangle size={15} />
+                <span>No accepted proposals found. The recommended flow is: create a proposal → client accepts it → create contract from proposal. You can still enter contract details manually below.</span>
+              </div>
+            );
+          })()}
           {newContract.customerId && (() => {
             const pack = dataService.getOnboardingPack(newContract.customerId);
             if (pack && packStatus(pack) === 'sent') return null;
@@ -485,6 +687,22 @@ export const ContractsListPage: React.FC = () => {
               </div>
             );
           })()}
+          {(() => {
+            const allContracts = dataService.getContracts();
+            const dupes = allContracts.filter(
+              (c) => c.customerId === newContract.customerId &&
+                (c.branchId || undefined) === (newContract.branchId || undefined) &&
+                c.status === 'active'
+            );
+            return dupes.length > 0 ? (
+              <div className="error-hint" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <AlertTriangle size={15} />
+                <span style={{ flex: 1 }}>
+                  {dupes.length} active contract{dupes.length > 1 ? 's' : ''} already exist{dupes.length === 1 ? 's' : ''} for this client{newContract.branchId ? ' / branch' : ''} ({dupes.map((c) => c.id).join(', ')}). Consider renewing instead of creating a duplicate.
+                </span>
+              </div>
+            ) : null;
+          })()}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '1rem' }}>
             <div className="form-group">
               <label className="form-label">Client Type</label>
@@ -497,6 +715,7 @@ export const ContractsListPage: React.FC = () => {
                     ...newContract,
                     customerType: val,
                     customerId: val === 'company' ? companies[0]?.id || '' : clients[0]?.id || '',
+                    branchId: '',
                   });
                 }}
               >
@@ -510,7 +729,7 @@ export const ContractsListPage: React.FC = () => {
               <select
                 className="form-select"
                 value={newContract.customerId}
-                onChange={(e) => setNewContract({ ...newContract, customerId: e.target.value })}
+                onChange={(e) => setNewContract({ ...newContract, customerId: e.target.value, branchId: '' })}
               >
                 {newContract.customerType === 'company'
                   ? companies.map((c) => (
@@ -526,6 +745,30 @@ export const ContractsListPage: React.FC = () => {
               </select>
             </div>
           </div>
+
+          {newContract.customerType === 'company' && (() => {
+            const branchList = dataService.getBranches(newContract.customerId);
+            return (
+              <div className="form-group">
+                <label className="form-label">Branch / Location</label>
+                <select
+                  className="form-select"
+                  value={newContract.branchId}
+                  onChange={(e) => setNewContract({ ...newContract, branchId: e.target.value })}
+                >
+                  <option value="">Head office / all branches</option>
+                  {branchList.map((b) => (
+                    <option key={b.id} value={b.id}>{b.branchName}</option>
+                  ))}
+                </select>
+                {newContract.customerId && (
+                  <div style={{ fontSize: '0.72rem', marginTop: '0.2rem' }}>
+                    <a href={`/customers/company/${newContract.customerId}?tab=branches`} style={{ color: 'var(--ikpm-emerald-600)' }}>＋ Add new branch</a>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
             <div className="form-group">
@@ -698,6 +941,113 @@ export const ContractsListPage: React.FC = () => {
         </Modal>
       )}
       {scheduleFor && <ScheduleGeneratorModal contract={scheduleFor} onClose={() => setScheduleFor(null)} />}
+
+      {/* Modal: Cancel Contract */}
+      {cancelModal && (
+        <Modal
+          isOpen
+          onClose={() => { setCancelModal(null); setCancelReason(''); }}
+          title={canDirectAction ? 'Cancel Contract' : 'Request Contract Cancellation'}
+          subtitle={`${cancelModal.id} — ${cancelModal.customerName}`}
+          maxWidth="440px"
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => { setCancelModal(null); setCancelReason(''); }}>Back</button>
+              <button className="btn btn-danger" onClick={handleCancelContract} disabled={!cancelReason.trim()}>
+                <Ban size={14} /> {canDirectAction ? 'Cancel contract' : 'Submit for approval'}
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {!canDirectAction && (
+              <p style={{ margin: 0, fontSize: '0.875rem', color: 'var(--text-muted)' }}>
+                A cancellation request will be sent to the manager for approval. The contract status will only change once approved.
+              </p>
+            )}
+            <div className="form-group">
+              <label className="form-label">Cancellation reason <span className="required">*</span></label>
+              <textarea className="form-input" rows={3} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="Why is this contract being cancelled?" />
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: Reactivate Contract */}
+      {reactivateModal && (
+        <Modal
+          isOpen
+          onClose={() => { setReactivateModal(null); setReactivateNote(''); }}
+          title={canDirectAction ? 'Reactivate Contract' : 'Request Contract Reactivation'}
+          subtitle={`${reactivateModal.id} — ${reactivateModal.customerName}`}
+          maxWidth="440px"
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => { setReactivateModal(null); setReactivateNote(''); }}>Back</button>
+              <button className="btn btn-primary" onClick={handleReactivateContract}>
+                <RefreshCw size={14} /> {canDirectAction ? 'Reactivate' : 'Submit for approval'}
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {!canDirectAction && (
+              <p style={{ margin: 0, fontSize: '0.875rem', color: 'var(--text-muted)' }}>
+                A reactivation request will be submitted for manager approval.
+              </p>
+            )}
+            <div className="form-group">
+              <label className="form-label">Note (optional)</label>
+              <input className="form-input" value={reactivateNote} onChange={(e) => setReactivateNote(e.target.value)}
+                placeholder="Reason for reactivation" />
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: Assign Operations Manager */}
+      {assignOpsModal && (
+        <Modal
+          isOpen
+          onClose={() => { setAssignOpsModal(null); setSelectedOpsUserId(''); }}
+          title="Assign Operations Manager"
+          subtitle={`Contract ${assignOpsModal.id} — ${assignOpsModal.customerName}`}
+          maxWidth="420px"
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => { setAssignOpsModal(null); setSelectedOpsUserId(''); }}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleAssignOpsManager} disabled={!selectedOpsUserId}>
+                <UserCheck size={14} /> Assign
+              </button>
+            </>
+          }
+        >
+          {(() => {
+            const opsStaff = dataService.getStaff();
+            return (
+              <div className="form-group">
+                <label className="form-label">Operations Manager <span className="required">*</span></label>
+                <select
+                  className="form-select"
+                  value={selectedOpsUserId}
+                  onChange={(e) => setSelectedOpsUserId(e.target.value)}
+                >
+                  <option value="">— Select staff —</option>
+                  {opsStaff.map((u) => (
+                    <option key={u.uid} value={u.uid}>{u.displayName} · {u.role}</option>
+                  ))}
+                </select>
+                {assignOpsModal.assignedOperationsManagerName && (
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
+                    Currently: {assignOpsModal.assignedOperationsManagerName}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
     </div>
   );
 };

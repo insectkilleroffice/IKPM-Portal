@@ -31,6 +31,7 @@ const blankContact = (primary: boolean): LeadContact => ({
 
 interface FormState {
   customerType: 'company' | 'individual';
+  clientType: 'residential' | 'b2b';
   companyName: string;
   industry: string;
   source: LeadSource;
@@ -48,6 +49,7 @@ interface FormState {
 
 const fromLead = (lead?: Lead | null): FormState => ({
   customerType: lead?.customerType || 'company',
+  clientType: lead?.clientType || 'b2b',
   companyName: lead?.companyName || lead?.title || '',
   industry: lead?.industry || '',
   source: lead?.source || 'inbound_phone',
@@ -67,7 +69,7 @@ const validEmail = (e?: string) => !e || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 const validPhone = (p: string) => normalizePakistaniPhone(p).replace(/\D/g, '').length >= 10;
 
 export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved }) => {
-  const { success, warning, error } = useNotification();
+  const { success, warning } = useNotification();
   const { userProfile } = useAuth();
   const [form, setForm] = useState<FormState>(fromLead(lead));
   const [touched, setTouched] = useState(false);
@@ -128,6 +130,7 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
     }));
     const fields = {
       customerType: form.customerType,
+      clientType: form.customerType === 'individual' ? form.clientType : 'b2b' as const,
       companyName: isCompany ? form.companyName.trim() : undefined,
       title: form.companyName.trim(),
       industry: form.industry || undefined,
@@ -178,6 +181,13 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
         <button type="button" className={`chip ${isCompany ? 'chip-on' : ''}`} onClick={() => set('customerType', 'company')}>Company / organisation</button>
         <button type="button" className={`chip ${!isCompany ? 'chip-on' : ''}`} onClick={() => set('customerType', 'individual')}>Individual / household</button>
       </div>
+      {!isCompany && (
+        <div className="chip-row" style={{ marginTop: '0.4rem' }}>
+          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', alignSelf: 'center', marginRight: 4 }}>Client type:</span>
+          <button type="button" className={`chip ${form.clientType === 'b2b' ? 'chip-on' : ''}`} onClick={() => set('clientType', 'b2b')}>B2B / commercial</button>
+          <button type="button" className={`chip ${form.clientType === 'residential' ? 'chip-on' : ''}`} onClick={() => set('clientType', 'residential')}>Residential</button>
+        </div>
+      )}
 
       <div className="section-title" style={{ marginTop: 0 }}>{isCompany ? 'Company details' : 'Client details'}</div>
       <div className="form-grid-2">

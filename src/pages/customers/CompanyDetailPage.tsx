@@ -1,11 +1,9 @@
 import React, { useState, useMemo } from 'react';
-import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Building2,
   GitFork,
   MapPin,
   Phone,
-  Mail,
   Plus,
   FileSpreadsheet,
   FileSignature,
@@ -102,6 +100,7 @@ export const CompanyDetailPage: React.FC = () => {
   const jobs = dataService.getJobs(id);
   const invoices = dataService.getInvoices(id);
   const auditLogs = dataService.getAuditLogs('company', id);
+  const openComplaints = dataService.getComplaints(id).filter((c) => !['closed'].includes(c.status));
 
   // Branch-Filtered Subsets
   const filteredSites = useMemo(() => {
@@ -357,6 +356,17 @@ export const CompanyDetailPage: React.FC = () => {
           <Truck size={14} />
           Service Jobs ({filteredJobs.length})
         </button>
+
+        {openComplaints.length > 0 && (
+          <button
+            className="tab-btn"
+            onClick={() => navigate(`/complaints?action=filter&customerId=${id}`)}
+            style={{ borderColor: openComplaints.length > 0 ? 'var(--ikpm-rose-400)' : undefined }}
+          >
+            <AlertCircle size={14} color="var(--ikpm-rose-500)" />
+            Complaints ({openComplaints.length} open)
+          </button>
+        )}
 
         {hasRole(['super_admin', 'management', 'finance']) && (
           <>

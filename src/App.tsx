@@ -28,12 +28,16 @@ const JobsListPage = lazy(() => import('./pages/operations/JobsListPage').then((
 const DispatchCalendarPage = lazy(() => import('./pages/operations/DispatchCalendarPage').then((m) => ({ default: m.DispatchCalendarPage })));
 const InvoicesListPage = lazy(() => import('./pages/finance/InvoicesListPage').then((m) => ({ default: m.InvoicesListPage })));
 const TaxRulesPage = lazy(() => import('./pages/finance/TaxRulesPage').then((m) => ({ default: m.TaxRulesPage })));
+const FinanceReportsPage = lazy(() => import('./pages/finance/FinanceReportsPage').then((m) => ({ default: m.FinanceReportsPage })));
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const DocumentLibraryPage = lazy(() => import('./features/documents/DocumentLibraryPage').then((m) => ({ default: m.DocumentLibraryPage })));
 const TeamAccessPage = lazy(() => import('./pages/admin/TeamAccessPage').then((m) => ({ default: m.TeamAccessPage })));
 const InspectionsPage = lazy(() => import('./pages/inspections/InspectionsPage').then((m) => ({ default: m.InspectionsPage })));
+const MeetingsPage = lazy(() => import('./pages/meetings/MeetingsPage').then((m) => ({ default: m.MeetingsPage })));
 const VerifyDocumentPage = lazy(() => import('./pages/verify/VerifyDocumentPage').then((m) => ({ default: m.VerifyDocumentPage })));
 const ClientFilesPage = lazy(() => import('./features/documents/ClientFilesPage').then((m) => ({ default: m.ClientFilesPage })));
+const ComplaintsPage = lazy(() => import('./pages/complaints/ComplaintsPage').then((m) => ({ default: m.ComplaintsPage })));
+const ApprovalsPage = lazy(() => import('./pages/approvals/ApprovalsPage').then((m) => ({ default: m.ApprovalsPage })));
 
 function App() {
   return (
@@ -65,6 +69,7 @@ function App() {
                 <Route path="/customers/branch/:id" element={guard('customers', <BranchDetailPage />)} />
                 <Route path="/customers/individual/:id" element={guard('customers', <IndividualDetailPage />)} />
                 <Route path="/crm" element={guard('crm', <LeadsListPage />)} />
+                <Route path="/meetings" element={guard(['pco', 'inspections', 'crm'], <MeetingsPage />)} />
                 <Route path="/inspections" element={guard(['inspections', 'crm'], <InspectionsPage />)} />
                 <Route path="/proposals" element={guard('proposals', <ProposalsListPage />)} />
                 <Route path="/contracts" element={guard('contracts', <ContractsListPage />)} />
@@ -76,10 +81,13 @@ function App() {
                 {/* Field operations */}
                 <Route path="/operations/jobs" element={guard(['jobs', 'pco'], <JobsListPage />)} />
                 <Route path="/operations/calendar" element={guard('calendar', <DispatchCalendarPage />)} />
+                <Route path="/complaints" element={guard('complaints', <ComplaintsPage />)} />
+                <Route path="/approvals" element={guard('approvals', <ApprovalsPage />)} />
 
                 {/* Finance, invoicing & tax */}
                 <Route path="/finance/invoices" element={guard('invoices', <InvoicesListPage />)} />
                 <Route path="/finance/tax-rules" element={guard('tax', <TaxRulesPage />)} />
+                <Route path="/finance/reports" element={guard('invoices', <FinanceReportsPage />)} />
 
                 {/* Administration */}
                 <Route path="/admin/team" element={guard(['team', 'roles'], <TeamAccessPage />)} />

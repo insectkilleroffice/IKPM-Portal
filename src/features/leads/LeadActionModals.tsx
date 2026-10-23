@@ -4,7 +4,7 @@ import { Modal } from '../../components/common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
-import { blankLeadBranch, CHANNELS, contactsOf, INSPECTION_PHOTO_TYPES, OUTCOMES, STUCK_AT_REASONS, syncLeadFields } from '../../lib/leadWorkflow';
+import { blankLeadBranch, CHANNELS, contactsOf, INSPECTION_PHOTO_TYPES, OUTCOMES, stageOf, STUCK_AT_REASONS, syncLeadFields } from '../../lib/leadWorkflow';
 import { roleLabel } from '../../lib/permissions';
 import { dataService } from '../../services/dataService';
 import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadBranch, LeadContact, MeetingFollowUp, MeetingFollowUpType, PestType, RiskFinding, StuckAtReason } from '../../types/crm';
@@ -311,9 +311,10 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
   const [addressChoice, setAddressChoice] = useState<string>('headquarter');
   const [customAddress, setCustomAddress] = useState('');
   const [instructions, setInstructions] = useState('');
+  const [meetingType, setMeetingType] = useState<'first_meeting' | 'negotiation' | 'renewal'>('first_meeting');
 
   const teams = store.getTeams();
-  const staff = store.getStaff().filter((u) => u.role !== 'auditor');
+  const staff = store.getStaff().filter((u) => !['auditor', 'technician'].includes(u.role));
 
   useEffect(() => {
     if (!lead) return;
@@ -327,6 +328,9 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
     setInstructions(i?.instructions || '');
     setAddressChoice(i?.meetingAddress ? 'custom' : 'headquarter');
     setCustomAddress(i?.meetingAddress || '');
+    // Default meeting type from existing inspection, or infer from stage
+    const st = stageOf(lead);
+    setMeetingType(i?.meetingType || (st === 'negotiation' ? 'negotiation' : 'first_meeting'));
   }, [lead]);
 
   if (!lead) return null;
@@ -367,6 +371,7 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
           inspectorIds: [teamLeaderId],
           instructions: instructions.trim() || undefined,
           meetingAddress: selectedMeetingAddress || undefined,
+          meetingType,
         },
         userProfile?.email
       );
@@ -394,6 +399,23 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
         </>
       }
     >
+      <div className="form-group">
+        <label className="form-label">Meeting type</label>
+        <div className="chip-row" style={{ marginBottom: 0 }}>
+          {([
+            { value: 'first_meeting', label: 'First meeting' },
+            { value: 'negotiation', label: 'Negotiation' },
+            { value: 'renewal', label: 'Renewal' },
+          ] as const).map((opt) => (
+            <button key={opt.value} type="button" className={`chip ${meetingType === opt.value ? 'chip-on' : ''}`} onClick={() => setMeetingType(opt.value)}>
+              {meetingType === opt.value && <Check size={14} />} {opt.label}
+            </button>
+          ))}
+        </div>
+        {meetingType === 'negotiation' && <div className="cell-sub" style={{ marginTop: '0.3rem' }}>Shorter report form — outcome, new terms, follow-up date. No inspection question.</div>}
+        {meetingType === 'renewal' && <div className="cell-sub" style={{ marginTop: '0.3rem' }}>Renewal discussion — no inspection required. Report covers renewal terms and next steps.</div>}
+      </div>
+
       <div className="form-grid-2">
         <div className="form-group">
           <label className="form-label">Date</label>
@@ -464,7 +486,7 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
 };
 
 // ---------------------------------------------------------------------------
-// Meeting report (TL submits after the client meeting — no pest inspection fields)
+// Meeting report (TL submits after the client meeting)
 // ---------------------------------------------------------------------------
 export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
   const { userProfile } = useAuth();
@@ -477,6 +499,20 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
   const [tlStatus, setTlStatus] = useState<'send_proposal' | 'waiting' | ''>('');
   const [meetingReportNote, setMeetingReportNote] = useState('');
   const [branches, setBranches] = useState<LeadBranch[]>([]);
+  // Inspection handling (first_meeting only)
+  const [inspectionHandling, setInspectionHandling] = useState<'done_inline' | 'tl_schedule' | 'separate_visit' | ''>('');
+  // Inline inspection fields (when inspectionHandling === 'done_inline')
+  const [inlinePestTypes, setInlinePestTypes] = useState<import('../../types/crm').PestType[]>([]);
+  const [inlineSeverity, setInlineSeverity] = useState<'low' | 'moderate' | 'high' | 'severe'>('moderate');
+  const [inlineAreaSqFt, setInlineAreaSqFt] = useState('');
+  const [inlineCriticalFindings, setInlineCriticalFindings] = useState('');
+  const [inlineRecommendedTreatment, setInlineRecommendedTreatment] = useState('');
+  // Negotiation/renewal meeting fields
+  const [negoTermsNote, setNegoTermsNote] = useState('');
+  const [followUpDate, setFollowUpDate] = useState('');
+
+  const detectedMeetingType = lead?.inspection?.meetingType || 'first_meeting';
+  const isNegoRenewal = detectedMeetingType === 'negotiation' || detectedMeetingType === 'renewal';
 
   useEffect(() => {
     if (!lead) return;
@@ -487,6 +523,10 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
     setTeamLeaderNotes(i?.teamLeaderNotes || '');
     setTlStatus(i?.tlStatus || '');
     setMeetingReportNote(i?.meetingReportNote || '');
+    setNegoTermsNote(i?.negotiationTermsNote || '');
+    setFollowUpDate(lead.nextFollowUp || '');
+    setInspectionHandling(i?.inspectionHandling || '');
+    if (i?.pestTypesFound?.length) { setInlinePestTypes(i.pestTypesFound); setInlineSeverity(i.infestationSeverity || 'moderate'); setInlineAreaSqFt(String(i.areaSqFt || '')); setInlineCriticalFindings(i.criticalFindings || ''); setInlineRecommendedTreatment(i.recommendedTreatment || ''); }
     if (i?.meetingFollowUps?.length) {
       setFollowUps(i.meetingFollowUps);
     } else if (i?.clientRequest) {
@@ -537,14 +577,25 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
       updated = dataService.recordMeetingReport(
         lead.id,
         {
+          meetingType: detectedMeetingType,
           reportTitle: reportTitle.trim() || undefined,
           siteName: siteName.trim() || undefined,
           observedBy: observedBy.trim() || undefined,
           teamLeaderNotes: teamLeaderNotes.trim() || undefined,
-          clientRequest: derivedClientRequest,
-          meetingFollowUps: followUps.length ? followUps : undefined,
+          clientRequest: isNegoRenewal ? undefined : derivedClientRequest,
+          meetingFollowUps: isNegoRenewal ? undefined : (followUps.length ? followUps : undefined),
           meetingReportNote: meetingReportNote.trim() || undefined,
-          tlStatus: tlStatus || undefined,
+          tlStatus: isNegoRenewal ? undefined : (tlStatus || undefined),
+          inspectionHandling: (!isNegoRenewal && inspectionHandling) ? inspectionHandling : undefined,
+          negotiationTermsNote: isNegoRenewal ? (negoTermsNote.trim() || undefined) : undefined,
+          // Inline inspection fields (first_meeting only, when done_inline)
+          ...((!isNegoRenewal && inspectionHandling === 'done_inline') ? {
+            pestTypesFound: inlinePestTypes,
+            infestationSeverity: inlineSeverity,
+            areaSqFt: Number(inlineAreaSqFt) || 0,
+            criticalFindings: inlineCriticalFindings.trim(),
+            recommendedTreatment: inlineRecommendedTreatment.trim(),
+          } : {}),
         },
         userProfile?.email,
         validBranches.length ? validBranches : undefined
@@ -553,10 +604,14 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
       return error('Could not save report', err instanceof Error ? err.message : String(err));
     }
     if (updated) {
-      const fuNames = followUps.filter((f) => f.type !== 'not_interested').map((f) =>
-        ({ company_profile: 'Company profile', proposal: 'Proposal', inspection: 'Site inspection', other_documents: 'Documents', contract_ready: 'Ready to sign', not_interested: 'Not interested' }[f.type])
-      ).filter(Boolean).join(', ');
-      success('Meeting report saved', fuNames ? `Client asked for: ${fuNames}.` : `${lead.title} meeting report recorded.`);
+      if (isNegoRenewal) {
+        success(`${detectedMeetingType === 'renewal' ? 'Renewal' : 'Negotiation'} meeting report saved`, negoTermsNote ? `Terms discussed: ${negoTermsNote.slice(0, 60)}` : `${lead.title} meeting report recorded.`);
+      } else {
+        const fuNames = followUps.filter((f) => f.type !== 'not_interested').map((f) =>
+          ({ company_profile: 'Company profile', proposal: 'Proposal', inspection: 'Site inspection', other_documents: 'Documents', contract_ready: 'Ready to sign', not_interested: 'Not interested' }[f.type])
+        ).filter(Boolean).join(', ');
+        success('Meeting report saved', fuNames ? `Client asked for: ${fuNames}.` : `${lead.title} meeting report recorded.`);
+      }
       onDone?.(updated);
     }
     onClose();
@@ -570,7 +625,7 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
     <Modal
       isOpen
       onClose={onClose}
-      title={`Meeting report: ${lead.title}`}
+      title={`${detectedMeetingType === 'negotiation' ? 'Negotiation meeting' : detectedMeetingType === 'renewal' ? 'Renewal meeting' : 'First meeting'} report: ${lead.title}`}
       subtitle={lead.inspection?.scheduledDate ? (() => {
         const i = lead.inspection!;
         return `Visit on ${new Date(i.scheduledDate).toLocaleDateString('en-GB')}${i.assignedTeamLeaderName ? ` · Leader: ${i.assignedTeamLeaderName}` : ''}`;
@@ -585,6 +640,7 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
     >
       {lead.inspection?.instructions && <div className="info-hint" style={{ marginBottom: '1rem' }}><strong>Instructions:</strong> {lead.inspection.instructions}</div>}
 
+      {/* Common header fields */}
       <div className="form-grid-2">
         <div className="form-group" style={{ gridColumn: 'span 2' }}>
           <label className="form-label">Report title</label>
@@ -601,125 +657,188 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
       </div>
 
       <div className="form-group">
-        <label className="form-label">Team leader notes</label>
+        <label className="form-label">Notes</label>
         <textarea className="form-textarea" rows={2} value={teamLeaderNotes} onChange={(e) => setTeamLeaderNotes(e.target.value)} placeholder="Internal notes, client verbal agreements, access details…" />
       </div>
 
-      {/* Meeting outcome checklist */}
-      <div className="form-group" style={{ background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
-        <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.5rem', display: 'block' }}>
-          What did the client ask for? <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--ikpm-emerald-700)' }}>tick all that apply · mark done when delivered</span>
-        </label>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.75rem' }}>
-          {([
-            { type: 'company_profile' as MeetingFollowUpType, label: 'Company Profile', hint: 'Send IKPM company profile / brochure' },
-            { type: 'proposal' as MeetingFollowUpType, label: 'Proposal / Quote', hint: 'Prepare a service proposal with pricing' },
-            { type: 'inspection' as MeetingFollowUpType, label: 'Site Inspection (separate visit)', hint: 'A dedicated pest inspection — fill in date and location below' },
-            { type: 'other_documents' as MeetingFollowUpType, label: 'Other documents', hint: 'Specify what documents the client needs' },
-            { type: 'contract_ready' as MeetingFollowUpType, label: 'Ready to sign', hint: 'Client is ready to proceed to a contract' },
-            { type: 'not_interested' as MeetingFollowUpType, label: 'Not interested', hint: 'Client declined' },
-          ]).map((opt) => {
-            const fu = followUps.find((f) => f.type === opt.type);
-            const checked = Boolean(fu);
-            const isNegative = opt.type === 'not_interested';
-            const borderC = checked ? (isNegative ? 'var(--color-error, #DC2626)' : 'var(--ikpm-emerald-400)') : 'var(--border-subtle)';
-            const bgC = checked ? (isNegative ? '#FEF2F2' : 'var(--ikpm-emerald-100)') : 'var(--surface-card)';
-            return (
-              <div key={opt.type} style={{ border: `1px solid ${borderC}`, borderRadius: '0.4rem', background: bgC }}>
-                {/* Main row */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.65rem' }}>
-                  <input type="checkbox" checked={checked} onChange={(e) => toggleFollowUp(opt.type, e.target.checked)} style={{ flexShrink: 0 }} />
-                  <span style={{ flex: 1, fontSize: '0.875rem', fontWeight: checked ? 600 : undefined }} title={opt.hint}>{opt.label}</span>
-                  {opt.type === 'other_documents' && checked && (
-                    <input type="text" className="form-input" style={{ flex: 2, minWidth: 0, padding: '0.2rem 0.5rem', fontSize: '0.8rem' }} value={fu?.note || ''} onChange={(e) => updateFollowUp('other_documents', { note: e.target.value })} placeholder="What documents?" />
-                  )}
-                  {checked && !isNegative && (
-                    <button type="button" className={`btn btn-xs ${fu?.doneAt ? 'btn-primary' : 'btn-ghost'}`} style={{ flexShrink: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }} onClick={() => toggleDone(opt.type)} title={fu?.doneAt ? `Done on ${new Date(fu.doneAt).toLocaleDateString('en-GB')}` : 'Mark as done when delivered'}>
-                      {fu?.doneAt ? '✓ Done' : 'Mark done'}
-                    </button>
-                  )}
-                </div>
-                {/* Inspection sub-panel: date + site/branch + address */}
-                {opt.type === 'inspection' && checked && (
-                  <div style={{ padding: '0.5rem 0.65rem 0.6rem', borderTop: '1px solid var(--ikpm-emerald-200)', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                      <div>
-                        <div style={{ fontSize: '0.75rem', color: '#1D4ED8', marginBottom: '0.15rem', fontWeight: 600 }}>Requested date</div>
-                        <input type="date" className="form-input" style={{ width: '155px', padding: '0.2rem 0.5rem', fontSize: '0.8rem' }} value={fu?.scheduledDate || ''} onChange={(e) => updateFollowUp('inspection', { scheduledDate: e.target.value })} />
-                      </div>
-                      <div style={{ flex: 1, minWidth: '180px' }}>
-                        <div style={{ fontSize: '0.75rem', color: '#1D4ED8', marginBottom: '0.15rem', fontWeight: 600 }}>Site / branch to inspect</div>
-                        <select className="form-select" style={{ fontSize: '0.8rem', padding: '0.2rem 0.5rem' }}
-                          value={fu?.branchId ? fu.branchId : (fu?.branchName !== undefined ? '_new' : '_hq')}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            if (v === '_hq') updateFollowUp('inspection', { branchId: undefined, branchName: undefined, branchAddress: undefined });
-                            else if (v === '_new') updateFollowUp('inspection', { branchId: undefined, branchName: '' });
-                            else {
-                              const b = (lead.branches ?? []).find((x) => x.id === v);
-                              updateFollowUp('inspection', { branchId: b?.id, branchName: b?.name, branchAddress: b?.address });
-                            }
-                          }}
-                        >
-                          <option value="_hq">Head office / main site</option>
-                          {(lead.branches ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}{b.city ? ` (${b.city})` : ''}</option>)}
-                          <option value="_new">Other / enter address</option>
-                        </select>
-                      </div>
-                    </div>
-                    {!fu?.branchId && fu?.branchName !== undefined && (
-                      <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                        <input className="form-input" style={{ flex: '1 1 140px', fontSize: '0.8rem', padding: '0.2rem 0.5rem' }} placeholder="Branch / site name" value={fu?.branchName || ''} onChange={(e) => updateFollowUp('inspection', { branchName: e.target.value })} />
-                        <input className="form-input" style={{ flex: '2 1 200px', fontSize: '0.8rem', padding: '0.2rem 0.5rem' }} placeholder="Address" value={fu?.branchAddress || ''} onChange={(e) => updateFollowUp('inspection', { branchAddress: e.target.value })} />
-                      </div>
-                    )}
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', cursor: 'pointer', color: '#1D4ED8' }}>
-                      <input type="checkbox" checked={fu?.addressTbd || false} onChange={(e) => updateFollowUp('inspection', { addressTbd: e.target.checked })} />
-                      Address not confirmed — will ask the client
-                    </label>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <textarea className="form-textarea" rows={2} value={meetingReportNote} onChange={(e) => setMeetingReportNote(e.target.value)} placeholder="Meeting outcome note — anything else discussed, follow-up points…" />
-        {/* TL decision gate */}
-        <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--ikpm-emerald-200)' }}>
-          <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.4rem', display: 'block' }}>
-            Team Leader decision <span style={{ fontWeight: 400, fontSize: '0.8rem' }}>— required before a proposal can be created</span>
+      {/* ---- Negotiation / Renewal short form ---- */}
+      {isNegoRenewal && (
+        <div className="form-group" style={{ background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
+          <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.5rem', display: 'block' }}>
+            {detectedMeetingType === 'renewal' ? 'Renewal discussion' : 'Negotiation outcome'}
           </label>
-          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-            {([
-              { value: 'send_proposal', label: '✓ Ready — send proposal', activeColor: 'var(--ikpm-emerald-600)', activeText: '#fff', activeBg: 'var(--ikpm-emerald-600)' },
-              { value: 'waiting', label: '⏳ Hold — need inspection / more steps', activeColor: '#D97706', activeText: '#92400E', activeBg: '#FFFBEB' },
-            ] as const).map((opt) => (
-              <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600, border: `1px solid ${tlStatus === opt.value ? opt.activeColor : 'var(--border-subtle)'}`, background: tlStatus === opt.value ? opt.activeBg : 'var(--surface-card)', color: tlStatus === opt.value ? opt.activeText : 'var(--text-primary)' }}>
-                <input type="radio" name="tlStatusMR" style={{ display: 'none' }} checked={tlStatus === opt.value} onChange={() => setTlStatus(opt.value)} />
-                {opt.label}
+          <div className="form-group">
+            <label className="form-label">Outcome / discussion summary</label>
+            <textarea className="form-textarea" rows={3} value={meetingReportNote} onChange={(e) => setMeetingReportNote(e.target.value)} placeholder="What was discussed, client's position, any agreement reached…" />
+          </div>
+          <div className="form-group">
+            <label className="form-label">New price / terms discussed</label>
+            <textarea className="form-textarea" rows={2} value={negoTermsNote} onChange={(e) => setNegoTermsNote(e.target.value)} placeholder="Revised rate, new scope, payment terms, client's counter-offer…" />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Follow-up date</label>
+            <input type="date" className="form-input" style={{ maxWidth: '200px' }} value={followUpDate} onChange={(e) => setFollowUpDate(e.target.value)} />
+          </div>
+        </div>
+      )}
+
+      {/* ---- First meeting full form ---- */}
+      {!isNegoRenewal && (
+        <>
+          {/* How will the inspection be handled? */}
+          <div className="form-group" style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
+            <label className="form-label" style={{ color: '#1E40AF', fontWeight: 700, marginBottom: '0.5rem', display: 'block' }}>
+              How will the inspection be handled? <span style={{ color: '#DC2626' }}>*</span>
+            </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              {([
+                { value: 'done_inline', label: 'Done during this meeting', hint: 'Inspection was completed on site — fill in pest findings below' },
+                { value: 'tl_schedule', label: 'Team Leader will schedule it', hint: 'TL will arrange a separate inspection visit' },
+                { value: 'separate_visit', label: 'Client requested a separate visit', hint: 'Client wants a dedicated inspection day — fill in preferred date/location' },
+              ] as const).map((opt) => (
+                <label key={opt.value} className="doc-check" style={{ border: `1px solid ${inspectionHandling === opt.value ? '#3B82F6' : 'var(--border-subtle)'}`, borderRadius: '0.4rem', padding: '0.4rem 0.65rem', background: inspectionHandling === opt.value ? '#DBEAFE' : 'var(--surface-card)', cursor: 'pointer' }}>
+                  <input type="radio" name="inspHandling" checked={inspectionHandling === opt.value} onChange={() => setInspectionHandling(opt.value)} />
+                  <span style={{ fontWeight: inspectionHandling === opt.value ? 600 : undefined }}>
+                    {opt.label} <span className="cell-sub" style={{ display: 'block', marginTop: '0.1rem' }}>{opt.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            {/* Inline inspection fields */}
+            {inspectionHandling === 'done_inline' && (
+              <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid #BFDBFE' }}>
+                <div className="form-label" style={{ color: '#1E40AF', fontWeight: 700, marginBottom: '0.5rem' }}>Inspection findings</div>
+                <div className="form-group">
+                  <label className="form-label">Pest types found</label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+                    {(['termites','cockroaches','bedbugs','rodents_rats','mosquitoes_flies','ants','stored_grain_pests','general_fumigation','snake_reptile','other'] as import('../../types/crm').PestType[]).map((p) => {
+                      const on = inlinePestTypes.includes(p);
+                      return <button key={p} type="button" className={`chip chip-sm ${on ? 'chip-on' : ''}`} onClick={() => setInlinePestTypes((prev) => on ? prev.filter((x) => x !== p) : [...prev, p])}>{on && <Check size={12} />} {p.replace(/_/g,' ')}</button>;
+                    })}
+                  </div>
+                </div>
+                <div className="form-grid-2">
+                  <div className="form-group">
+                    <label className="form-label">Severity</label>
+                    <div className="chip-row">
+                      {(['low','moderate','high','severe'] as const).map((s) => <button key={s} type="button" className={`chip ${inlineSeverity === s ? 'chip-on' : ''}`} onClick={() => setInlineSeverity(s)}>{s}</button>)}
+                    </div>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Area (sq ft)</label>
+                    <input type="number" className="form-input" value={inlineAreaSqFt} onChange={(e) => setInlineAreaSqFt(e.target.value)} placeholder="e.g. 2500" min="0" />
+                  </div>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Critical findings</label>
+                  <textarea className="form-textarea" rows={2} value={inlineCriticalFindings} onChange={(e) => setInlineCriticalFindings(e.target.value)} placeholder="Main pest issues found…" />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Recommended treatment</label>
+                  <textarea className="form-textarea" rows={2} value={inlineRecommendedTreatment} onChange={(e) => setInlineRecommendedTreatment(e.target.value)} placeholder="What treatment / service is recommended…" />
+                </div>
+              </div>
+            )}
+
+            {/* Separate visit date/location */}
+            {inspectionHandling === 'separate_visit' && (
+              <div style={{ marginTop: '0.6rem', paddingTop: '0.6rem', borderTop: '1px solid #BFDBFE', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div>
+                  <div style={{ fontSize: '0.75rem', color: '#1D4ED8', marginBottom: '0.15rem', fontWeight: 600 }}>Preferred date</div>
+                  <input type="date" className="form-input" style={{ width: '160px' }}
+                    value={followUps.find(f => f.type === 'inspection')?.scheduledDate || ''}
+                    onChange={(e) => {
+                      if (!followUps.find(f => f.type === 'inspection')) toggleFollowUp('inspection', true);
+                      updateFollowUp('inspection', { scheduledDate: e.target.value });
+                    }}
+                  />
+                </div>
+                <input className="form-input" style={{ flex: '1 1 180px' }} placeholder="Branch / site name (optional)" value={followUps.find(f => f.type === 'inspection')?.branchName || ''}
+                  onChange={(e) => {
+                    if (!followUps.find(f => f.type === 'inspection')) toggleFollowUp('inspection', true);
+                    updateFollowUp('inspection', { branchName: e.target.value });
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Meeting outcome checklist */}
+          <div className="form-group" style={{ background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
+            <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.5rem', display: 'block' }}>
+              What did the client ask for? <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--ikpm-emerald-700)' }}>tick all that apply · mark done when delivered</span>
+            </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.75rem' }}>
+              {([
+                { type: 'company_profile' as MeetingFollowUpType, label: 'Company Profile', hint: 'Send IKPM company profile / brochure' },
+                { type: 'proposal' as MeetingFollowUpType, label: 'Proposal / Quote', hint: 'Prepare a service proposal with pricing' },
+                { type: 'other_documents' as MeetingFollowUpType, label: 'Other documents', hint: 'Specify what documents the client needs' },
+                { type: 'contract_ready' as MeetingFollowUpType, label: 'Ready to sign', hint: 'Client is ready to proceed to a contract' },
+                { type: 'not_interested' as MeetingFollowUpType, label: 'Not interested', hint: 'Client declined' },
+              ]).map((opt) => {
+                const fu = followUps.find((f) => f.type === opt.type);
+                const checked = Boolean(fu);
+                const isNegative = opt.type === 'not_interested';
+                const borderC = checked ? (isNegative ? 'var(--color-error, #DC2626)' : 'var(--ikpm-emerald-400)') : 'var(--border-subtle)';
+                const bgC = checked ? (isNegative ? '#FEF2F2' : 'var(--ikpm-emerald-100)') : 'var(--surface-card)';
+                return (
+                  <div key={opt.type} style={{ border: `1px solid ${borderC}`, borderRadius: '0.4rem', background: bgC }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.65rem' }}>
+                      <input type="checkbox" checked={checked} onChange={(e) => toggleFollowUp(opt.type, e.target.checked)} style={{ flexShrink: 0 }} />
+                      <span style={{ flex: 1, fontSize: '0.875rem', fontWeight: checked ? 600 : undefined }} title={opt.hint}>{opt.label}</span>
+                      {opt.type === 'other_documents' && checked && (
+                        <input type="text" className="form-input" style={{ flex: 2, minWidth: 0, padding: '0.2rem 0.5rem', fontSize: '0.8rem' }} value={fu?.note || ''} onChange={(e) => updateFollowUp('other_documents', { note: e.target.value })} placeholder="What documents?" />
+                      )}
+                      {checked && !isNegative && (
+                        <button type="button" className={`btn btn-xs ${fu?.doneAt ? 'btn-primary' : 'btn-ghost'}`} style={{ flexShrink: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }} onClick={() => toggleDone(opt.type)} title={fu?.doneAt ? `Done on ${new Date(fu.doneAt).toLocaleDateString('en-GB')}` : 'Mark as done when delivered'}>
+                          {fu?.doneAt ? '✓ Done' : 'Mark done'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <textarea className="form-textarea" rows={2} value={meetingReportNote} onChange={(e) => setMeetingReportNote(e.target.value)} placeholder="Meeting outcome note — anything else discussed, follow-up points…" />
+            {/* TL decision gate */}
+            <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--ikpm-emerald-200)' }}>
+              <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.4rem', display: 'block' }}>
+                Team Leader decision <span style={{ fontWeight: 400, fontSize: '0.8rem' }}>— required before a proposal can be created</span>
               </label>
+              <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                {([
+                  { value: 'send_proposal', label: '✓ Ready — send proposal', activeColor: 'var(--ikpm-emerald-600)', activeText: '#fff', activeBg: 'var(--ikpm-emerald-600)' },
+                  { value: 'waiting', label: '⏳ Hold — need inspection / more steps', activeColor: '#D97706', activeText: '#92400E', activeBg: '#FFFBEB' },
+                ] as const).map((opt) => (
+                  <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600, border: `1px solid ${tlStatus === opt.value ? opt.activeColor : 'var(--border-subtle)'}`, background: tlStatus === opt.value ? opt.activeBg : 'var(--surface-card)', color: tlStatus === opt.value ? opt.activeText : 'var(--text-primary)' }}>
+                    <input type="radio" name="tlStatusMR" style={{ display: 'none' }} checked={tlStatus === opt.value} onChange={() => setTlStatus(opt.value)} />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Branches / sites */}
+          <div className="form-group" style={{ marginTop: '0.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+              <label className="form-label" style={{ margin: 0 }}>Branches / sites</label>
+              <button type="button" className="btn btn-xs btn-ghost" onClick={addBranch}><Plus size={13} /> Add branch</button>
+            </div>
+            {branches.length === 0 ? (
+              <div className="cell-sub">No branches recorded — add one if you discovered a new site.</div>
+            ) : branches.map((b, idx) => (
+              <div key={b.id} style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                <input className="form-input" placeholder="Branch name" value={b.name} onChange={(e) => updateBranch(idx, { name: e.target.value })} style={{ flex: '1 1 150px' }} />
+                <input className="form-input" placeholder="Address" value={b.address} onChange={(e) => updateBranch(idx, { address: e.target.value })} style={{ flex: '2 1 200px' }} />
+                <input className="form-input" placeholder="City" value={b.city || ''} onChange={(e) => updateBranch(idx, { city: e.target.value })} style={{ flex: '1 1 100px' }} />
+                <button type="button" className="icon-btn" onClick={() => removeBranch(idx)} title="Remove"><Trash2 size={14} /></button>
+              </div>
             ))}
           </div>
-        </div>
-      </div>
-
-      {/* Branches / sites */}
-      <div className="form-group" style={{ marginTop: '0.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-          <label className="form-label" style={{ margin: 0 }}>Branches / sites</label>
-          <button type="button" className="btn btn-xs btn-ghost" onClick={addBranch}><Plus size={13} /> Add branch</button>
-        </div>
-        {branches.length === 0 ? (
-          <div className="cell-sub">No branches recorded — add one if you discovered a new site.</div>
-        ) : branches.map((b, idx) => (
-          <div key={b.id} style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            <input className="form-input" placeholder="Branch name" value={b.name} onChange={(e) => updateBranch(idx, { name: e.target.value })} style={{ flex: '1 1 150px' }} />
-            <input className="form-input" placeholder="Address" value={b.address} onChange={(e) => updateBranch(idx, { address: e.target.value })} style={{ flex: '2 1 200px' }} />
-            <input className="form-input" placeholder="City" value={b.city || ''} onChange={(e) => updateBranch(idx, { city: e.target.value })} style={{ flex: '1 1 100px' }} />
-            <button type="button" className="icon-btn" onClick={() => removeBranch(idx)} title="Remove"><Trash2 size={14} /></button>
-          </div>
-        ))}
-      </div>
+        </>
+      )}
     </Modal>
   );
 };
@@ -1059,7 +1178,7 @@ export const SiteInspectionFindingsModal: React.FC<{ lead: Lead | null; onClose:
         <label className="form-label">Risk findings</label>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           {rows.map((r, idx) => (
-            <div key={r.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr 1fr 1fr auto', gap: '0.4rem', alignItems: 'start', padding: '0.5rem', border: '1px solid var(--border-subtle)', borderRadius: '0.4rem', background: 'var(--surface-card)' }}>
+            <div key={r.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr 1fr 1fr 88px auto', gap: '0.4rem', alignItems: 'start', padding: '0.5rem', border: '1px solid var(--border-subtle)', borderRadius: '0.4rem', background: 'var(--surface-card)' }}>
               <span className="cell-sub" style={{ paddingTop: '0.5rem' }}>{idx + 1}</span>
               <div>
                 <div className="cell-sub" style={{ marginBottom: '0.2rem' }}>Location</div>

@@ -37,6 +37,8 @@ import type {
 import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadActivity, LeadBranch, LeadContact, LeadStage, MeetingFollowUp, PestType, RiskFinding, SiteInspection } from '../types/crm';
 import type { Proposal, ProposalRevision } from '../types/proposal';
 import type { Contract, PhotoEvidence, ServiceJob } from '../types/operations';
+import type { Complaint } from '../types/complaints';
+import type { Approval } from '../types/approvals';
 import type { Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
 import type { AuditLogEntry, DataScope, RecordOwnership, Team, UserProfile, UserRole } from '../types';
 import type { DocumentOwner, DocumentPack, OutreachLog, PortalDocument } from '../types/document';
@@ -108,6 +110,8 @@ interface DbState {
   users: UserProfile[];
   teams: Team[];
   roles: RoleDefinition[];
+  complaints: Complaint[];
+  approvals: Approval[];
 }
 
 type StateKey = keyof DbState;
@@ -134,6 +138,8 @@ const COLLECTIONS: Record<StateKey, string> = {
   users: 'users',
   teams: 'teams',
   roles: 'roles',
+  complaints: 'complaints',
+  approvals: 'approvals',
 };
 
 /** Document owner kinds that are client files; 'library' is the Company (IKPM) area (mirrors firestore.rules). */
@@ -149,7 +155,7 @@ const SCOPED: StateKey[] = ['companies', 'branches', 'clients', 'sites', 'leads'
 const BUSINESS_KEYS: StateKey[] = [
   'companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs',
   'invoices', 'payments', 'taxRules', 'auditLogs', 'documents', 'documentPacks', 'outreachLogs',
-  'devices', 'monitoringRecords',
+  'devices', 'monitoringRecords', 'complaints', 'approvals',
 ];
 
 /** Module that grants read access to each business collection (mirrors firestore.rules). */
@@ -165,6 +171,8 @@ const MODULE_FOR: Partial<Record<StateKey, ModuleKey>> = {
   invoices: 'invoices',
   payments: 'invoices',
   auditLogs: 'settings',
+  complaints: 'complaints',
+  approvals: 'approvals',
 };
 
 /** Records uploaded by the one-time local → cloud migration (users/teams/audit are never migrated). */
@@ -209,6 +217,8 @@ const emptyState = (): DbState => ({
   users: [],
   teams: [],
   roles: [...DEFAULT_ROLES],
+  complaints: [],
+  approvals: [],
 });
 
 const now = () => new Date().toISOString();
@@ -412,7 +422,7 @@ class DataService {
       return qs;
     }
 
-    // Devices and monitoring records: customer viewers, dispatch and the PCO field app
+    // Devices and monitoring records: customer viewers and dispatch
     if (key === 'devices' || key === 'monitoringRecords') return can('customers') || can('jobs') || can('pco') ? [col] : [];
 
     if (key === 'outreachLogs') {
@@ -997,18 +1007,18 @@ class DataService {
       teamLeaderId?: string;
       meetingAddress?: string;
       instructions?: string;
+      meetingType?: import('../types/crm').MeetingType;
     },
     userEmail = 'admin'
   ): Lead | undefined {
     const lead = this.getLeadById(leadId);
     if (!lead) return undefined;
     const stage = stageOf(lead);
-    if (stage !== 'engaged' && stage !== 'meeting_scheduled') {
-      throw new StageTransitionError(
-        stage === 'new' || stage === 'contacted'
-          ? 'Log a contact with an "engaged" outcome before scheduling a meeting / inspection.'
-          : `A meeting / inspection cannot be scheduled while the lead is ${stageMeta(stage).label}.`
-      );
+    const _isNegotiationMeeting = plan.meetingType === 'negotiation' || plan.meetingType === 'renewal';
+    // Meetings can be scheduled at any stage — client may request a meeting at any point in the pipeline.
+    // Only block if lost (must reopen first).
+    if (stage === 'lost') {
+      throw new StageTransitionError('Reopen the lead before scheduling a meeting.');
     }
     const team = this.s.teams.find((t) => t.id === plan.teamId);
     const people = plan.inspectorIds.map((uid) => this.s.users.find((u) => u.uid === uid)).filter(Boolean) as UserProfile[];
@@ -1036,12 +1046,17 @@ class DataService {
       inspectorName: leader?.displayName || people.map((p) => p.displayName).join(', ') || team?.name || 'Unassigned',
       instructions: plan.instructions,
       meetingAddress: plan.meetingAddress,
+      meetingType: plan.meetingType || lead.inspection?.meetingType || 'first_meeting',
       status: 'scheduled',
     } as InspectionAssessment;
     const rescheduled = lead.inspection?.status === 'scheduled';
+    const meetingLabel = plan.meetingType === 'negotiation' ? 'Negotiation meeting' : plan.meetingType === 'renewal' ? 'Renewal meeting' : 'Meeting';
+    // Advance to meeting_scheduled only from early stages; never regress a lead that is already further along.
+    const earlyStage = stage === 'new' || stage === 'contacted' || stage === 'engaged';
+    const nextStage = earlyStage ? 'meeting_scheduled' : stage;
     const updated: Lead = {
       ...lead,
-      stage: 'meeting_scheduled',
+      stage: nextStage,
       inspection,
       inspectorIds: [leader?.uid, ...people.map((p) => p.uid)].filter((v, i, a) => v && a.indexOf(v) === i) as string[],
       assignedTeamLeaderId: leader?.uid,
@@ -1050,12 +1065,12 @@ class DataService {
         this.activity({
           kind: 'inspection',
           channel: 'visit',
-          note: `${rescheduled ? 'Meeting / Inspection rescheduled' : 'Meeting / Inspection scheduled'} for ${formatDate(plan.date)} (${plan.timeSlot})${team ? ` · ${team.name}` : ''}${leader ? ` · Leader: ${leader.displayName}` : people.length ? ` · ${inspection.inspectorName}` : ''}${plan.meetingAddress ? ` @ ${plan.meetingAddress}` : ''}`,
+          note: `${rescheduled ? `${meetingLabel} rescheduled` : `${meetingLabel} scheduled`} for ${formatDate(plan.date)} (${plan.timeSlot})${team ? ` · ${team.name}` : ''}${leader ? ` · Leader: ${leader.displayName}` : people.length ? ` · ${inspection.inspectorName}` : ''}${plan.meetingAddress ? ` @ ${plan.meetingAddress}` : ''}`,
         }),
         ...(lead.activities ?? []),
       ],
     };
-    return this.saveLead(updated, userEmail, `Meeting / Inspection ${rescheduled ? 'rescheduled' : 'scheduled'} for ${plan.date}`);
+    return this.saveLead(updated, userEmail, `${meetingLabel} ${rescheduled ? 'rescheduled' : 'scheduled'} for ${plan.date}`);
   }
 
   public recordInspectionFindings(
@@ -1111,34 +1126,51 @@ class DataService {
     return this.saveLead(updated, userEmail, 'Meeting / Inspection findings recorded');
   }
 
-  /** Saves the meeting report from the Team Leader (no pest inspection data). Advances to meeting_done. */
+  /** Saves the meeting report from the Team Leader. Advances to meeting_done unless it's a negotiation/renewal meeting. */
   public recordMeetingReport(
     leadId: string,
-    report: Partial<Pick<InspectionAssessment, 'teamLeaderNotes' | 'clientRequest' | 'meetingFollowUps' | 'meetingReportNote' | 'tlStatus' | 'reportTitle' | 'siteName' | 'observedBy'>>,
+    report: Partial<Pick<InspectionAssessment,
+      | 'teamLeaderNotes' | 'clientRequest' | 'meetingFollowUps' | 'meetingReportNote' | 'tlStatus'
+      | 'reportTitle' | 'siteName' | 'observedBy' | 'meetingType' | 'inspectionHandling'
+      | 'negotiationTermsNote'
+      // Inline inspection fields (when inspectionHandling === 'done_inline')
+      | 'pestTypesFound' | 'infestationSeverity' | 'areaSqFt' | 'criticalFindings' | 'recommendedTreatment'
+    >>,
     userEmail = 'admin',
     branches?: LeadBranch[]
   ): Lead | undefined {
     const lead = this.getLeadById(leadId);
     if (!lead) return undefined;
     const stage = stageOf(lead);
-    if (stage !== 'meeting_scheduled' && stage !== 'meeting_done') {
-      throw new StageTransitionError('Meeting report can only be submitted when a meeting is scheduled or already done.');
+    const isNegoRenewal = report.meetingType === 'negotiation' || report.meetingType === 'renewal'
+      || lead.inspection?.meetingType === 'negotiation' || lead.inspection?.meetingType === 'renewal';
+    // Meeting reports can be submitted at any stage — a meeting may be added at any point in the pipeline.
+    if (stage === 'lost') {
+      throw new StageTransitionError('Reopen the lead before submitting a meeting report.');
+    }
+    if (!lead.inspection) {
+      throw new StageTransitionError('No meeting is scheduled for this lead. Schedule a meeting first.');
     }
     const base = lead.inspection;
+    const isDoneInline = report.inspectionHandling === 'done_inline';
     const inspection: InspectionAssessment = {
+      // Spread base first so explicit assignments below take precedence
+      ...(base as InspectionAssessment),
+      ...report,
       id: base?.id || `INSP-${Date.now().toString(36).toUpperCase()}`,
       leadId,
       scheduledDate: base?.scheduledDate || now().slice(0, 10),
       inspectorId: base?.inspectorId || this.session?.uid || '',
       inspectorName: base?.inspectorName || this.session?.name || '',
-      pestTypesFound: base?.pestTypesFound ?? [],
-      infestationSeverity: base?.infestationSeverity ?? 'moderate',
-      areaSqFt: base?.areaSqFt ?? 0,
-      criticalFindings: base?.criticalFindings ?? '',
-      recommendedTreatment: base?.recommendedTreatment ?? '',
+      // Only keep pest findings when the inspection was done inline; clear stale data otherwise
+      pestTypesFound: isDoneInline ? (base?.pestTypesFound ?? []) : [],
+      infestationSeverity: isDoneInline ? (base?.infestationSeverity ?? 'moderate') : 'moderate',
+      areaSqFt: isDoneInline ? (base?.areaSqFt ?? 0) : 0,
+      criticalFindings: isDoneInline ? (base?.criticalFindings ?? '') : '',
+      recommendedTreatment: isDoneInline ? (base?.recommendedTreatment ?? '') : '',
       photoEvidenceUrls: base?.photoEvidenceUrls ?? [],
-      ...base,
-      ...report,
+      // When switching away from done_inline, clear pest fields so the proposal gate isn't tripped by stale data
+      ...(report.inspectionHandling && !isDoneInline ? { pestTypesFound: [], criticalFindings: '', recommendedTreatment: '' } : {}),
       completedDate: base?.completedDate || now().slice(0, 10),
       findingsBy: base?.findingsBy || this.session?.name,
       status: 'completed',
@@ -1150,13 +1182,17 @@ class DataService {
       ? ` · Client asked for: ${report.meetingFollowUps.map((f: MeetingFollowUp) => f.type.replace(/_/g, ' ')).join(', ')}`
       : report.clientRequest ? ` · Client asked for: ${report.clientRequest.replace(/_/g, ' ')}` : '';
     const tlNote = report.tlStatus === 'send_proposal' ? ' · Ready to send proposal' : report.tlStatus === 'waiting' ? ' · Hold — need more steps' : '';
+    const meetingTypeLabel = isNegoRenewal ? (report.meetingType === 'renewal' || lead.inspection?.meetingType === 'renewal' ? 'Renewal meeting' : 'Negotiation meeting') : 'Meeting';
+    // Only advance to meeting_done from early stages; later stages (proposal_sent, won, etc.) keep their current stage.
+    const earlyForReport = stage === 'meeting_scheduled' || stage === 'engaged' || stage === 'contacted' || stage === 'new';
+    const nextStage = (isNegoRenewal || !earlyForReport) ? stage : 'meeting_done';
     const updated: Lead = {
       ...lead,
-      stage: 'meeting_done',
+      stage: nextStage,
       inspection,
       branches: mergedBranches,
       activities: [
-        this.activity({ kind: 'inspection', channel: 'visit', note: `Meeting report submitted${fuNote}${tlNote}${branches?.length ? `, ${branches.length} site(s) added` : ''}` }),
+        this.activity({ kind: 'inspection', channel: 'visit', note: `${meetingTypeLabel} report submitted${fuNote}${tlNote}${branches?.length ? `, ${branches.length} site(s) added` : ''}` }),
         ...(lead.activities ?? []),
       ],
     };
@@ -1513,16 +1549,39 @@ class DataService {
       date: proposal.createdAt,
     });
     if (proposal.discountPercent > 10 && proposal.status === 'draft') {
+      const ts = now();
       proposal.status = 'pending_approval';
       proposal.approval = {
         ruleId: 'AP-01',
         ruleDescription: `Discount ${proposal.discountPercent}% exceeds standard authority threshold (10%). Requires Sales Manager / CEO Approval.`,
         requiredRole: proposal.discountPercent > 20 ? 'ceo' : 'sales_manager',
         status: 'pending',
-        requestedAt: now(),
+        requestedAt: ts,
         requestedBy: userEmail,
         requestedByName: userEmail,
       };
+      // Also push to the global approvals queue so the Manager can act on it there.
+      const existingApproval = this.getApprovalForEntity(proposal.id);
+      if (!existingApproval) {
+        const approvalId = `AP-${new Date().getFullYear()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+        const approval: Approval = {
+          id: approvalId,
+          type: 'proposal_discount',
+          entityType: 'proposal',
+          entityId: proposal.id,
+          entityTitle: `Proposal ${proposal.id} for ${proposal.customerName}`,
+          ownerUid: this.session?.uid ?? userEmail,
+          requestedBy: userEmail,
+          requestedByName: userEmail,
+          requestedAt: ts,
+          reason: `Discount ${proposal.discountPercent}% exceeds the 10% threshold. Rule AP-01.`,
+          amount: proposal.discountAmount,
+          status: 'pending',
+          updatedAt: ts,
+        };
+        this.upsert(this.s.approvals, approval);
+        this.write('approvals', approval.id, approval);
+      }
     }
 
     const created = this.upsert(this.s.proposals, proposal);
@@ -2303,6 +2362,117 @@ class DataService {
         (pack.categories.includes(d.category) || pack.documentIds.includes(d.id)) &&
         (!d.expiryDate || d.expiryDate >= today)
     );
+  }
+
+  // --- Complaints ---
+  public getComplaints(customerId?: string): Complaint[] {
+    const list = [...this.s.complaints].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return customerId ? list.filter((c) => c.customerId === customerId) : list;
+  }
+
+  public getComplaintsByContract(contractId: string): Complaint[] {
+    return this.s.complaints.filter((c) => c.contractId === contractId);
+  }
+
+  public getComplaintsByOpsManager(uid: string): Complaint[] {
+    return this.s.complaints.filter((c) => c.assignedOperationsManagerId === uid);
+  }
+
+  public getComplaintById(id: string): Complaint | undefined {
+    return this.s.complaints.find((c) => c.id === id);
+  }
+
+  public saveComplaint(complaint: Complaint, userEmail = 'admin'): Complaint {
+    const created = this.upsert(this.s.complaints, complaint);
+    this.audit(userEmail, created ? 'create' : 'status_change', 'complaint', complaint.id, complaint.subject,
+      created ? `Logged complaint for ${complaint.customerName}` : `Updated complaint ${complaint.id} → ${complaint.status}`);
+    this.write('complaints', complaint.id, complaint);
+    return complaint;
+  }
+
+  // --- Approvals ---
+  public getApprovals(ownerUid?: string): Approval[] {
+    const list = [...this.s.approvals].sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
+    return ownerUid ? list.filter((a) => a.ownerUid === ownerUid) : list;
+  }
+
+  public getApprovalById(id: string): Approval | undefined {
+    return this.s.approvals.find((a) => a.id === id);
+  }
+
+  public getApprovalForEntity(entityId: string): Approval | undefined {
+    return this.s.approvals.find((a) => a.entityId === entityId && a.status === 'pending');
+  }
+
+  public saveApproval(approval: Approval, userEmail = 'admin'): Approval {
+    const created = this.upsert(this.s.approvals, approval);
+    this.audit(userEmail, created ? 'create' : 'status_change', 'approval', approval.id, approval.entityTitle,
+      created
+        ? `Approval request ${approval.id} created for ${approval.entityTitle}`
+        : `Approval ${approval.id} updated → ${approval.status}`);
+    this.write('approvals', approval.id, approval);
+    return approval;
+  }
+
+  public decideApproval(
+    id: string,
+    decision: 'approved' | 'rejected',
+    decisionNote: string,
+    decidedBy: string,
+    decidedByName: string,
+    decidedByUid: string,
+    userEmail = 'admin',
+  ): Approval {
+    const approval = this.s.approvals.find((a) => a.id === id);
+    if (!approval) throw new Error(`Approval ${id} not found`);
+    if (approval.ownerUid === decidedByUid) throw new Error('Cannot decide your own approval request');
+    const updated: Approval = {
+      ...approval,
+      status: decision,
+      decidedBy,
+      decidedByName,
+      decidedAt: now(),
+      decisionNote,
+      updatedAt: now(),
+    };
+    this.upsert(this.s.approvals, updated);
+    this.write('approvals', updated.id, updated);
+    this.audit(userEmail, 'status_change', 'approval', updated.id, updated.entityTitle,
+      `${decision === 'approved' ? 'Approved' : 'Rejected'} ${updated.id}: ${decisionNote}`);
+    // Keep the linked proposal in sync when the approval is for a proposal discount
+    if (updated.type === 'proposal_discount') {
+      const proposal = this.s.proposals.find((p) => p.id === updated.entityId);
+      if (proposal) {
+        const updatedProposal = {
+          ...proposal,
+          status: decision === 'approved' ? ('approved' as const) : ('rejected' as const),
+          approval: proposal.approval
+            ? {
+                ...proposal.approval,
+                status: decision,
+                decisionAt: updated.decidedAt,
+                decisionBy: decidedBy,
+                decisionByName: decidedByName,
+                decisionNote,
+              }
+            : proposal.approval,
+          updatedAt: now(),
+        };
+        this.upsert(this.s.proposals, updatedProposal);
+        this.write('proposals', proposal.id, updatedProposal);
+      }
+    }
+    // Apply contract cancel / reactivate when approved
+    if (decision === 'approved' && (updated.type === 'contract_cancel' || updated.type === 'contract_reactivate')) {
+      const contract = this.s.contracts.find((c) => c.id === updated.entityId);
+      if (contract) {
+        const newStatus = updated.type === 'contract_cancel' ? ('cancelled' as const) : ('active' as const);
+        const updatedContract = { ...contract, status: newStatus, updatedAt: now() };
+        this.upsert(this.s.contracts, updatedContract);
+        this.write('contracts', contract.id, updatedContract);
+      }
+    }
+    return updated;
   }
 
   // --- Outreach (WhatsApp / Email) ---

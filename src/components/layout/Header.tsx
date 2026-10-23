@@ -94,7 +94,7 @@ export const Header: React.FC<{ onMenu: () => void }> = ({ onMenu }) => {
       store.getJobs()
         .filter((j) => j.id.toLowerCase().includes(q) || j.customerName.toLowerCase().includes(q) || j.siteName.toLowerCase().includes(q))
         .slice(0, 4)
-        .forEach((j) => out.push({ key: j.id, icon: Truck, color: 'var(--ikpm-amber-500)', title: `${j.id} · ${j.customerName}`, sub: `Service job · ${j.status.replace(/_/g, ' ')}`, to: can('jobs') ? `/operations/jobs?job=${j.id}` : '/pco-field' }));
+        .forEach((j) => out.push({ key: j.id, icon: Truck, color: 'var(--ikpm-amber-500)', title: `${j.id} · ${j.customerName}`, sub: `Service job · ${j.status.replace(/_/g, ' ')}`, to: can('jobs') ? `/operations/jobs?job=${j.id}` : '/operations/jobs' }));
     }
     if (can('invoices')) {
       store.getInvoices()

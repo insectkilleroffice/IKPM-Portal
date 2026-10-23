@@ -4,16 +4,9 @@ import {
   Receipt,
   Plus,
   Search,
-  Download,
-  AlertCircle,
-  FileCheck2,
   DollarSign,
-  AlertTriangle,
   RotateCcw,
-  CheckCircle,
   Send,
-  ArrowRight,
-  ShieldAlert,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -35,7 +28,7 @@ import type { DocumentOwner } from '../../types/document';
 import { Download as DownloadIcon } from 'lucide-react';
 
 export const InvoicesListPage: React.FC = () => {
-  const navigate = useNavigate();
+  const _navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const pdfAction = usePdfAction();
   const { success, warning } = useNotification();
@@ -150,15 +143,18 @@ export const InvoicesListPage: React.FC = () => {
     }
   }, [linkedJob]);
 
+  const todayIso = new Date().toISOString().split('T')[0];
   const filteredInvoices = invoices.filter((i) => {
     const q = searchQuery.toLowerCase();
     const matchSearch =
       i.invoiceNumber.toLowerCase().includes(q) ||
       i.customerName.toLowerCase().includes(q) ||
       i.id.toLowerCase().includes(q);
+    if (!matchSearch) return false;
 
-    const matchStatus = statusFilter === 'all' || i.status === statusFilter;
-    return matchSearch && matchStatus;
+    if (statusFilter === 'all') return true;
+    if (statusFilter === 'overdue') return i.balanceDue > 0 && i.status !== 'void_reversed' && i.dueDate < todayIso;
+    return i.status === statusFilter;
   });
 
   const handleOpenPayment = (inv: Invoice) => {
@@ -406,17 +402,41 @@ export const InvoicesListPage: React.FC = () => {
         </button>
       </div>
 
+      {/* KPI stat cards */}
+      {(() => {
+        const todayStr = new Date().toISOString().split('T')[0];
+        const monthStr = todayStr.slice(0, 7);
+        const live = invoices.filter((i) => i.status !== 'void_reversed');
+        const outstanding = live.reduce((s, i) => s + i.balanceDue, 0);
+        const overdue = live.filter((i) => i.balanceDue > 0 && i.dueDate < todayStr).reduce((s, i) => s + i.balanceDue, 0);
+        const collected = invoices.filter((i) => i.amountPaid > 0 && i.updatedAt.startsWith(monthStr)).reduce((s, i) => s + i.amountPaid, 0);
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '0.75rem', marginBottom: '1.25rem' }}>
+            {[
+              { label: 'Total outstanding', value: formatPKR(outstanding), color: outstanding > 0 ? 'var(--ikpm-rose-500)' : 'var(--ikpm-emerald-600)' },
+              { label: 'Overdue balance', value: formatPKR(overdue), color: overdue > 0 ? '#DC2626' : 'var(--text-muted)' },
+              { label: 'Collected this month', value: formatPKR(collected), color: 'var(--ikpm-emerald-600)' },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="card" style={{ padding: '0.9rem 1.25rem' }}>
+                <div style={{ fontSize: '1.25rem', fontWeight: 800, color, lineHeight: 1 }}>{value}</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>{label}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* Filter and Search Bar */}
       <div className="card" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-          {['all', 'posted', 'partially_paid', 'paid', 'void_reversed'].map((st) => (
+          {(['all', 'overdue', 'posted', 'partially_paid', 'paid', 'void_reversed'] as const).map((st) => (
             <button
               key={st}
               className={`btn ${statusFilter === st ? 'btn-primary' : 'btn-secondary'}`}
               style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
               onClick={() => setStatusFilter(st)}
             >
-              {st.replace(/_/g, ' ').toUpperCase()}
+              {st === 'overdue' ? 'OVERDUE' : st.replace(/_/g, ' ').toUpperCase()}
             </button>
           ))}
         </div>

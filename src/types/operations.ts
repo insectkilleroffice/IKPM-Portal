@@ -106,6 +106,7 @@ export interface ServiceJob extends FolderMeta {
   status: JobStatus;
   rescheduledReason?: string;
   cancellationReason?: string;
+  complaintId?: string;
   checklists: ServiceChecklistItem[];
   chemicalsUsed: ChemicalUsageRecord[];
   photoEvidence: PhotoEvidence[];
@@ -149,6 +150,10 @@ export interface Contract extends FolderMeta, TemplateStamp {
   /** Team leader responsible for delivering this contract's service visits. */
   assignedTeamLeaderId?: string;
   assignedTeamLeaderName?: string;
+  /** Operations Manager assigned to oversee this contract's execution. */
+  assignedOperationsManagerId?: string;
+  assignedOperationsManagerName?: string;
+  assignedAt?: string;
 
   // ---- Copied from the accepted proposal so nothing is retyped (all optional for older contracts)
   servicePlan?: ServicePlanItem[];

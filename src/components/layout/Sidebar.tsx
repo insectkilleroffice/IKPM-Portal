@@ -11,15 +11,16 @@ import {
   Receipt,
   FileCheck2,
   Settings,
-  Smartphone,
   FolderLock,
   FolderOpen,
   UsersRound,
   Plus,
   UserPlus,
-  ClipboardCheck,
   CalendarCheck,
   SearchCheck,
+  MessageSquareWarning,
+  ShieldCheck,
+  BarChart3,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -30,7 +31,8 @@ interface NavEntry {
   to: string;
   label: string;
   icon: LucideIcon;
-  module: ModuleKey;
+  /** Single module key, or OR-array: item shows if the user can access ANY of the listed modules. */
+  module: ModuleKey | ModuleKey[];
   end?: boolean;
   badge?: string;
 }
@@ -42,20 +44,15 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
     ],
   },
   {
-    title: 'Sales & customers',
+    title: 'Sales & pipeline',
     items: [
       { to: '/customers', label: 'Customer Accounts', icon: Building2, module: 'customers' },
       { to: '/crm', label: 'Leads Pipeline', icon: Users2, module: 'crm' },
+      { to: '/meetings', label: 'Meetings', icon: CalendarCheck, module: ['pco', 'crm'] },
+      { to: '/inspections', label: 'Site Inspections', icon: SearchCheck, module: 'inspections' },
       { to: '/proposals', label: 'Proposals', icon: FileSpreadsheet, module: 'proposals' },
       { to: '/contracts', label: 'Contracts & AMCs', icon: FileSignature, module: 'contracts' },
-    ],
-  },
-  {
-    title: 'Team Leader',
-    items: [
-      { to: '/crm', label: 'Meetings', icon: CalendarCheck, module: 'pco' },
-      { to: '/inspections', label: 'Site Inspections', icon: SearchCheck, module: 'inspections' },
-      { to: '/operations/jobs', label: 'Service Jobs', icon: Truck, module: 'pco' },
+      { to: '/complaints', label: 'Complaints', icon: MessageSquareWarning, module: 'complaints' },
     ],
   },
   {
@@ -69,7 +66,7 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
     title: 'Field operations',
     items: [
       { to: '/operations/calendar', label: 'Dispatch Calendar', icon: CalendarDays, module: 'calendar' },
-      { to: '/operations/jobs', label: 'Service Jobs', icon: Truck, module: 'jobs' },
+      { to: '/operations/jobs', label: 'Service Jobs', icon: Truck, module: ['jobs', 'pco'] },
     ],
   },
   {
@@ -77,11 +74,13 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
     items: [
       { to: '/finance/invoices', label: 'Invoices & Receipts', icon: Receipt, module: 'invoices' },
       { to: '/finance/tax-rules', label: 'Tax Rules & WHT', icon: FileCheck2, module: 'tax' },
+      { to: '/finance/reports', label: 'Finance Reports', icon: BarChart3, module: 'invoices' },
     ],
   },
   {
     title: 'Administration',
     items: [
+      { to: '/approvals', label: 'Approvals', icon: ShieldCheck, module: 'approvals' },
       { to: '/admin/team', label: 'Team & Access', icon: UsersRound, module: 'team' },
       { to: '/settings', label: 'Settings & Audit', icon: Settings, module: 'settings' },
     ],
@@ -119,8 +118,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onNavigate }) => {
     return () => document.removeEventListener('mousedown', close);
   }, [showNew]);
 
-  const can = (m: ModuleKey) =>
-    canAccessModule(effectiveRole, m) || (m === 'team' && canAccessModule(effectiveRole, 'roles'));
+  const can = (m: ModuleKey | ModuleKey[]): boolean => {
+    const keys = Array.isArray(m) ? m : [m];
+    return keys.some((k) => canAccessModule(effectiveRole, k) || (k === 'team' && canAccessModule(effectiveRole, 'roles')));
+  };
   const quick = QUICK_CREATE.filter((q) => can(q.module));
 
   return (

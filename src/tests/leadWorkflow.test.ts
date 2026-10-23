@@ -145,6 +145,47 @@ describe('proposal creation', () => {
   });
 });
 
+describe('residential lead flow', () => {
+  const residential = (stage: LeadStage, extra: Partial<Lead> = {}) => lead(stage, { ...extra, clientType: 'residential' });
+
+  it.each(['new', 'contacted', 'engaged', 'meeting_done', 'profile_sent'] as PipelineStage[])(
+    'can create proposal from %s without TL meeting or inspection',
+    (s) => {
+      expect(() => assertCanCreateProposal(residential(s))).not.toThrow();
+    },
+  );
+
+  it('cannot create proposal once already won', () => {
+    expect(() => assertCanCreateProposal(residential('won'))).toThrow(StageTransitionError);
+  });
+
+  it('cannot create a second proposal when proposalId already set', () => {
+    expect(() => assertCanCreateProposal(residential('engaged', { proposalId: 'P-1' }))).toThrow(StageTransitionError);
+  });
+
+  it('B2B lead without clientType still cannot create proposal from new/contacted/engaged', () => {
+    expect(() => assertCanCreateProposal(lead('new'))).toThrow(StageTransitionError);
+    expect(() => assertCanCreateProposal(lead('contacted'))).toThrow(StageTransitionError);
+    expect(() => assertCanCreateProposal(lead('engaged'))).toThrow(StageTransitionError);
+  });
+
+  it('old lead with no clientType behaves as B2B (cannot skip to proposal)', () => {
+    const oldLead = lead('engaged');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (oldLead as any).clientType;
+    expect(() => assertCanCreateProposal(oldLead)).toThrow(StageTransitionError);
+  });
+
+  it('residential engaged → proposal_sent stage transition bypasses skip-reason requirement', () => {
+    expect(() => assertStageTransition(residential('engaged'), 'proposal_sent')).not.toThrow();
+  });
+
+  it('nextStep for a residential lead without a proposal is create_proposal', () => {
+    expect(nextStep(residential('new')).action).toBe('create_proposal');
+    expect(nextStep(residential('engaged')).action).toBe('create_proposal');
+  });
+});
+
 describe('availableActions / nextStep', () => {
   it('never offers manual "won"', () => {
     STAGES.forEach((s) => expect(availableActions(lead(s)).some((a) => a.id === 'mark_won')).toBe(false));
