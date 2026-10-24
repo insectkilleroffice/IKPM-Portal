@@ -226,6 +226,10 @@ export interface InspectionAssessment {
   meetingType?: MeetingType;
   /** How the technical inspection will be / was handled for a first meeting. */
   inspectionHandling?: InspectionHandling;
+  /** Notes captured when scheduling later — client preferences, questions to clarify, site restrictions. */
+  schedulingNote?: string;
+  /** Preferred inspection date when client or TL requests a separate visit. */
+  preferredInspectionDate?: string;
   /** For negotiation/renewal meetings: new terms or price discussed. */
   negotiationTermsNote?: string;
   status: 'scheduled' | 'completed' | 'cancelled';

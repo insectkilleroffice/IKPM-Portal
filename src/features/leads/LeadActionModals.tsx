@@ -489,6 +489,7 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
 // Meeting report (TL submits after the client meeting)
 // ---------------------------------------------------------------------------
 export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
+  const store = useDataStore();
   const { userProfile } = useAuth();
   const { success, error } = useNotification();
   const [reportTitle, setReportTitle] = useState('');
@@ -501,12 +502,17 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
   const [branches, setBranches] = useState<LeadBranch[]>([]);
   // Inspection handling (first_meeting only)
   const [inspectionHandling, setInspectionHandling] = useState<'done_inline' | 'tl_schedule' | 'separate_visit' | ''>('');
+  // Schedule-later fields
+  const [schedulingNote, setSchedulingNote] = useState('');
+  const [preferredInspectionDate, setPreferredInspectionDate] = useState('');
+  const [scheduleAssigneeId, setScheduleAssigneeId] = useState('');
   // Inline inspection fields (when inspectionHandling === 'done_inline')
   const [inlinePestTypes, setInlinePestTypes] = useState<import('../../types/crm').PestType[]>([]);
   const [inlineSeverity, setInlineSeverity] = useState<'low' | 'moderate' | 'high' | 'severe'>('moderate');
   const [inlineAreaSqFt, setInlineAreaSqFt] = useState('');
   const [inlineCriticalFindings, setInlineCriticalFindings] = useState('');
   const [inlineRecommendedTreatment, setInlineRecommendedTreatment] = useState('');
+  const [inlinePhotos, setInlinePhotos] = useState<SitePhoto[]>([]);
   // Negotiation/renewal meeting fields
   const [negoTermsNote, setNegoTermsNote] = useState('');
   const [followUpDate, setFollowUpDate] = useState('');
@@ -526,6 +532,10 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
     setNegoTermsNote(i?.negotiationTermsNote || '');
     setFollowUpDate(lead.nextFollowUp || '');
     setInspectionHandling(i?.inspectionHandling || '');
+    setSchedulingNote(i?.schedulingNote || '');
+    setPreferredInspectionDate(i?.preferredInspectionDate || '');
+    setScheduleAssigneeId(i?.assignedTeamLeaderId || '');
+    setInlinePhotos(i?.photos ?? []);
     if (i?.pestTypesFound?.length) { setInlinePestTypes(i.pestTypesFound); setInlineSeverity(i.infestationSeverity || 'moderate'); setInlineAreaSqFt(String(i.areaSqFt || '')); setInlineCriticalFindings(i.criticalFindings || ''); setInlineRecommendedTreatment(i.recommendedTreatment || ''); }
     if (i?.meetingFollowUps?.length) {
       setFollowUps(i.meetingFollowUps);
@@ -587,6 +597,12 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
           meetingReportNote: meetingReportNote.trim() || undefined,
           tlStatus: isNegoRenewal ? undefined : (tlStatus || undefined),
           inspectionHandling: (!isNegoRenewal && inspectionHandling) ? inspectionHandling : undefined,
+          schedulingNote: (!isNegoRenewal && inspectionHandling && inspectionHandling !== 'done_inline') ? (schedulingNote.trim() || undefined) : undefined,
+          preferredInspectionDate: (!isNegoRenewal && inspectionHandling && inspectionHandling !== 'done_inline') ? (preferredInspectionDate || undefined) : undefined,
+          assignedTeamLeaderId: (!isNegoRenewal && inspectionHandling && inspectionHandling !== 'done_inline' && scheduleAssigneeId) ? scheduleAssigneeId : undefined,
+          assignedTeamLeaderName: (!isNegoRenewal && inspectionHandling && inspectionHandling !== 'done_inline' && scheduleAssigneeId)
+            ? (store.getStaff().find((u) => u.uid === scheduleAssigneeId)?.displayName)
+            : undefined,
           negotiationTermsNote: isNegoRenewal ? (negoTermsNote.trim() || undefined) : undefined,
           // Inline inspection fields (first_meeting only, when done_inline)
           ...((!isNegoRenewal && inspectionHandling === 'done_inline') ? {
@@ -595,6 +611,8 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
             areaSqFt: Number(inlineAreaSqFt) || 0,
             criticalFindings: inlineCriticalFindings.trim(),
             recommendedTreatment: inlineRecommendedTreatment.trim(),
+            photos: inlinePhotos,
+            photoEvidenceUrls: inlinePhotos.map((p) => p.imageUrl),
           } : {}),
         },
         userProfile?.email,
@@ -688,21 +706,24 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
           {/* How will the inspection be handled? */}
           <div className="form-group" style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
             <label className="form-label" style={{ color: '#1E40AF', fontWeight: 700, marginBottom: '0.5rem', display: 'block' }}>
-              How will the inspection be handled? <span style={{ color: '#DC2626' }}>*</span>
+              Inspection <span style={{ color: '#DC2626' }}>*</span>
             </label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
               {([
                 { value: 'done_inline', label: 'Done during this meeting', hint: 'Inspection was completed on site — fill in pest findings below' },
-                { value: 'tl_schedule', label: 'Team Leader will schedule it', hint: 'TL will arrange a separate inspection visit' },
-                { value: 'separate_visit', label: 'Client requested a separate visit', hint: 'Client wants a dedicated inspection day — fill in preferred date/location' },
-              ] as const).map((opt) => (
-                <label key={opt.value} className="doc-check" style={{ border: `1px solid ${inspectionHandling === opt.value ? '#3B82F6' : 'var(--border-subtle)'}`, borderRadius: '0.4rem', padding: '0.4rem 0.65rem', background: inspectionHandling === opt.value ? '#DBEAFE' : 'var(--surface-card)', cursor: 'pointer' }}>
-                  <input type="radio" name="inspHandling" checked={inspectionHandling === opt.value} onChange={() => setInspectionHandling(opt.value)} />
-                  <span style={{ fontWeight: inspectionHandling === opt.value ? 600 : undefined }}>
-                    {opt.label} <span className="cell-sub" style={{ display: 'block', marginTop: '0.1rem' }}>{opt.hint}</span>
-                  </span>
-                </label>
-              ))}
+                { value: 'tl_schedule', label: 'Schedule later — CRO will assign to operations', hint: 'Add notes below so the CRO knows what to arrange' },
+              ] as const).map((opt) => {
+                const isActive = inspectionHandling === opt.value
+                  || (opt.value === 'tl_schedule' && inspectionHandling === 'separate_visit');
+                return (
+                  <label key={opt.value} className="doc-check" style={{ border: `1px solid ${isActive ? '#3B82F6' : 'var(--border-subtle)'}`, borderRadius: '0.4rem', padding: '0.4rem 0.65rem', background: isActive ? '#DBEAFE' : 'var(--surface-card)', cursor: 'pointer' }}>
+                    <input type="radio" name="inspHandling" checked={isActive} onChange={() => setInspectionHandling(opt.value)} />
+                    <span style={{ fontWeight: isActive ? 600 : undefined }}>
+                      {opt.label} <span className="cell-sub" style={{ display: 'block', marginTop: '0.1rem' }}>{opt.hint}</span>
+                    </span>
+                  </label>
+                );
+              })}
             </div>
 
             {/* Inline inspection fields */}
@@ -734,32 +755,48 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
                   <label className="form-label">Critical findings</label>
                   <textarea className="form-textarea" rows={2} value={inlineCriticalFindings} onChange={(e) => setInlineCriticalFindings(e.target.value)} placeholder="Main pest issues found…" />
                 </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
+                <div className="form-group">
                   <label className="form-label">Recommended treatment</label>
                   <textarea className="form-textarea" rows={2} value={inlineRecommendedTreatment} onChange={(e) => setInlineRecommendedTreatment(e.target.value)} placeholder="What treatment / service is recommended…" />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Site photos <span className="cell-sub" style={{ fontWeight: 400 }}>— attach photo evidence (optional)</span></label>
+                  <PhotoCapture<SitePhoto>
+                    scope={{ ownerScope: 'client', clientId: lead.existingCustomerId || lead.id, category: 'risk_assessment' }}
+                    subPath={`${lead.id}/meeting-inspection`}
+                    idPrefix={`${lead.id}_mi`}
+                    categories={INSPECTION_PHOTO_TYPES}
+                    photos={inlinePhotos}
+                    onChange={setInlinePhotos}
+                    onNotify={(kind, title, msg) => kind === 'error' ? error(title, msg) : success(title, msg)}
+                    emptyText="Take a photo or pick from gallery — pests, affected areas, evidence."
+                  />
                 </div>
               </div>
             )}
 
-            {/* Separate visit date/location */}
-            {inspectionHandling === 'separate_visit' && (
-              <div style={{ marginTop: '0.6rem', paddingTop: '0.6rem', borderTop: '1px solid #BFDBFE', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                <div>
-                  <div style={{ fontSize: '0.75rem', color: '#1D4ED8', marginBottom: '0.15rem', fontWeight: 600 }}>Preferred date</div>
-                  <input type="date" className="form-input" style={{ width: '160px' }}
-                    value={followUps.find(f => f.type === 'inspection')?.scheduledDate || ''}
-                    onChange={(e) => {
-                      if (!followUps.find(f => f.type === 'inspection')) toggleFollowUp('inspection', true);
-                      updateFollowUp('inspection', { scheduledDate: e.target.value });
-                    }}
-                  />
+            {/* Schedule-later: date, assign to Ops, CRO notes */}
+            {(inspectionHandling === 'tl_schedule' || inspectionHandling === 'separate_visit') && (
+              <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid #BFDBFE', display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+                <div className="form-grid-2">
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>Preferred date <span style={{ fontWeight: 400 }}>(optional)</span></label>
+                    <input type="date" className="form-input" value={preferredInspectionDate} min={today()} onChange={(e) => setPreferredInspectionDate(e.target.value)} />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>Assign to <span style={{ fontWeight: 400 }}>Operations / Team Leader</span></label>
+                    <select className="form-select" value={scheduleAssigneeId} onChange={(e) => setScheduleAssigneeId(e.target.value)}>
+                      <option value="">Unassigned — TL will pick up</option>
+                      {store.getStaff().filter((u) => ['team_leader', 'operations', 'admin', 'management'].includes(u.role)).map((u) => (
+                        <option key={u.uid} value={u.uid}>{u.displayName} ({roleLabel(u.role)})</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-                <input className="form-input" style={{ flex: '1 1 180px' }} placeholder="Branch / site name (optional)" value={followUps.find(f => f.type === 'inspection')?.branchName || ''}
-                  onChange={(e) => {
-                    if (!followUps.find(f => f.type === 'inspection')) toggleFollowUp('inspection', true);
-                    updateFollowUp('inspection', { branchName: e.target.value });
-                  }}
-                />
+                <div>
+                  <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600, marginBottom: '0.2rem', display: 'block' }}>CRO notes for the inspection team</label>
+                  <textarea className="form-textarea" rows={3} value={schedulingNote} onChange={(e) => setSchedulingNote(e.target.value)} placeholder="What did the client say? Special requirements, restricted areas, preferred timing, who to contact on site, areas to focus on…" />
+                </div>
               </div>
             )}
           </div>

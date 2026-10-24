@@ -26,6 +26,7 @@ import type { ServiceJob, JobStatus, SupervisorVerification, ChemicalUsageRecord
 import type { PestType } from '../../types/crm';
 import { UnifiedWorkflowStatusBar } from '../../components/common/UnifiedWorkflowStatusBar';
 import { getJobNextAction } from '../../lib/workflow';
+import { canEditModule } from '../../lib/permissions';
 import { fileGenerated } from '../../features/documents/fileGenerated';
 import type { DocumentOwner } from '../../types/document';
 
@@ -36,6 +37,8 @@ export const JobsListPage: React.FC = () => {
   const pdfAction = usePdfAction();
   const { userProfile } = useAuth();
   useDataStore();
+
+  const canInvoice = canEditModule(userProfile?.role, 'invoices');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -319,7 +322,11 @@ export const JobsListPage: React.FC = () => {
     } else if (nextAct.actionType === 'verify_report') {
       setShowVerifyModal(job);
     } else if (nextAct.actionType === 'create_invoice') {
-      // Guard Rail 1: No invoice before a verified report
+      if (!canInvoice) {
+        warning('Finance only', 'Invoices are raised by the Accounts team. The report is verified — Finance will be notified to issue the invoice.');
+        return;
+      }
+      // Guard Rail: no invoice before a verified report
       if (!job.supervisorVerification?.isVerified) {
         warning(
           'Invoice Blocked by Guard Rail',
@@ -486,20 +493,20 @@ export const JobsListPage: React.FC = () => {
                           <Calendar size={12} /> Reschedule
                         </button>
                       )}
-                      <button
-                        className={`btn ${
-                          nextAct.actionType === 'create_invoice'
-                            ? 'btn-primary'
-                            : nextAct.actionType === 'verify_report'
-                            ? 'btn-outline-emerald'
-                            : 'btn-primary'
-                        }`}
-                        style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
-                        onClick={() => handleExecuteJobAction(j)}
-                      >
-                        <span>{nextAct.label}</span>
-                        <ArrowRight size={11} />
-                      </button>
+                      {nextAct.actionType === 'create_invoice' && !canInvoice ? (
+                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '0.25rem 0.6rem', border: '1px solid var(--border-subtle)', borderRadius: '0.35rem', whiteSpace: 'nowrap' }}>
+                          Invoice — Finance
+                        </span>
+                      ) : (
+                        <button
+                          className={`btn ${nextAct.actionType === 'verify_report' ? 'btn-outline-emerald' : 'btn-primary'}`}
+                          style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
+                          onClick={() => handleExecuteJobAction(j)}
+                        >
+                          <span>{nextAct.label}</span>
+                          <ArrowRight size={11} />
+                        </button>
+                      )}
 
                       <button
                         className="btn btn-secondary"
@@ -797,16 +804,22 @@ export const JobsListPage: React.FC = () => {
               </button>
 
               <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => {
-                    handleExecuteJobAction(selectedJob);
-                    setSelectedJob(null);
-                  }}
-                >
-                  <span>{getJobNextAction(selectedJob, dataService.getInvoiceForJob(selectedJob.id)).label}</span>
-                  <ArrowRight size={14} />
-                </button>
+                {getJobNextAction(selectedJob, dataService.getInvoiceForJob(selectedJob.id)).actionType === 'create_invoice' && !canInvoice ? (
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.4rem 0.8rem', border: '1px solid var(--border-subtle)', borderRadius: '0.4rem' }}>
+                    Awaiting Finance to issue invoice
+                  </span>
+                ) : (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => {
+                      handleExecuteJobAction(selectedJob);
+                      setSelectedJob(null);
+                    }}
+                  >
+                    <span>{getJobNextAction(selectedJob, dataService.getInvoiceForJob(selectedJob.id)).label}</span>
+                    <ArrowRight size={14} />
+                  </button>
+                )}
               </div>
             </div>
           }

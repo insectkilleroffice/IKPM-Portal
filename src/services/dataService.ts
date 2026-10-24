@@ -1132,9 +1132,11 @@ class DataService {
     report: Partial<Pick<InspectionAssessment,
       | 'teamLeaderNotes' | 'clientRequest' | 'meetingFollowUps' | 'meetingReportNote' | 'tlStatus'
       | 'reportTitle' | 'siteName' | 'observedBy' | 'meetingType' | 'inspectionHandling'
+      | 'schedulingNote' | 'preferredInspectionDate' | 'assignedTeamLeaderId' | 'assignedTeamLeaderName'
       | 'negotiationTermsNote'
       // Inline inspection fields (when inspectionHandling === 'done_inline')
       | 'pestTypesFound' | 'infestationSeverity' | 'areaSqFt' | 'criticalFindings' | 'recommendedTreatment'
+      | 'photos' | 'photoEvidenceUrls'
     >>,
     userEmail = 'admin',
     branches?: LeadBranch[]
@@ -1162,13 +1164,15 @@ class DataService {
       scheduledDate: base?.scheduledDate || now().slice(0, 10),
       inspectorId: base?.inspectorId || this.session?.uid || '',
       inspectorName: base?.inspectorName || this.session?.name || '',
-      // Only keep pest findings when the inspection was done inline; clear stale data otherwise
-      pestTypesFound: isDoneInline ? (base?.pestTypesFound ?? []) : [],
-      infestationSeverity: isDoneInline ? (base?.infestationSeverity ?? 'moderate') : 'moderate',
-      areaSqFt: isDoneInline ? (base?.areaSqFt ?? 0) : 0,
-      criticalFindings: isDoneInline ? (base?.criticalFindings ?? '') : '',
-      recommendedTreatment: isDoneInline ? (base?.recommendedTreatment ?? '') : '',
-      photoEvidenceUrls: base?.photoEvidenceUrls ?? [],
+      // Only keep pest findings when the inspection was done inline; clear stale data otherwise.
+      // Use report.* values (from the form) when set; fall back to base only if the field wasn't submitted.
+      pestTypesFound: isDoneInline ? (report.pestTypesFound ?? base?.pestTypesFound ?? []) : [],
+      infestationSeverity: isDoneInline ? (report.infestationSeverity ?? base?.infestationSeverity ?? 'moderate') : 'moderate',
+      areaSqFt: isDoneInline ? (report.areaSqFt ?? base?.areaSqFt ?? 0) : 0,
+      criticalFindings: isDoneInline ? (report.criticalFindings ?? base?.criticalFindings ?? '') : '',
+      recommendedTreatment: isDoneInline ? (report.recommendedTreatment ?? base?.recommendedTreatment ?? '') : '',
+      photoEvidenceUrls: isDoneInline ? (report.photoEvidenceUrls ?? base?.photoEvidenceUrls ?? []) : (base?.photoEvidenceUrls ?? []),
+      photos: isDoneInline ? (report.photos ?? base?.photos) : base?.photos,
       // When switching away from done_inline, clear pest fields so the proposal gate isn't tripped by stale data
       ...(report.inspectionHandling && !isDoneInline ? { pestTypesFound: [], criticalFindings: '', recommendedTreatment: '' } : {}),
       completedDate: base?.completedDate || now().slice(0, 10),
