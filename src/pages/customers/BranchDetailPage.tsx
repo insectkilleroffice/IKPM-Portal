@@ -160,7 +160,7 @@ export const BranchDetailPage: React.FC = () => {
           <FileSignature size={14} />
           Contracts ({contracts.length})
         </button>
-        {hasRole(['super_admin', 'management', 'finance']) && (
+        {hasRole(['super_admin', 'team_leader', 'finance']) && (
           <button
             className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`}
             onClick={() => setActiveTab('invoices')}

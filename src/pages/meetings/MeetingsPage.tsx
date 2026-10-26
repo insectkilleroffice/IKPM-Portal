@@ -32,7 +32,7 @@ export const MeetingsPage: React.FC = () => {
   const [reportLead, setReportLead] = useState<Lead | null>(null);
   const [scheduleLead, setScheduleLead] = useState<Lead | null>(null);
   const [inspectLead, setInspectLead] = useState<Lead | null>(null);
-  const canRecord = canEditModule(effectiveRole, 'pco') || canEditModule(effectiveRole, 'crm') || canEditModule(effectiveRole, 'inspections');
+  const canRecord = canEditModule(effectiveRole, 'pco') || canEditModule(effectiveRole, 'inspections');
   const canOpenLeads = canAccessModule(effectiveRole, 'crm');
 
   const all = store.getLeads().filter((l) => l.inspection && l.inspection.status !== 'cancelled');

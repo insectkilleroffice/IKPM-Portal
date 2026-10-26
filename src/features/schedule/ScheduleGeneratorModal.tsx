@@ -44,7 +44,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
   const { userProfile } = useAuth();
   const { success, error } = useNotification();
 
-  const technicians = store.getStaff(['team_leader', 'technician']);
+  const technicians = store.getStaff(['team_leader', 'operations', 'technician']);
   const existingJobs = store.getJobs();
 
   // Load branches for the contract

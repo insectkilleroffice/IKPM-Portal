@@ -87,6 +87,7 @@ export const ContractsListPage: React.FC = () => {
 
   const canEdit = canEditModule(effectiveRole, 'contracts');
   const canDirectAction = canEditModule(effectiveRole, 'approvals');
+  const canAdminAction = ['super_admin', 'admin'].includes(effectiveRole ?? '');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<ContractStatusFilter>('all');
@@ -105,7 +106,7 @@ export const ContractsListPage: React.FC = () => {
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const proposals = dataService.getProposals();
-  const teamLeaders = dataService.getStaff(['team_leader', 'operations_manager', 'field_supervisor']);
+  const teamLeaders = dataService.getStaff(['team_leader']);
 
   // If fromProposal is provided, find and prefill
   const fromPropId = searchParams.get('fromProposal');
@@ -464,19 +465,21 @@ export const ContractsListPage: React.FC = () => {
               </div>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            {expiringContracts.map((ec) => (
-              <button
-                key={ec.id}
-                className="btn btn-primary"
-                style={{ backgroundColor: '#92400E', padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
-                onClick={() => handleRenewContract(ec)}
-              >
-                <RotateCw size={12} />
-                <span>Renew {ec.id}</span>
-              </button>
-            ))}
-          </div>
+          {canAdminAction && (
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              {expiringContracts.map((ec) => (
+                <button
+                  key={ec.id}
+                  className="btn btn-primary"
+                  style={{ backgroundColor: '#92400E', padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
+                  onClick={() => handleRenewContract(ec)}
+                >
+                  <RotateCw size={12} />
+                  <span>Renew {ec.id}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -629,7 +632,7 @@ export const ContractsListPage: React.FC = () => {
                       >
                         Details
                       </button>
-                      {canEdit && effectiveContractStatus(c, today) !== 'cancelled' && effectiveContractStatus(c, today) !== 'renewed' && (
+                      {canAdminAction && effectiveContractStatus(c, today) !== 'cancelled' && effectiveContractStatus(c, today) !== 'renewed' && (
                         <button
                           className="btn btn-secondary"
                           style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem', color: 'var(--ikpm-rose-600)' }}
@@ -639,7 +642,7 @@ export const ContractsListPage: React.FC = () => {
                           <Ban size={12} />
                         </button>
                       )}
-                      {canEdit && effectiveContractStatus(c, today) === 'cancelled' && (
+                      {canAdminAction && effectiveContractStatus(c, today) === 'cancelled' && (
                         <button
                           className="btn btn-secondary"
                           style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}
@@ -928,13 +931,16 @@ export const ContractsListPage: React.FC = () => {
           maxWidth="640px"
           footer={
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-              <button
-                className="btn btn-outline-emerald"
-                onClick={() => handleRenewContract(selectedContract)}
-              >
-                <RotateCw size={14} />
-                <span>Renew AMC</span>
-              </button>
+              {canAdminAction && (
+                <button
+                  className="btn btn-outline-emerald"
+                  onClick={() => handleRenewContract(selectedContract)}
+                >
+                  <RotateCw size={14} />
+                  <span>Renew AMC</span>
+                </button>
+              )}
+              {!canAdminAction && <span />}
 
               <button
                 className="btn btn-primary"
@@ -1085,7 +1091,7 @@ export const ContractsListPage: React.FC = () => {
           }
         >
           {(() => {
-            const opsStaff = dataService.getStaff();
+            const opsStaff = dataService.getStaff(['team_leader']);
             return (
               <div className="form-group">
                 <label className="form-label">Operations Manager <span className="required">*</span></label>

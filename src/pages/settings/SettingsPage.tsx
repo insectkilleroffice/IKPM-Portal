@@ -63,13 +63,62 @@ export const SettingsPage: React.FC = () => {
   };
 
   const rolesMatrix = [
-    { role: 'super_admin', title: 'Super Admin (CEO / Owner)', leads: 'All', proposals: 'All + Full Approvals', jobs: 'All', finance: 'Full Access' },
-    { role: 'management', title: 'Management (General Manager)', leads: 'All', proposals: 'All + Approvals', jobs: 'All', finance: 'View & Reports' },
-    { role: 'sales', title: 'Sales / CRO', leads: 'Team / Owned', proposals: 'Draft & Submit', jobs: 'View Linked', finance: 'No Access' },
-    { role: 'team_leader', title: 'Team Leader (Meeting & Reports)', leads: 'Assigned Meetings', proposals: 'View Only', jobs: 'Assigned Visits', finance: 'No Access' },
-    { role: 'operations', title: 'Operations (Dispatch / Coordinator)', leads: 'Conversion View', proposals: 'View Approved', jobs: 'Full Dispatch', finance: 'No Access' },
-    { role: 'finance', title: 'Accounts & Finance Officer', leads: 'No Access', proposals: 'View Approved', jobs: 'View Completed', finance: 'Invoicing & WHT' },
-    { role: 'auditor', title: 'Read-only Auditor', leads: 'Read-only', proposals: 'Read-only', jobs: 'Read-only', finance: 'Read-only' },
+    {
+      role: 'super_admin',
+      title: 'Super Admin',
+      leads: 'Full access — all records',
+      proposals: 'Full access + all approvals',
+      jobs: 'Full access — all teams',
+      finance: 'Full access',
+    },
+    {
+      role: 'admin',
+      title: 'Admin',
+      leads: 'Full edit — all leads & CRM',
+      proposals: 'Create, edit & send proposals',
+      jobs: 'Schedule, dispatch & manage all jobs',
+      finance: 'View invoices only',
+    },
+    {
+      role: 'sales',
+      title: 'CRO',
+      leads: 'Own leads — new, follow-up, proposal',
+      proposals: 'Create & submit (B2B signed doc required)',
+      jobs: 'View linked jobs',
+      finance: 'No access',
+    },
+    {
+      role: 'team_leader',
+      title: 'Operations Manager',
+      leads: 'View assigned meetings & inspections',
+      proposals: 'View approved proposals',
+      jobs: 'Schedule, assign & verify Karachi jobs',
+      finance: 'View invoices',
+    },
+    {
+      role: 'operations',
+      title: 'Operation Teams — Operation Person',
+      leads: 'Assigned inspections only',
+      proposals: 'No access',
+      jobs: 'Own team jobs — execute & submit reports',
+      finance: 'No access',
+    },
+    {
+      role: 'technician',
+      title: 'Operation Teams — Technician (PCO)',
+      leads: 'No access',
+      proposals: 'No access',
+      jobs: 'Own assigned jobs only',
+      finance: 'No access',
+    },
+    {
+      role: 'finance',
+      title: 'Finance',
+      leads: 'No access',
+      proposals: 'View approved proposals',
+      jobs: 'View completed jobs',
+      finance: 'Invoicing, receipts & WHT',
+    },
   ];
 
   return (

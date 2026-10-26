@@ -73,8 +73,8 @@ export const ComplaintsPage: React.FC = () => {
   const { success, error } = useNotification();
 
   const canEdit = canEditModule(effectiveRole, 'complaints');
-  const isOps = effectiveRole === 'operations' || effectiveRole === 'super_admin' || effectiveRole === 'management';
-  const isSalesOrAdmin = ['sales', 'management', 'super_admin'].includes(effectiveRole ?? '');
+  const isOps = ['operations', 'team_leader', 'admin', 'super_admin'].includes(effectiveRole ?? '');
+  const isSalesOrAdmin = ['sales', 'admin', 'team_leader', 'super_admin'].includes(effectiveRole ?? '');
   const canAssign = isSalesOrAdmin || effectiveRole === 'super_admin';
 
   const [query, setQuery] = useState('');
@@ -116,7 +116,7 @@ export const ComplaintsPage: React.FC = () => {
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const staff = dataService.getStaff();
-  const opsStaff = staff.filter((u) => u.role === 'operations' || u.role === 'super_admin' || u.role === 'management');
+  const opsStaff = staff.filter((u) => ['operations', 'team_leader', 'admin', 'super_admin'].includes(u.role));
 
   const today = new Date().toISOString().slice(0, 10);
   const thisMonth = today.slice(0, 7);

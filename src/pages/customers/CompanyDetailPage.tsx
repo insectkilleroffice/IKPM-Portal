@@ -368,7 +368,7 @@ export const CompanyDetailPage: React.FC = () => {
           </button>
         )}
 
-        {hasRole(['super_admin', 'management', 'finance']) && (
+        {hasRole(['super_admin', 'team_leader', 'finance']) && (
           <>
             <button
               className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`}

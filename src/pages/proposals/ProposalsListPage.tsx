@@ -52,7 +52,7 @@ export const ProposalsListPage: React.FC = () => {
   const [assignStartDate, setAssignStartDate] = useState(new Date().toISOString().split('T')[0]);
 
   const proposals = dataService.getProposals();
-  const teamLeaders = dataService.getStaff(['team_leader', 'operations_manager', 'field_supervisor']);
+  const teamLeaders = dataService.getStaff(['team_leader']);
   const contracts = dataService.getContracts();
   const activeId = selectedId === undefined ? searchParams.get('view') : selectedId;
   const selected = activeId ? dataService.getProposalById(activeId) ?? null : null;

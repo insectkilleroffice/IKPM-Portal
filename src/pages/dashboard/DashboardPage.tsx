@@ -5,10 +5,10 @@ import {
   Building2,
   FileSignature,
   Truck,
-  Receipt,
   ShieldCheck,
   Briefcase,
   MessageSquareWarning,
+  Receipt,
 } from 'lucide-react';
 import { isComplaintOverdue } from '../../types/complaints';
 import { dataService } from '../../services/dataService';
@@ -16,7 +16,7 @@ import { formatPKR, formatDate } from '../../lib/formatters';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 
-type RoleQueueTab = 'sales' | 'operations' | 'finance' | 'team_leader' | 'management' | 'admin';
+type RoleQueueTab = 'sales' | 'operations' | 'team_leader' | 'finance' | 'admin';
 
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
@@ -25,10 +25,9 @@ export const DashboardPage: React.FC = () => {
 
   // Determine default queue tab based on active role
   const getDefaultTab = (): RoleQueueTab => {
-    if (effectiveRole === 'finance') return 'finance';
     if (effectiveRole === 'sales') return 'sales';
     if (effectiveRole === 'team_leader') return 'team_leader';
-    if (effectiveRole === 'management') return 'management';
+    if (effectiveRole === 'finance') return 'finance';
     if (effectiveRole === 'admin') return 'admin';
     return 'operations';
   };
@@ -76,17 +75,15 @@ export const DashboardPage: React.FC = () => {
   const opsReportsWaitingVerification = jobs.filter((j) => j.status === 'completed' && !j.supervisorVerification?.isVerified);
 
   // 3. FINANCE QUEUE
-  const financeVerifiedReportsNotYetInvoiced = jobs.filter((j) => {
+  const finVerifiedNotInvoiced = jobs.filter((j) => {
     if (!j.supervisorVerification?.isVerified) return false;
     const inv = dataService.getInvoiceForJob(j.id);
     return !inv || inv.status === 'void_reversed';
   });
-  const financeOverdueInvoices = invoices.filter((i) => {
-    return new Date(i.dueDate) < new Date() && i.balanceDue > 0 && i.status !== 'void_reversed';
-  });
-  const financePendingWhtCertificates = invoices.filter((i) => {
-    return i.balanceDue > 0 && (!i.customerWhtTotal || i.customerWhtTotal === 0);
-  });
+  const finOverdueInvoices = invoices.filter(
+    (i) => new Date(i.dueDate) < new Date() && i.balanceDue > 0 && i.status !== 'void_reversed'
+  );
+  const finPendingBalances = invoices.filter((i) => i.balanceDue > 0 && i.status !== 'void_reversed');
 
   // 4. TEAM LEADER QUEUE
   const uid = userProfile?.uid || '';
@@ -190,12 +187,11 @@ export const DashboardPage: React.FC = () => {
           {/* Role Queue Switcher */}
           <div style={{ display: 'flex', backgroundColor: 'var(--bg-surface-alt)', padding: '3px', borderRadius: 'var(--radius-md)', gap: '2px' }}>
             {[
-              { id: 'operations', label: 'Operations Queue' },
-              { id: 'sales', label: 'CRO Queue' },
-              { id: 'finance', label: 'Accounts Queue' },
-              { id: 'team_leader', label: 'Ops Manager Queue' },
-              { id: 'management', label: 'Manager Queue' },
               { id: 'admin', label: 'Admin Queue' },
+              { id: 'sales', label: 'CRO Queue' },
+              { id: 'team_leader', label: 'Ops Manager Queue' },
+              { id: 'operations', label: 'Operation Teams Queue' },
+              { id: 'finance', label: 'Finance Queue' },
             ].map((t) => (
               <button
                 key={t.id}
@@ -403,101 +399,6 @@ export const DashboardPage: React.FC = () => {
           </div>
         )}
 
-        {/* 3. FINANCE QUEUE */}
-        {activeQueueTab === 'finance' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
-            {/* Verified Reports Not Yet Invoiced */}
-            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
-                  Verified Reports to Invoice ({financeVerifiedReportsNotYetInvoiced.length})
-                </strong>
-              </div>
-              {financeVerifiedReportsNotYetInvoiced.length === 0 ? (
-                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                  All verified reports have been invoiced.
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {financeVerifiedReportsNotYetInvoiced.map((j) => (
-                    <div
-                      key={j.id}
-                      onClick={() => navigate(`/finance/invoices?action=new_invoice&fromJob=${j.id}`)}
-                      style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)' }}
-                    >
-                      <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{j.customerName}</div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        Job {j.id} • QC Verified by {j.supervisorVerification?.supervisorName}
-                      </div>
-                      <button className="btn btn-primary" style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', marginTop: '4px' }}>
-                        <Receipt size={12} />
-                        <span>Create Invoice</span>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Overdue Invoices */}
-            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-rose-500)' }}>
-                  Overdue Invoices ({financeOverdueInvoices.length})
-                </strong>
-                <Link to="/finance/invoices" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Invoices</Link>
-              </div>
-              {financeOverdueInvoices.length === 0 ? (
-                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                  No overdue invoices.
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {financeOverdueInvoices.map((inv) => (
-                    <div
-                      key={inv.id}
-                      onClick={() => navigate(`/finance/invoices`)}
-                      style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--ikpm-rose-300)' }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <strong style={{ fontSize: '0.8rem' }}>{inv.customerName}</strong>
-                        <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--ikpm-rose-500)' }}>
-                          {formatPKR(inv.balanceDue)}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        Inv: {inv.invoiceNumber} • Due: {formatDate(inv.dueDate)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* WHT Certificates Pending */}
-            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
-                  Receivable Balances Pending ({financePendingWhtCertificates.length})
-                </strong>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {financePendingWhtCertificates.slice(0, 3).map((inv) => (
-                  <div
-                    key={inv.id}
-                    onClick={() => navigate(`/finance/invoices`)}
-                    style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)' }}
-                  >
-                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{inv.customerName}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                      Outstanding: <strong>{formatPKR(inv.balanceDue)}</strong>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* 4. TEAM LEADER QUEUE */}
         {activeQueueTab === 'team_leader' && (
@@ -674,63 +575,70 @@ export const DashboardPage: React.FC = () => {
           </div>
         )}
 
-        {/* 5. MANAGER QUEUE */}
-        {activeQueueTab === 'management' && (
+        {/* 5. FINANCE QUEUE */}
+        {activeQueueTab === 'finance' && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
             <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                 <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
-                  Proposals Needing Approval ({salesProposalsNeedApproval.length})
-                </strong>
-                <Link to="/proposals" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Proposals</Link>
-              </div>
-              {salesProposalsNeedApproval.length === 0 ? (
-                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No proposals pending your approval.</p>
-              ) : (
-                salesProposalsNeedApproval.slice(0, 4).map((p) => (
-                  <div key={p.id} onClick={() => navigate(`/proposals?proposal=${p.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.4rem' }}>
-                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{p.customerName}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{p.id} · {formatPKR(p.totalAmount)}</div>
-                  </div>
-                ))
-              )}
-            </div>
-            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
-                  Open Complaints ({complaints.filter((c) => c.status !== 'closed').length})
-                </strong>
-                <Link to="/complaints" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Complaints</Link>
-              </div>
-              {complaints.filter((c) => c.status !== 'closed').length === 0 ? (
-                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No open complaints.</p>
-              ) : (
-                complaints.filter((c) => c.status !== 'closed').slice(0, 4).map((c) => (
-                  <div key={c.id} onClick={() => navigate(`/complaints?id=${c.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: `1px solid ${isComplaintOverdue(c) ? 'var(--ikpm-amber-400)' : 'var(--border-subtle)'}`, marginBottom: '0.4rem' }}>
-                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{c.customerName}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{c.category} · {c.status.replace(/_/g, ' ')}</div>
-                    {isComplaintOverdue(c) && <div style={{ fontSize: '0.7rem', color: '#D97706' }}>⚠ Overdue</div>}
-                  </div>
-                ))
-              )}
-            </div>
-            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
-                  Overdue Invoices ({financeOverdueInvoices.length})
+                  Verified Jobs to Invoice ({finVerifiedNotInvoiced.length})
                 </strong>
                 <Link to="/finance/invoices" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Invoices</Link>
               </div>
-              {financeOverdueInvoices.length === 0 ? (
-                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No overdue invoices.</p>
+              {finVerifiedNotInvoiced.length === 0 ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>All verified jobs have been invoiced.</div>
               ) : (
-                financeOverdueInvoices.slice(0, 4).map((i) => (
-                  <div key={i.id} onClick={() => navigate(`/finance/invoices?invoice=${i.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid #FCA5A5', marginBottom: '0.4rem' }}>
-                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{i.customerName || i.id}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{formatPKR(i.balanceDue)} overdue · due {formatDate(i.dueDate)}</div>
-                  </div>
-                ))
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {finVerifiedNotInvoiced.map((j) => (
+                    <div key={j.id} onClick={() => navigate(`/finance/invoices?action=new_invoice&fromJob=${j.id}`)}
+                      style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--ikpm-emerald-300)' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{j.customerName}</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Job {j.id} • QC: {j.supervisorVerification?.supervisorName}</div>
+                      <button className="btn btn-primary" style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem', marginTop: '4px' }}>Create Invoice</button>
+                    </div>
+                  ))}
+                </div>
               )}
+            </div>
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-rose-500)' }}>
+                  Overdue Invoices ({finOverdueInvoices.length})
+                </strong>
+                <Link to="/finance/invoices" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>All Invoices</Link>
+              </div>
+              {finOverdueInvoices.length === 0 ? (
+                <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.75rem' }}>No overdue invoices.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  {finOverdueInvoices.map((inv) => (
+                    <div key={inv.id} onClick={() => navigate(`/finance/invoices`)}
+                      style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--ikpm-rose-300)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <strong style={{ fontSize: '0.8rem' }}>{inv.customerName}</strong>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--ikpm-rose-500)' }}>{formatPKR(inv.balanceDue)}</span>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{inv.invoiceNumber} • Due: {formatDate(inv.dueDate)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <strong style={{ fontSize: '0.825rem', color: 'var(--ikpm-navy-900)' }}>
+                  Outstanding Receivables ({finPendingBalances.length})
+                </strong>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {finPendingBalances.slice(0, 4).map((inv) => (
+                  <div key={inv.id} onClick={() => navigate(`/finance/invoices`)}
+                    style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{inv.customerName}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Outstanding: <strong>{formatPKR(inv.balanceDue)}</strong></div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -745,16 +653,15 @@ export const DashboardPage: React.FC = () => {
                 </strong>
                 <Link to="/crm" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>CRM</Link>
               </div>
-              {leads.filter((l) => !['won', 'lost'].includes(l.stage)).length === 0 ? (
-                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No open leads.</p>
-              ) : (
-                leads.filter((l) => !['won', 'lost'].includes(l.stage)).slice(0, 4).map((l) => (
-                  <div key={l.id} onClick={() => navigate(`/crm?lead=${l.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.4rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {leads.filter((l) => !['won', 'lost'].includes(l.stage)).slice(0, 4).map((l) => (
+                  <div key={l.id} onClick={() => navigate(`/crm?lead=${l.id}`)}
+                    style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.4rem' }}>
                     <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{l.title}</div>
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{l.contactName} · {l.stage.replace(/_/g, ' ')}</div>
                   </div>
-                ))
-              )}
+                ))}
+              </div>
             </div>
             <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
@@ -763,16 +670,15 @@ export const DashboardPage: React.FC = () => {
                 </strong>
                 <Link to="/operations/jobs" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Jobs</Link>
               </div>
-              {opsJobsTodayAndTomorrow.length === 0 ? (
-                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No jobs scheduled today or tomorrow.</p>
-              ) : (
-                opsJobsTodayAndTomorrow.slice(0, 4).map((j) => (
-                  <div key={j.id} onClick={() => navigate(`/operations/jobs?job=${j.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.4rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {opsJobsTodayAndTomorrow.slice(0, 4).map((j) => (
+                  <div key={j.id} onClick={() => navigate(`/operations/jobs?job=${j.id}`)}
+                    style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.4rem' }}>
                     <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{j.customerName}</div>
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{j.siteName} · {j.scheduledDate}</div>
                   </div>
-                ))
-              )}
+                ))}
+              </div>
             </div>
             <div style={{ padding: '0.85rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-md)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
@@ -781,19 +687,20 @@ export const DashboardPage: React.FC = () => {
                 </strong>
                 <Link to="/complaints" style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)' }}>Complaints</Link>
               </div>
-              {complaints.filter((c) => c.status !== 'closed').length === 0 ? (
-                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No open complaints.</p>
-              ) : (
-                complaints.filter((c) => c.status !== 'closed').slice(0, 4).map((c) => (
-                  <div key={c.id} onClick={() => navigate(`/complaints?id=${c.id}`)} style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: `1px solid ${isComplaintOverdue(c) ? 'var(--ikpm-amber-400)' : 'var(--border-subtle)'}`, marginBottom: '0.4rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {complaints.filter((c) => c.status !== 'closed').slice(0, 4).map((c) => (
+                  <div key={c.id} onClick={() => navigate(`/complaints?id=${c.id}`)}
+                    style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: `1px solid ${isComplaintOverdue(c) ? 'var(--ikpm-amber-400)' : 'var(--border-subtle)'}`, marginBottom: '0.4rem' }}>
                     <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{c.customerName}</div>
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{c.category} · {c.status.replace(/_/g, ' ')}</div>
+                    {isComplaintOverdue(c) && <div style={{ fontSize: '0.7rem', color: '#D97706' }}>⚠ Overdue</div>}
                   </div>
-                ))
-              )}
+                ))}
+              </div>
             </div>
           </div>
         )}
+
       </div>
 
       {/* Real KPI Metrics Cards */}
@@ -851,8 +758,8 @@ export const DashboardPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Open Complaints Widget — shown for sales, management, operations and super admin */}
-      {['sales', 'management', 'operations', 'super_admin'].includes(effectiveRole ?? '') && (() => {
+      {/* Open Complaints Widget — shown for Admin, CRO, Operations Manager, Operation Person and Super Admin */}
+      {['admin', 'sales', 'team_leader', 'operations', 'super_admin'].includes(effectiveRole ?? '') && (() => {
         const openComplaints = complaints.filter((c) => !['closed'].includes(c.status));
         const overdueComplaints = complaints.filter(isComplaintOverdue);
         if (openComplaints.length === 0 && overdueComplaints.length === 0) return null;

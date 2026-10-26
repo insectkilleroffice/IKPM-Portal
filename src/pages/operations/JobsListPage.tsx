@@ -38,10 +38,10 @@ export const JobsListPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const { success, warning } = useNotification();
   const pdfAction = usePdfAction();
-  const { userProfile } = useAuth();
+  const { userProfile, effectiveRole } = useAuth();
   useDataStore();
 
-  const canInvoice = canEditModule(userProfile?.role, 'invoices');
+  const canInvoice = canEditModule(effectiveRole, 'invoices');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -123,7 +123,7 @@ export const JobsListPage: React.FC = () => {
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const jobs = dataService.getJobs();
-  const technicians = dataService.getStaff(['team_leader', 'technician']);
+  const technicians = dataService.getStaff(['team_leader', 'operations', 'technician']);
 
   // If fromProposal or customerId query params are provided, pre-fill
   const fromPropId = searchParams.get('fromProposal');

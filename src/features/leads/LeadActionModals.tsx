@@ -312,7 +312,7 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
   const [meetingType, setMeetingType] = useState<'first_meeting' | 'negotiation' | 'renewal'>('first_meeting');
 
   const teams = store.getTeams();
-  const staff = store.getStaff().filter((u) => !['auditor', 'technician'].includes(u.role));
+  const staff = store.getStaff().filter((u) => u.role !== 'technician');
 
   useEffect(() => {
     if (!lead) return;
@@ -792,7 +792,7 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
                     <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>Assign to <span style={{ fontWeight: 400 }}>Operations / Team Leader</span></label>
                     <select className="form-select" value={scheduleAssigneeId} onChange={(e) => setScheduleAssigneeId(e.target.value)}>
                       <option value="">Unassigned — TL will pick up</option>
-                      {store.getStaff().filter((u) => ['team_leader', 'operations', 'admin', 'management'].includes(u.role)).map((u) => (
+                      {store.getStaff().filter((u) => ['team_leader', 'operations'].includes(u.role)).map((u) => (
                         <option key={u.uid} value={u.uid}>{u.displayName} ({roleLabel(u.role)})</option>
                       ))}
                     </select>

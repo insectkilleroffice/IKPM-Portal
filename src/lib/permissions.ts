@@ -6,7 +6,7 @@
 
 import type { DataScope, UserRole } from '../types';
 
-export type SystemRole = 'super_admin' | 'admin' | 'management' | 'sales' | 'team_leader' | 'operations' | 'finance' | 'auditor' | 'technician';
+export type SystemRole = 'super_admin' | 'admin' | 'sales' | 'team_leader' | 'operations' | 'finance' | 'technician';
 
 export type ModuleKey =
   | 'dashboard'
@@ -70,55 +70,124 @@ export const MODULES: { key: ModuleKey; label: string; group: string; hint?: str
 
 const all = (level: AccessLevel, keys: ModuleKey[]) => Object.fromEntries(keys.map((k) => [k, level])) as Partial<Record<ModuleKey, AccessLevel>>;
 
+// ── Role Workflow ────────────────────────────────────────────────────────────
+// Super Admin   : Full portal access — users, roles, settings, all data.
+// Admin         : Daily back-office — edits all operational records, sends
+//                 documents to clients. Cannot touch roles, staff or invoices.
+// CRO           : Lead generation and B2B proposals. Proposals require a
+//                 signed client document to be accepted.
+// Operations Mgr: Receives CRO-approved signed docs. Schedules and assigns
+//                 Karachi field teams to jobs, meetings & inspections.
+//                 Reviews and approves field reports.
+// Operation     : Karachi field team leader (Operation Person). Executes
+//   Teams         scheduled jobs, leads 5 technicians, submits reports.
+//               : Technician (PCO) — sees and works only their own jobs.
+// Finance       : Invoices, receipts, WHT and tax rules. Read-only on
+//                 customers, contracts and completed jobs.
+// ────────────────────────────────────────────────────────────────────────────
+
 export const DEFAULT_ROLES: RoleDefinition[] = [
   {
-    id: 'super_admin', name: 'Super Admin', basedOn: 'super_admin', isSystem: true, defaultScope: 'company', color: '#7C3AED',
-    description: 'Full control of the portal, staff, teams and roles',
+    id: 'super_admin',
+    name: 'Super Admin',
+    basedOn: 'super_admin',
+    isSystem: true,
+    defaultScope: 'company',
+    color: '#7C3AED',
+    description: 'Full portal control — all data, staff, teams and roles',
     modules: all('edit', MODULES.map((m) => m.key)),
   },
   {
-    id: 'admin', name: 'Admin', basedOn: 'admin', isSystem: true, defaultScope: 'company', color: '#0F766E',
-    description: 'Daily office control — edits all operational records and can send documents. Cannot manage roles, staff, or finances.',
+    id: 'admin',
+    name: 'Admin',
+    basedOn: 'admin',
+    isSystem: true,
+    defaultScope: 'company',
+    color: '#0F766E',
+    description: 'Daily back-office operations — edits all records and sends documents. Cannot manage roles, staff or invoices.',
     modules: {
       ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'pco', 'complaints']),
-      invoices: 'view', settings: 'view', approvals: 'view',
+      invoices: 'view',
+      settings: 'view',
+      approvals: 'view',
     },
   },
   {
-    id: 'management', name: 'Manager', basedOn: 'management', isSystem: true, defaultScope: 'company', color: '#1B3A63',
-    description: 'Approves proposals, discounts, contract changes, invoice voids and complaint escalations. Sees all reports.',
-    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'calendar', 'jobs', 'pco', 'invoices', 'tax', 'complaints', 'approvals']), settings: 'view', company_files: 'view', templates: 'edit' },
+    id: 'sales',
+    name: 'CRO',
+    basedOn: 'sales',
+    isSystem: true,
+    defaultScope: 'own',
+    color: '#1A73E8',
+    description: 'Lead generation and B2B proposal management. Proposals require a signed client document to be accepted.',
+    modules: {
+      ...all('edit', ['dashboard', 'customers', 'crm', 'proposals', 'files', 'complaints']),
+      documents: 'view',
+      company_files: 'view',
+      approvals: 'view',
+    },
   },
   {
-    id: 'sales', name: 'CRO', basedOn: 'sales', isSystem: true, defaultScope: 'own', color: '#1A73E8',
-    description: 'Leads, inspections, proposals and own customers. Logs complaints and manages renewals.',
-    modules: { ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'complaints']), documents: 'view', company_files: 'view', approvals: 'view' },
+    id: 'team_leader',
+    name: 'Operations Manager',
+    basedOn: 'team_leader',
+    isSystem: true,
+    defaultScope: 'company',
+    color: '#9A3412',
+    description: 'Receives CRO-approved signed documents. Schedules Karachi field teams, assigns inspections/meetings, approves field reports.',
+    modules: {
+      ...all('edit', ['dashboard', 'inspections', 'contracts', 'calendar', 'jobs', 'pco', 'files', 'documents', 'complaints', 'approvals']),
+      customers: 'view',
+      crm: 'view',
+      proposals: 'view',
+      company_files: 'view',
+      invoices: 'view',
+      settings: 'view',
+      team: 'edit',
+    },
   },
   {
-    id: 'operations', name: 'Operations', basedOn: 'operations', isSystem: true, defaultScope: 'company', color: '#D97706',
-    description: 'Dispatch, service jobs and field teams',
-    modules: { ...all('edit', ['dashboard', 'inspections', 'calendar', 'jobs', 'pco', 'files', 'complaints']), customers: 'view', contracts: 'view', documents: 'view', company_files: 'view' },
+    id: 'operations',
+    name: 'Operation Person',
+    basedOn: 'operations',
+    isSystem: true,
+    defaultScope: 'team',
+    color: '#D97706',
+    description: 'Karachi field team leader. Executes scheduled jobs, leads 5 technicians, submits reports to Operations Manager.',
+    modules: {
+      ...all('edit', ['dashboard', 'inspections', 'jobs', 'pco', 'files', 'complaints']),
+      calendar: 'view',
+      customers: 'view',
+      contracts: 'view',
+      documents: 'view',
+    },
   },
   {
-    id: 'finance', name: 'Accounts Manager', basedOn: 'finance', isSystem: true, defaultScope: 'company', color: '#0E8A5F',
+    id: 'finance',
+    name: 'Finance',
+    basedOn: 'finance',
+    isSystem: true,
+    defaultScope: 'company',
+    color: '#0E8A5F',
     description: 'Invoices, receipts, WHT and tax rules. Read-only on customers, contracts, jobs and complaints.',
-    modules: { ...all('edit', ['dashboard', 'invoices', 'tax']), customers: 'view', contracts: 'view', files: 'view', jobs: 'view', complaints: 'view', approvals: 'view' },
+    modules: {
+      ...all('edit', ['dashboard', 'invoices', 'tax']),
+      customers: 'view',
+      contracts: 'view',
+      files: 'view',
+      jobs: 'view',
+      approvals: 'view',
+    },
   },
   {
-    id: 'team_leader', name: 'Operations Manager', basedOn: 'team_leader', isSystem: true, defaultScope: 'team', color: '#9A3412',
-    description: 'Manages field visits, schedules service jobs, assigns team members, submits service reports and handles team complaints.',
-    modules: { dashboard: 'edit', crm: 'view', inspections: 'edit', pco: 'edit', customers: 'view', proposals: 'view', contracts: 'view', complaints: 'edit', files: 'edit' },
-  },
-  {
-    id: 'auditor', name: 'Auditor (read-only)', basedOn: 'auditor', isSystem: true, defaultScope: 'company', color: '#4B5563',
-    isHidden: true,
-    description: 'Read-only access for compliance review. Hidden from the default role picker.',
-    modules: all('view', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'invoices', 'settings', 'complaints', 'approvals']),
-  },
-  {
-    id: 'technician', name: 'Technician (PCO)', basedOn: 'technician', isSystem: true, defaultScope: 'own', color: '#0891B2',
-    description: 'Field technician — sees and updates only the service jobs assigned to them.',
-    modules: { pco: 'edit', jobs: 'view' },
+    id: 'technician',
+    name: 'Technician (PCO)',
+    basedOn: 'technician',
+    isSystem: true,
+    defaultScope: 'own',
+    color: '#0891B2',
+    description: 'Field technician — part of Operation Teams. Sees and updates only service jobs assigned to them.',
+    modules: { dashboard: 'view', jobs: 'view', pco: 'edit' },
   },
 ];
 

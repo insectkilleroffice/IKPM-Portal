@@ -194,7 +194,7 @@ export const IndividualDetailPage: React.FC = () => {
         <button className={`tab-btn ${activeTab === 'jobs' ? 'active' : ''}`} onClick={() => setActiveTab('jobs')}>
           <Truck size={14} /> Field Jobs ({jobs.length})
         </button>
-        {hasRole(['super_admin', 'management', 'finance']) && (
+        {hasRole(['super_admin', 'team_leader', 'finance']) && (
           <>
             <button className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`} onClick={() => setActiveTab('invoices')}>
               <Receipt size={14} /> Invoices & Receipts ({invoices.length})
@@ -522,7 +522,7 @@ export const IndividualDetailPage: React.FC = () => {
       )}
 
       {/* Invoices Tab (finance roles only) */}
-      {activeTab === 'invoices' && hasRole(['super_admin', 'management', 'finance']) &&
+      {activeTab === 'invoices' && hasRole(['super_admin', 'team_leader', 'finance']) &&
         (invoices.length === 0 ? (
           <EmptyState
             icon={Receipt}
@@ -569,7 +569,7 @@ export const IndividualDetailPage: React.FC = () => {
         ))}
 
       {/* Statements Tab (finance roles only) */}
-      {activeTab === 'statements' && hasRole(['super_admin', 'management', 'finance']) &&
+      {activeTab === 'statements' && hasRole(['super_admin', 'team_leader', 'finance']) &&
         (ledgerEntries.length === 0 ? (
           <EmptyState
             icon={CreditCard}
