@@ -62,6 +62,7 @@ import {
   daysSince,
   stuckAtLabel,
   STUCK_AT_REASONS,
+  ALLOWED_TRANSITIONS,
   type LeadActionId,
   type PipelineStage,
 } from '../../lib/leadWorkflow';
@@ -287,7 +288,7 @@ export const LeadsListPage: React.FC = () => {
         <div className="page-title-wrap">
           <h1>Leads pipeline</h1>
           <p className="page-subtitle">
-            Add the company and who to contact → log calls until they're engaged → schedule an inspection → record findings → send a proposal → won or lost.
+            Add the company and who to contact → log calls until they're engaged → schedule a meeting → record findings → send a proposal → won or lost.
           </p>
         </div>
         <div>
@@ -392,7 +393,7 @@ export const LeadsListPage: React.FC = () => {
                     </td>
                     <td>
                       <StagePill lead={l} />
-                      {l.stuckAt && (
+                      {l.stuckAt && !['won', 'lost'].includes(st) && (
                         <div style={{ marginTop: 4 }}>
                           <span
                             className="badge-status badge-amber"
@@ -411,6 +412,8 @@ export const LeadsListPage: React.FC = () => {
                           ? <>{l.inspection.infestationSeverity} · {l.inspection.pestTypesFound.map((x) => PEST_OPTIONS.find((o) => o.value === x)?.label || x).join(', ')}</>
                           : st === 'proposal_sent'
                             ? <>Proposal {l.proposalId || ''}</>
+                            : st === 'won'
+                            ? <span className="badge-status badge-emerald">Converted</span>
                             : st === 'lost'
                               ? <>{l.lostReason || 'Closed'}</>
                               : l.contactOutcome
@@ -633,8 +636,9 @@ const ChangeStageModal: React.FC<{ lead: Lead; onClose: () => void; onMoved: (up
     }
   };
 
-  const forwardStages = PIPELINE.filter((p, i) => i > currentIndex && p.stage !== 'lost');
-  const backwardStages = PIPELINE.filter((p, i) => i < currentIndex && p.stage !== 'lost');
+  const allowed = ALLOWED_TRANSITIONS[currentStage] ?? [];
+  const forwardStages = PIPELINE.filter((p) => allowed.includes(p.stage) && p.stage !== 'lost' && PIPELINE.findIndex((x) => x.stage === p.stage) > currentIndex);
+  const backwardStages = PIPELINE.filter((p) => allowed.includes(p.stage) && p.stage !== 'lost' && PIPELINE.findIndex((x) => x.stage === p.stage) < currentIndex);
 
   return (
     <Modal

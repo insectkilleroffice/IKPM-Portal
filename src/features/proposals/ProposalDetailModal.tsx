@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CheckCircle2, Download, FileSignature, ArrowRight, Truck, Send, History, FolderUp } from 'lucide-react';
+import { CheckCircle2, Download, UserCheck, Truck, Send, History, FolderUp } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { OutreachHistory } from '../outreach/OutreachHistory';
 import { formatDate, formatPKR } from '../../lib/formatters';
@@ -19,10 +19,11 @@ interface Props {
   onAccept: () => void;
   onDecline: () => void;
   onSend?: () => void;
+  onAssign?: () => void;
 }
 
 /** Proposal details with approval, client decision, contract / job hand-off and sharing. */
-export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onAccept, onDecline, onSend }) => {
+export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onAccept, onDecline, onSend, onAssign }) => {
   const navigate = useNavigate();
   const isPlan = Boolean(p.servicePlan?.length);
   const pricing = isPlan
@@ -50,7 +51,7 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
             {p.status === 'pending_approval' && canApprove && (
               <>
                 <button className="btn btn-danger" onClick={onReject}>Reject</button>
-                <button className="btn btn-primary" onClick={onApprove}><CheckCircle2 size={15} /> <span>Approve (AP-01)</span></button>
+                <button className="btn btn-primary" onClick={onApprove}><CheckCircle2 size={15} /> <span>Approve</span></button>
               </>
             )}
             {['approved', 'sent_to_client', 'negotiation'].includes(p.status) && (
@@ -64,9 +65,11 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
                 <button className="btn btn-outline-emerald" onClick={() => { onClose(); navigate(`/operations/jobs?action=new_job&fromProposal=${p.id}`); }} title="One-off service job from this proposal">
                   <Truck size={14} /> <span>One-off job</span>
                 </button>
-                <button className="btn btn-primary" onClick={() => { onClose(); navigate(`/contracts?action=new_contract&fromProposal=${p.id}`); }}>
-                  <FileSignature size={14} /> <span>Create contract</span> <ArrowRight size={13} />
-                </button>
+                {onAssign && (
+                  <button className="btn btn-primary" onClick={onAssign}>
+                    <UserCheck size={14} /> <span>Assign &amp; schedule</span>
+                  </button>
+                )}
               </>
             )}
             {onSend && (
@@ -101,7 +104,9 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
             </div>
             <dl className="detail-list">
               <dt>Visits / month</dt><dd>{p.serviceVisitsPerMonth ?? '—'} service · {p.followUpVisitsPerMonth ?? 0} follow-up</dd>
-              <dt>PCOs per visit (as per client requirement)</dt><dd>{p.pcoCountMin === p.pcoCountMax ? p.pcoCountMin : `${p.pcoCountMin}–${p.pcoCountMax}`}</dd>
+              {(p.pcoCountMin || p.pcoCountMax) && (
+                <><dt>PCOs per visit</dt><dd>{p.pcoCountMin === p.pcoCountMax ? p.pcoCountMin : `${p.pcoCountMin}–${p.pcoCountMax}`} (as per client requirement)</dd></>
+              )}
               <dt>Tenure</dt><dd>{p.tenureMonths} months</dd>
               <dt>Monthly</dt><dd>{formatPKR(pricing!.monthlyBase)} + tax {p.taxPercent}% = <strong>{formatPKR(pricing!.monthlyTotal)}</strong> ({p.taxMode === 'inclusive' ? 'entered inclusive of tax' : 'exclusive of tax'})</dd>
               <dt>Payment</dt><dd>Within {p.paymentTermsDays ?? 15} days of invoice</dd>
@@ -134,7 +139,7 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
         <div className="pricing-summary">
           <div>Subtotal: {formatPKR(p.subtotal)}</div>
           {p.discountPercent > 0 && <div>Discount ({p.discountPercent}%): -{formatPKR(p.discountAmount)}</div>}
-          <div>Sales tax ({p.taxPercent}%): {formatPKR(p.taxAmount)}</div>
+          {p.taxPercent > 0 && <div>Sales tax ({p.taxPercent}%): {formatPKR(p.taxAmount)}</div>}
           <div className="pricing-grand">Total: {formatPKR(p.totalAmount)}</div>
         </div>
 

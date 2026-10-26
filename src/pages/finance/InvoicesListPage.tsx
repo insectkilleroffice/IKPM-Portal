@@ -275,8 +275,8 @@ export const InvoicesListPage: React.FC = () => {
     }
 
     success(
-      'Statutory Sales Tax Invoice Generated & Filed',
-      `Invoice ${created.invoiceNumber} posted & auto-filed in Invoices folder (${created.jurisdiction.toUpperCase()} tax: ${newInvoice.taxRatePercent}%)`
+      'Invoice created',
+      `Invoice ${created.invoiceNumber} posted${newInvoice.taxRatePercent > 0 ? ` (tax: ${newInvoice.taxRatePercent}%)` : ' (no tax)'}`
     );
     setShowNewInvoiceModal(false);
   };
@@ -373,32 +373,15 @@ export const InvoicesListPage: React.FC = () => {
 
   return (
     <div className="animate-fade-in">
-      <Breadcrumbs items={[{ label: 'Invoices, Receivables & Tax' }]} />
+      <Breadcrumbs items={[{ label: 'Invoices & Payments' }]} />
 
-      <div
-        style={{
-          padding: '0.85rem 1.25rem',
-          backgroundColor: 'var(--ikpm-navy-900)',
-          color: '#FFFFFF',
-          borderRadius: 'var(--radius-lg)',
-          marginBottom: '1.5rem',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '1rem',
-        }}
-      >
-        <div>
-          <div style={{ fontWeight: 800, fontSize: '0.95rem' }}>Statutory Provincial Sales Tax Compliance</div>
-          <div style={{ fontSize: '0.75rem', color: '#CBD5E1', marginTop: '2px' }}>
-            Automatic provincial jurisdiction mapping: SRB 13% (Sindh), PRA 16% (Punjab), ICT 16% (Islamabad), KPRA 15% (KPK), BRA 15% (Balochistan).
-          </div>
+      <div className="page-header">
+        <div className="page-title-wrap">
+          <h1>Invoices &amp; Payments</h1>
         </div>
-
         <button className="btn btn-primary" onClick={() => setShowNewInvoiceModal(true)}>
           <Plus size={16} />
-          <span>+ Create Sales Tax Invoice</span>
+          <span>+ Create Invoice</span>
         </button>
       </div>
 
@@ -554,96 +537,68 @@ export const InvoicesListPage: React.FC = () => {
       <Modal
         isOpen={showNewInvoiceModal}
         onClose={() => setShowNewInvoiceModal(false)}
-        title="Generate Statutory Sales Tax Invoice"
-        subtitle={linkedJob ? `Pre-filled from Verified Service Report ${linkedJob.id}` : 'Automatic Provincial Tax Jurisdiction Allocation'}
+        title="Create Invoice"
+        subtitle={linkedJob ? `Pre-filled from job ${linkedJob.id}` : 'Fill in the details below'}
         maxWidth="680px"
       >
         <form onSubmit={handleCreateInvoice}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">Client Type</label>
+          <div className="form-group">
+            <label className="form-label">Client <span className="required">*</span></label>
+            {linkedJob ? (
+              <select className="form-select" value={newInvoice.customerId} disabled>
+                <option value={newInvoice.customerId}>
+                  {newInvoice.customerType === 'company' ? companies.find(c => c.id === newInvoice.customerId)?.legalCompanyName : clients.find(c => c.id === newInvoice.customerId)?.fullName} ({newInvoice.customerId})
+                </option>
+              </select>
+            ) : (
               <select
                 className="form-select"
-                value={newInvoice.customerType}
+                value={`${newInvoice.customerType}:${newInvoice.customerId}`}
                 onChange={(e) => {
-                  const val = e.target.value as any;
-                  setNewInvoice({
-                    ...newInvoice,
-                    customerType: val,
-                    customerId: val === 'company' ? companies[0]?.id || '' : clients[0]?.id || '',
-                  });
+                  const [type, id] = e.target.value.split(':');
+                  setNewInvoice({ ...newInvoice, customerType: type as 'company' | 'individual', customerId: id });
                 }}
               >
-                <option value="company">Corporate Company</option>
-                <option value="individual">Individual Client</option>
+                <optgroup label="Companies">
+                  {companies.map((c) => (
+                    <option key={c.id} value={`company:${c.id}`}>{c.legalCompanyName} ({c.id})</option>
+                  ))}
+                </optgroup>
+                <optgroup label="Individual Clients">
+                  {clients.map((cl) => (
+                    <option key={cl.id} value={`individual:${cl.id}`}>{cl.fullName} ({cl.id})</option>
+                  ))}
+                </optgroup>
               </select>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Customer Account <span className="required">*</span></label>
-              <select
-                className="form-select"
-                value={newInvoice.customerId}
-                onChange={(e) => {
-                  const cId = e.target.value;
-                  const prov = getSiteProvince(cId);
-                  const jur = provinceToJurisdiction(prov);
-                  const rate = getStandardTaxRate(jur);
-                  setNewInvoice({
-                    ...newInvoice,
-                    customerId: cId,
-                    jurisdiction: jur,
-                    taxRatePercent: rate,
-                  });
-                }}
-              >
-                {newInvoice.customerType === 'company'
-                  ? companies.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.legalCompanyName} ({c.id})
-                      </option>
-                    ))
-                  : clients.map((cl) => (
-                      <option key={cl.id} value={cl.id}>
-                        {cl.fullName} ({cl.id})
-                      </option>
-                    ))}
-              </select>
-            </div>
+            )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">Provincial Tax Jurisdiction (Auto-mapped) <span className="required">*</span></label>
-              <select
-                className="form-select"
-                value={newInvoice.jurisdiction}
-                onChange={(e) => {
-                  const jur = e.target.value as TaxJurisdiction;
-                  setNewInvoice({
-                    ...newInvoice,
-                    jurisdiction: jur,
-                    taxRatePercent: getStandardTaxRate(jur),
-                  });
-                }}
-              >
-                <option value="sindh_srb">Sindh (SRB — 13%)</option>
-                <option value="punjab_pra">Punjab (PRA — 16%)</option>
-                <option value="islamabad_ict">Islamabad ICT (16%)</option>
-                <option value="kpk_kpra">KPK (KPRA — 15%)</option>
-                <option value="balochistan_bra">Balochistan (BRA — 15%)</option>
-              </select>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', alignItems: 'end' }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Apply tax?</label>
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.35rem' }}>
+                <button
+                  type="button"
+                  className={`chip ${newInvoice.taxRatePercent > 0 ? 'chip-on' : ''}`}
+                  onClick={() => setNewInvoice({ ...newInvoice, taxRatePercent: newInvoice.taxRatePercent > 0 ? 0 : 13 })}
+                >
+                  {newInvoice.taxRatePercent > 0 ? 'Yes — with tax' : 'No tax'}
+                </button>
+              </div>
             </div>
-
-            <div className="form-group">
-              <label className="form-label">Sales Tax Rate (%)</label>
-              <input
-                type="number"
-                className="form-input"
-                value={newInvoice.taxRatePercent}
-                onChange={(e) => setNewInvoice({ ...newInvoice, taxRatePercent: Number(e.target.value) })}
-              />
-            </div>
+            {newInvoice.taxRatePercent > 0 && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Tax rate (%)</label>
+                <input
+                  type="number"
+                  className="form-input"
+                  value={newInvoice.taxRatePercent}
+                  min={0}
+                  max={100}
+                  onChange={(e) => setNewInvoice({ ...newInvoice, taxRatePercent: Number(e.target.value) })}
+                />
+              </div>
+            )}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
@@ -701,13 +656,15 @@ export const InvoicesListPage: React.FC = () => {
               textAlign: 'right',
             }}
           >
-            <div>Taxable Subtotal: <strong>{formatPKR(Number(newInvoice.baseAmount))}</strong></div>
-            <div>
-              {newInvoice.jurisdiction.toUpperCase()} Sales Tax ({newInvoice.taxRatePercent}%):{' '}
-              <strong>{formatPKR((Number(newInvoice.baseAmount) * newInvoice.taxRatePercent) / 100)}</strong>
-            </div>
+            <div>Subtotal: <strong>{formatPKR(Number(newInvoice.baseAmount))}</strong></div>
+            {newInvoice.taxRatePercent > 0 && (
+              <div>
+                Tax ({newInvoice.taxRatePercent}%):{' '}
+                <strong>{formatPKR((Number(newInvoice.baseAmount) * newInvoice.taxRatePercent) / 100)}</strong>
+              </div>
+            )}
             <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', marginTop: '4px' }}>
-              Total Gross Payable: {formatPKR(Number(newInvoice.baseAmount) * (1 + newInvoice.taxRatePercent / 100))}
+              Total: {formatPKR(Number(newInvoice.baseAmount) * (1 + newInvoice.taxRatePercent / 100))}
             </div>
           </div>
 
@@ -717,7 +674,7 @@ export const InvoicesListPage: React.FC = () => {
             </button>
             <button type="submit" className="btn btn-primary">
               <Receipt size={15} />
-              <span>Post Statutory Sales Tax Invoice</span>
+              <span>Create Invoice</span>
             </button>
           </div>
         </form>
@@ -735,7 +692,7 @@ export const InvoicesListPage: React.FC = () => {
           <form onSubmit={handleRecordPayment}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
               <div className="form-group">
-                <label className="form-label">Cash / Cheque Amount Received (PKR) <span className="required">*</span></label>
+                <label className="form-label">Amount received (PKR) <span className="required">*</span></label>
                 <input
                   type="number"
                   required
@@ -791,7 +748,7 @@ export const InvoicesListPage: React.FC = () => {
                   onChange={(e) => setPaymentForm({ ...paymentForm, hasWhtDeduction: e.target.checked })}
                 />
                 <label htmlFor="wht_checkbox" style={{ fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}>
-                  Customer Withheld Income Tax at Source (Section 153 WHT Certificate)
+                  Client deducted WHT (withheld tax)
                 </label>
               </div>
 
@@ -822,11 +779,11 @@ export const InvoicesListPage: React.FC = () => {
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">FBR CPR / Cert Number</label>
+                    <label className="form-label">Certificate / reference #</label>
                     <input
                       type="text"
                       className="form-input"
-                      placeholder="CPR-2026-XXXX"
+                      placeholder="e.g. CPR-2026-XXXX"
                       value={paymentForm.whtCertificateNumber}
                       onChange={(e) => setPaymentForm({ ...paymentForm, whtCertificateNumber: e.target.value })}
                     />

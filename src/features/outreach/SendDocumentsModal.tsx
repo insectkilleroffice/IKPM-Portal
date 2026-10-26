@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Send, MessageCircle, Mail, Package, FileText, CheckSquare, Square, Zap, ExternalLink } from 'lucide-react';
+import { Send, MessageCircle, Mail, Package, FileText, CheckSquare, Square, Zap, ExternalLink, Download } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -73,6 +73,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [emailVia, setEmailVia] = useState<EmailVia>(getPreferredEmailVia);
 
   // Re-initialise every time the modal opens for a (possibly different) recipient
@@ -148,6 +149,39 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     problems.push('These files are stored on this device only, so there are no links to send. Configure Cloudinary first.');
   }
 
+  const handleDownloadAll = async () => {
+    setDownloading(true);
+    try {
+      if (proposal && attachProposal) {
+        await pdfGenerator.generateProposalPDF(proposal);
+      }
+      for (const doc of selectedDocs) {
+        const url = doc.file.url;
+        if (!url) continue;
+        const a = document.createElement('a');
+        if (url.startsWith('data:')) {
+          a.href = url;
+        } else {
+          const res = await fetch(url);
+          const blob = await res.blob();
+          a.href = URL.createObjectURL(blob);
+        }
+        a.download = doc.file.fileName || doc.title;
+        a.click();
+        if (!url.startsWith('data:')) URL.revokeObjectURL(a.href);
+        // small gap between downloads so the browser doesn't block them
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    } catch (err) {
+      error('Download failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  // Returns true when the email channel will send via a compose window (not the API)
+  const emailIsComposeMode = channels.has('email') && emailVia !== 'api';
+
   const handleSend = async () => {
     if (problems.length > 0) return;
     setSending(true);
@@ -159,32 +193,64 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
 
     try {
       const extra: Attachment[] = [];
+
+      // --- Proposal PDF ---
       if (proposal && attachProposal) {
         if (!integrations.cloudinary) {
-          warning('Proposal PDF not attached', 'Configure Cloudinary to share the proposal as a link. Downloading it instead.');
+          // No Cloudinary: download locally (covers both API-less and compose cases)
           await pdfGenerator.generateProposalPDF(proposal);
         } else {
           const fileName = pdfGenerator.proposalFileName(proposal);
-          const stored = await uploadFile(await pdfGenerator.proposalPDFBlob(proposal), {
-            scope: store.uploadScopeFor({ kind: 'proposal', id: proposal.id }, 'proposal'),
-            subPath: proposal.id,
-            fileName,
-          });
-          store.saveDocument(
-            {
-              id: `DOC-${Date.now()}-pdf`,
-              title: `Proposal ${proposal.id} R${proposal.revisionNumber}`,
-              category: 'other',
-              fileCategory: 'proposal',
-              owner: { kind: 'proposal', id: proposal.id },
-              file: stored,
-              uploadedBy: userProfile?.email || 'admin',
-              uploadedByName: senderName,
-              uploadedAt: new Date().toISOString(),
-            },
-            userProfile?.email
-          );
-          extra.push({ title: `Proposal ${proposal.id} (R${proposal.revisionNumber})`, fileName, url: stored.url });
+          if (emailIsComposeMode) {
+            // Compose mode: download so user can attach manually
+            const blob = await pdfGenerator.proposalPDFBlob(proposal);
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = fileName;
+            a.click();
+            URL.revokeObjectURL(a.href);
+          } else {
+            const stored = await uploadFile(await pdfGenerator.proposalPDFBlob(proposal), {
+              scope: store.uploadScopeFor({ kind: 'proposal', id: proposal.id }, 'proposal'),
+              subPath: proposal.id,
+              fileName,
+            });
+            store.saveDocument(
+              {
+                id: `DOC-${Date.now()}-pdf`,
+                title: `Proposal ${proposal.id} R${proposal.revisionNumber}`,
+                category: 'other',
+                fileCategory: 'proposal',
+                owner: { kind: 'proposal', id: proposal.id },
+                file: stored,
+                uploadedBy: userProfile?.email || 'admin',
+                uploadedByName: senderName,
+                uploadedAt: new Date().toISOString(),
+              },
+              userProfile?.email
+            );
+            extra.push({ title: `Proposal ${proposal.id} (R${proposal.revisionNumber})`, fileName, url: stored.url });
+          }
+        }
+      }
+
+      // --- Selected documents: download for compose, attach as links for API ---
+      if (emailIsComposeMode && selectedDocs.length > 0) {
+        for (const doc of selectedDocs) {
+          const url = doc.file.url;
+          if (!url) continue;
+          const a = document.createElement('a');
+          if (url.startsWith('data:')) {
+            a.href = url;
+          } else {
+            const res = await fetch(url);
+            const blob = await res.blob();
+            a.href = URL.createObjectURL(blob);
+          }
+          a.download = doc.file.fileName || doc.title;
+          a.click();
+          if (!url.startsWith('data:')) URL.revokeObjectURL(a.href);
+          await new Promise((r) => setTimeout(r, 300));
         }
       }
 
@@ -202,13 +268,20 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
         emailVia,
         linkWindow,
         emailWindow,
+        // Don't paste Cloudinary URLs into the compose body — files are downloaded for manual attachment
+        noLinksInBody: emailIsComposeMode,
       });
 
       const failed = results.filter((r) => !r.ok);
       const viaApi = results.filter((r) => r.ok && r.mode === 'api').map((r) => r.channel);
       const viaLink = results.filter((r) => r.ok && r.mode === 'link').map((r) => r.channel);
       if (viaApi.length) success('Sent', `Delivered via ${viaApi.join(' & ')} to ${name}.`);
-      if (viaLink.length) success('Ready to send', `${viaLink.join(' & ')} opened with the message and document links — press Send there.`);
+      if (viaLink.length) {
+        const attachNote = emailIsComposeMode && (selectedDocs.length > 0 || (attachProposal && proposal))
+          ? ' Files downloaded — attach them from your Downloads folder, then press Send.'
+          : ' Press Send there.';
+        success('Ready to send', `${viaLink.join(' & ')} opened with the message.${attachNote}`);
+      }
       results.filter((r) => r.note).forEach((r) => warning(r.channel === 'email' ? 'Email' : 'WhatsApp', r.note!));
       if (failed.length) error('Some messages failed', failed.map((f) => `${f.channel}: ${f.error}`).join(' | '));
 
@@ -242,8 +315,17 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
             )}
           </span>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button className="btn btn-secondary" onClick={onClose} disabled={sending}>Cancel</button>
-            <button className="btn btn-primary" onClick={handleSend} disabled={sending || problems.length > 0} title={problems.join('\n')}>
+            <button className="btn btn-secondary" onClick={onClose} disabled={sending || downloading}>Cancel</button>
+            <button
+              className="btn btn-secondary"
+              onClick={handleDownloadAll}
+              disabled={sending || downloading || (selectedDocs.length === 0 && !(attachProposal && proposal))}
+              title="Download all selected documents to attach manually to your email"
+            >
+              <Download size={15} />
+              <span>{downloading ? 'Downloading…' : 'Download all'}</span>
+            </button>
+            <button className="btn btn-primary" onClick={handleSend} disabled={sending || downloading || problems.length > 0} title={problems.join('\n')}>
               <Send size={15} />
               <span>{sending ? 'Sending…' : `Send${channelLabel ? ` via ${channelLabel}` : ''}`}</span>
             </button>
@@ -389,7 +471,9 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
         )}
         <textarea className="form-textarea" rows={8} value={message} onChange={(e) => setMessage(e.target.value)} />
         <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 4 }}>
-          Document links are added below the message automatically.
+          {emailIsComposeMode
+            ? 'When you press Send, all selected files are downloaded automatically — attach them from your Downloads folder in the compose window that opens.'
+            : 'Documents are attached automatically when sending via the portal API.'}
         </div>
         {problems.length > 0 && (
           <ul className="form-problems">

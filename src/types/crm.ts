@@ -180,6 +180,8 @@ export interface InspectionAssessment {
   id: string;
   leadId: string;
   scheduledDate: string;
+  /** Exact start time as HH:MM (24-hour), e.g. "14:00". */
+  scheduledTime?: string;
   timeSlot?: 'morning' | 'afternoon' | 'evening';
   completedDate?: string;
   inspectorId: string;

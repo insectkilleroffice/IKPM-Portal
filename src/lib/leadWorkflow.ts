@@ -34,22 +34,22 @@ export type PipelineStage =
   | 'lost';
 
 export const PIPELINE: { stage: PipelineStage; label: string; short: string; hint: string; color: string }[] = [
-  { stage: 'new', label: 'New inquiries', short: 'New', hint: 'Step 1 — New lead captured, not yet contacted by Sales / CRO', color: '#1A73E8' },
-  { stage: 'contacted', label: 'Contacted', short: 'Contacted', hint: 'Step 2 — Sales / CRO reached out, awaiting client interest', color: '#0891B2' },
-  { stage: 'engaged', label: 'Engaged', short: 'Engaged', hint: 'Step 3 — Client is interested. CRO aligns a Team Leader and schedules a meeting', color: '#7C3AED' },
-  { stage: 'meeting_scheduled', label: 'Meeting scheduled', short: 'Meeting', hint: 'Step 4 — Team Leader (and any assigned team member) is confirmed for the client meeting. Inspection can be done during the meeting', color: '#D97706' },
-  { stage: 'meeting_done', label: 'Meeting done', short: 'Meeting done', hint: 'Step 5 — Team Leader submitted the meeting report. Proceed based on client request and complete any pending inspection.', color: '#B45309' },
-  { stage: 'profile_sent', label: 'Company profile sent', short: 'Profile sent', hint: 'Step 6a — Client asked for the company profile. Profile sent; follow up for proposal interest', color: '#0E7490' },
-  { stage: 'proposal_sent', label: 'Proposal sent', short: 'Proposal', hint: 'Step 6b — Client asked for a proposal. Proposal created and shared', color: '#0E8A5F' },
-  { stage: 'negotiation', label: 'Negotiation', short: 'Negotiation', hint: 'Step 7 — Price / terms bargaining in progress', color: '#EA580C' },
-  { stage: 'won', label: 'Won', short: 'Won', hint: 'Converted to active customer. Contract raised', color: '#0A6B4A' },
+  { stage: 'new', label: 'New inquiries', short: 'New', hint: 'New lead captured — not yet contacted by Sales / CRO', color: '#1A73E8' },
+  { stage: 'contacted', label: 'Contacted', short: 'Contacted', hint: 'CRO reached out — awaiting client interest', color: '#0891B2' },
+  { stage: 'engaged', label: 'Engaged', short: 'Engaged', hint: 'Client is interested — CRO aligns a Team Leader and schedules a meeting', color: '#7C3AED' },
+  { stage: 'meeting_scheduled', label: 'Meeting scheduled', short: 'Meeting', hint: 'Team Leader confirmed for the client meeting', color: '#D97706' },
+  { stage: 'meeting_done', label: 'Meeting done', short: 'Meeting done', hint: 'Team Leader submitted the meeting report — create proposal or schedule site inspection', color: '#B45309' },
+  { stage: 'proposal_sent', label: 'Proposal sent', short: 'Proposal', hint: 'Proposal created and shared with the client', color: '#0E8A5F' },
+  { stage: 'negotiation', label: 'Negotiation', short: 'Negotiation', hint: 'Price or terms bargaining in progress', color: '#EA580C' },
+  { stage: 'won', label: 'Won', short: 'Won', hint: 'Converted to active customer — contract raised', color: '#0A6B4A' },
   { stage: 'lost', label: 'Lost / rejected', short: 'Lost', hint: 'Not interested or lost to competitor', color: '#DC2626' },
 ];
 
 /**
  * Maps legacy stage IDs stored in old Firestore records to their current PipelineStage equivalent.
  * Old ids: 'qualified' → 'engaged', 'proposal_drafted' → 'proposal_sent',
- *          'inspection_scheduled' → 'meeting_scheduled', 'inspection_completed' → 'meeting_done'.
+ *          'inspection_scheduled' → 'meeting_scheduled', 'inspection_completed' → 'meeting_done',
+ *          'profile_sent' → 'proposal_sent' (folded in; company profile is now just an activity).
  */
 export const stageOf = (lead: Pick<Lead, 'stage'>): PipelineStage => {
   switch (lead.stage) {
@@ -57,6 +57,7 @@ export const stageOf = (lead: Pick<Lead, 'stage'>): PipelineStage => {
     case 'proposal_drafted': return 'proposal_sent';
     case 'inspection_scheduled': return 'meeting_scheduled';
     case 'inspection_completed': return 'meeting_done';
+    case 'profile_sent': return 'proposal_sent';
     default: return lead.stage as PipelineStage;
   }
 };

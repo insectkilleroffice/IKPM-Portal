@@ -9,10 +9,7 @@ import {
   FileSignature,
   Truck,
   Receipt,
-  FileCheck2,
   Settings,
-  FolderLock,
-  FolderOpen,
   UsersRound,
   Plus,
   UserPlus,
@@ -20,7 +17,7 @@ import {
   SearchCheck,
   MessageSquareWarning,
   ShieldCheck,
-  BarChart3,
+  FolderOpen,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -56,13 +53,6 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
     ],
   },
   {
-    title: 'Files',
-    items: [
-      { to: '/files', label: 'Files', icon: FolderOpen, module: 'files' },
-      { to: '/documents', label: 'Company Documents', icon: FolderLock, module: 'documents' },
-    ],
-  },
-  {
     title: 'Field operations',
     items: [
       { to: '/operations/calendar', label: 'Dispatch Calendar', icon: CalendarDays, module: 'calendar' },
@@ -72,9 +62,13 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
   {
     title: 'Accounts',
     items: [
-      { to: '/finance/invoices', label: 'Invoices & Receipts', icon: Receipt, module: 'invoices' },
-      { to: '/finance/tax-rules', label: 'Tax Rules & WHT', icon: FileCheck2, module: 'tax' },
-      { to: '/finance/reports', label: 'Finance Reports', icon: BarChart3, module: 'invoices' },
+      { to: '/finance/invoices', label: 'Invoices & Payments', icon: Receipt, module: 'invoices' },
+    ],
+  },
+  {
+    title: 'Company Files',
+    items: [
+      { to: '/documents', label: 'Document Library', icon: FolderOpen, module: 'documents' },
     ],
   },
   {
@@ -92,7 +86,6 @@ const QUICK_CREATE: { label: string; to: string; module: ModuleKey; icon: Lucide
   { label: 'New company account', to: '/customers?action=new_company', module: 'customers', icon: Building2 },
   { label: 'New individual client', to: '/customers?action=new_individual', module: 'customers', icon: UsersRound },
   { label: 'New proposal', to: '/proposals?action=new_proposal', module: 'proposals', icon: FileSpreadsheet },
-  { label: 'Upload client file', to: '/files', module: 'files', icon: FolderOpen },
   { label: 'Schedule service job', to: '/operations/jobs?action=new_job', module: 'jobs', icon: Truck },
   { label: 'Add staff member', to: '/admin/team?action=new_user', module: 'team', icon: UserPlus },
 ];

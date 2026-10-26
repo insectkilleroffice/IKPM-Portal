@@ -8,16 +8,29 @@ import { ProposalDetailModal } from '../../features/proposals/ProposalDetailModa
 import { fileProposalPdf } from '../../features/proposals/proposalFiles';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
+import { Modal } from '../../components/common/Modal';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { formatPKR, formatDate, generatePermanentId } from '../../lib/formatters';
+import { frequencyForVisits } from '../../lib/proposalPlan';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import type { Proposal } from '../../types/proposal';
+import type { Contract, ServiceFrequency } from '../../types/operations';
 
-const STATUS_FILTERS = ['all', 'draft', 'pending_approval', 'approved', 'sent_to_client', 'accepted', 'declined', 'rejected'];
+const STATUS_FILTERS: { value: string; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'draft', label: 'Draft' },
+  { value: 'pending_approval', label: 'Pending approval' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'sent_to_client', label: 'Sent to client' },
+  { value: 'accepted', label: 'Accepted' },
+  { value: 'negotiation', label: 'Negotiation' },
+  { value: 'declined', label: 'Declined' },
+  { value: 'rejected', label: 'Rejected' },
+];
 
 export const ProposalsListPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -34,8 +47,13 @@ export const ProposalsListPage: React.FC = () => {
   const [showBuilder, setShowBuilder] = useState(searchParams.get('action') === 'new_proposal');
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [sendTarget, setSendTarget] = useState<Proposal | null>(null);
+  const [assignTarget, setAssignTarget] = useState<Proposal | null>(null);
+  const [assignLeaderId, setAssignLeaderId] = useState('');
+  const [assignStartDate, setAssignStartDate] = useState(new Date().toISOString().split('T')[0]);
 
   const proposals = dataService.getProposals();
+  const teamLeaders = dataService.getStaff(['team_leader', 'operations_manager', 'field_supervisor']);
+  const contracts = dataService.getContracts();
   const activeId = selectedId === undefined ? searchParams.get('view') : selectedId;
   const selected = activeId ? dataService.getProposalById(activeId) ?? null : null;
 
@@ -53,7 +71,11 @@ export const ProposalsListPage: React.FC = () => {
   const recipientFor = (p: Proposal) => {
     if (p.attentionTo?.name && p.customerType === 'company') {
       const co = dataService.getCompanyById(p.customerId);
-      return { name: p.attentionTo.name, phone: co?.primaryContact.mobile, email: co?.primaryContact.email };
+      return {
+        name: p.attentionTo.name,
+        phone: p.attentionTo.phone || co?.primaryContact.mobile,
+        email: p.attentionTo.email || co?.primaryContact.email,
+      };
     }
     if (p.customerType === 'company') {
       const branch = p.branchId ? dataService.getBranchById(p.branchId) : undefined;
@@ -108,6 +130,85 @@ export const ProposalsListPage: React.FC = () => {
     save({ ...p, status: 'sent_to_client', sentDate: new Date().toISOString() });
   };
 
+  const handleAssignAndSchedule = () => {
+    if (!assignTarget || !assignLeaderId || !assignStartDate) return;
+    const p = assignTarget;
+    const teamLeaderUser = dataService.getStaff().find((u) => u.uid === assignLeaderId);
+    if (!teamLeaderUser) return;
+
+    const propConflict = contracts.find((c) => c.proposalId === p.id && c.status !== 'cancelled');
+    if (propConflict) {
+      error('Contract already exists', `${propConflict.id} was already created from this proposal.`);
+      return;
+    }
+
+    const isoDay = (d: Date) => d.toISOString().split('T')[0];
+    const start = assignStartDate;
+    const tenureMs = (p.tenureMonths ?? 12) * 30.44 * 86400000;
+    const end = isoDay(new Date(new Date(start).getTime() + tenureMs));
+
+    let customerName = '';
+    let branchName: string | undefined;
+    if (p.customerType === 'company') {
+      const co = dataService.getCompanyById(p.customerId);
+      customerName = co?.legalCompanyName || p.customerName;
+      if (p.branchId) branchName = dataService.getBranchById(p.branchId)?.branchName;
+    } else {
+      customerName = dataService.getClientById(p.customerId)?.fullName || p.customerName;
+    }
+
+    const nextId = generatePermanentId('CT', contracts.length + 1);
+    const frequency = (p.serviceVisitsPerMonth ? frequencyForVisits(p.serviceVisitsPerMonth) : 'monthly') as ServiceFrequency;
+
+    const created: Contract = {
+      id: nextId,
+      contractType: 'amc_recurring',
+      proposalId: p.id,
+      customerType: p.customerType,
+      customerId: p.customerId,
+      customerName,
+      branchId: p.branchId || undefined,
+      branchName,
+      siteIds: ['SITE-01'],
+      startDate: start,
+      endDate: end,
+      frequency,
+      totalContractValue: p.totalAmount,
+      billingTerm: 'monthly_billing',
+      serviceScope: (p.scopeSections ?? []).map((s) => `${s.key}. ${s.title}`).join(' · ') || p.scopeOfWork,
+      warrantyPeriodMonths: p.warrantyPeriodMonths || 0,
+      totalJobsScheduled: 0,
+      totalJobsCompleted: 0,
+      assignedTeamLeaderId: teamLeaderUser.uid,
+      assignedTeamLeaderName: teamLeaderUser.displayName,
+      status: 'active',
+      renewalAlertDate: isoDay(new Date(new Date(end).getTime() - 60 * 24 * 60 * 60 * 1000)),
+      servicePlan: p.servicePlan,
+      serviceVisitsPerMonth: p.serviceVisitsPerMonth,
+      followUpVisitsPerMonth: p.followUpVisitsPerMonth,
+      monthlyRate: p.monthlyRate,
+      taxMode: p.taxMode,
+      taxPercent: p.taxPercent,
+      tenureMonths: p.tenureMonths,
+      paymentTermsDays: p.paymentTermsDays,
+      terms: p.terms,
+      exclusions: p.exclusions,
+      deviceOwnership: p.deviceOwnership,
+      chemicals: p.chemicals,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      dataService.saveContract(created, userProfile?.email);
+      success('Contract Created', `${nextId} assigned to ${teamLeaderUser.displayName}. Service starts ${assignStartDate}.`);
+      setAssignTarget(null);
+      setAssignLeaderId('');
+    } catch (err) {
+      error('Failed to create contract', err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const decide = (status: 'approved' | 'rejected', reason?: string) => {
     if (!selected) return;
     if (!canApproveProposals()) return error('Access denied', 'Only Management or Sales Managers can approve escalated proposals.');
@@ -152,9 +253,9 @@ export const ProposalsListPage: React.FC = () => {
 
       <div className="card" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
         <div className="chip-row" style={{ marginBottom: 0 }}>
-          {STATUS_FILTERS.map((st) => (
-            <button key={st} type="button" className={`chip ${statusFilter === st ? 'chip-on' : ''}`} onClick={() => setStatusFilter(st)}>
-              {st === 'all' ? 'All' : st.replace(/_/g, ' ')}
+          {STATUS_FILTERS.map((sf) => (
+            <button key={sf.value} type="button" className={`chip ${statusFilter === sf.value ? 'chip-on' : ''}`} onClick={() => setStatusFilter(sf.value)}>
+              {sf.label}
             </button>
           ))}
         </div>
@@ -239,11 +340,19 @@ export const ProposalsListPage: React.FC = () => {
           onFilePdf={() => filePdf(selected)}
           onApprove={() => decide('approved')}
           onReject={() => setShowRejectDialog(true)}
-          onAccept={() =>
+          onAccept={() => {
+            // Guard: only one accepted proposal per lead
+            if (selected.leadId) {
+              const alreadyWon = proposals.find((p) => p.id !== selected.id && p.leadId === selected.leadId && p.status === 'accepted');
+              if (alreadyWon) {
+                error('Already won', `${alreadyWon.id} is already accepted for this lead. Decline or revise that proposal before accepting another.`);
+                return;
+              }
+            }
             save({ ...selected, status: 'accepted', acceptedDate: new Date().toISOString() }, () =>
               success('Accepted', selected.leadId ? `Lead ${selected.leadId} is now Won. Next: onboarding pack and contract.` : 'Proposal accepted by the client.')
-            )
-          }
+            );
+          }}
           onDecline={() => save({ ...selected, status: 'declined' }, () => warning('Declined', selected.leadId ? `Lead ${selected.leadId} moved to Negotiation. Schedule a negotiation meeting as the next step.` : 'Proposal declined by the client.'))}
           onSend={canSend(selected) ? () => setSendTarget(selected) : undefined}
         />

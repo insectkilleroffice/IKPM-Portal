@@ -73,11 +73,13 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
   const { userProfile } = useAuth();
   const [form, setForm] = useState<FormState>(fromLead(lead));
   const [touched, setTouched] = useState(false);
+  const [showBranches, setShowBranches] = useState(Boolean(lead?.branches?.length));
 
   useEffect(() => {
     if (isOpen) {
       setForm(fromLead(lead));
       setTouched(false);
+      setShowBranches(Boolean(lead?.branches?.length));
     }
   }, [isOpen, lead]);
 
@@ -291,45 +293,59 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
 
       {isCompany && (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '1rem 0 0.6rem' }}>
-            <div className="section-title" style={{ margin: 0 }}>Branches</div>
-            <button type="button" className="btn btn-sm btn-secondary" onClick={() => set('branches', [...form.branches, blankLeadBranch()])}>
-              <Plus size={14} /> Add branch
+          <div style={{ margin: '1rem 0 0.4rem' }}>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              onClick={() => setShowBranches((v) => !v)}
+              style={{ fontSize: '0.82rem' }}
+            >
+              {showBranches ? '▲ Hide branches' : '▼ Add branches (optional)'}
             </button>
           </div>
-          <div className="form-hint" style={{ marginTop: '-0.35rem', marginBottom: '0.75rem' }}>
-            Optional. Add branches or sites that need service. More can be added after the meeting.
-          </div>
-          {form.branches.map((br, i) => (
-            <div key={br.id} className="contact-card" style={{ marginBottom: '0.5rem' }}>
-              <div className="contact-card-head">
-                <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Branch {i + 1}</span>
-                <button type="button" className="icon-btn danger" onClick={() => removeBranch(br.id)} title="Remove branch"><Trash2 size={15} /></button>
+          {showBranches && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0.5rem 0 0.6rem' }}>
+                <div className="section-title" style={{ margin: 0 }}>Branches</div>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => set('branches', [...form.branches, blankLeadBranch()])}>
+                  <Plus size={14} /> Add branch
+                </button>
               </div>
-              <div className="form-grid-2">
-                <div className="form-group">
-                  <label className="form-label">Branch name</label>
-                  <input className="form-input" value={br.name} onChange={(e) => setBranch(br.id, { name: e.target.value })} placeholder="e.g. Johar Town branch" />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">City</label>
-                  <input className="form-input" list="lead-cities" value={br.city || ''} onChange={(e) => setBranch(br.id, { city: e.target.value })} />
-                </div>
-                <div className="form-group" style={{ gridColumn: '1 / -1' }}>
-                  <label className="form-label">Address</label>
-                  <input className="form-input" value={br.address} onChange={(e) => setBranch(br.id, { address: e.target.value })} placeholder="Full branch address" />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Contact person</label>
-                  <input className="form-input" value={br.contactName || ''} onChange={(e) => setBranch(br.id, { contactName: e.target.value })} placeholder="Branch manager name" />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Contact phone</label>
-                  <input className="form-input" value={br.contactPhone || ''} onChange={(e) => setBranch(br.id, { contactPhone: e.target.value })} placeholder="03XX XXXXXXX" inputMode="tel" />
-                </div>
+              <div className="form-hint" style={{ marginTop: '-0.35rem', marginBottom: '0.75rem' }}>
+                Optional. Add branches or sites that need service. More can be added after the meeting.
               </div>
-            </div>
-          ))}
+              {form.branches.map((br, i) => (
+                <div key={br.id} className="contact-card" style={{ marginBottom: '0.5rem' }}>
+                  <div className="contact-card-head">
+                    <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>Branch {i + 1}</span>
+                    <button type="button" className="icon-btn danger" onClick={() => removeBranch(br.id)} title="Remove branch"><Trash2 size={15} /></button>
+                  </div>
+                  <div className="form-grid-2">
+                    <div className="form-group">
+                      <label className="form-label">Branch name</label>
+                      <input className="form-input" value={br.name} onChange={(e) => setBranch(br.id, { name: e.target.value })} placeholder="e.g. Johar Town branch" />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">City</label>
+                      <input className="form-input" list="lead-cities" value={br.city || ''} onChange={(e) => setBranch(br.id, { city: e.target.value })} />
+                    </div>
+                    <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                      <label className="form-label">Address</label>
+                      <input className="form-input" value={br.address} onChange={(e) => setBranch(br.id, { address: e.target.value })} placeholder="Full branch address" />
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">Contact person</label>
+                      <input className="form-input" value={br.contactName || ''} onChange={(e) => setBranch(br.id, { contactName: e.target.value })} placeholder="Branch manager name" />
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">Contact phone</label>
+                      <input className="form-input" value={br.contactPhone || ''} onChange={(e) => setBranch(br.id, { contactPhone: e.target.value })} placeholder="03XX XXXXXXX" inputMode="tel" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
         </>
       )}
 

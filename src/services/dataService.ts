@@ -940,6 +940,8 @@ class DataService {
     }
     const current = this.getLeadById(leadId) ?? lead;
 
+    // If the client replied (any outcome except no_response / note), clear 'waiting for reply'
+    const contactResolvesStuck = entry.outcome && entry.outcome !== 'no_response' && current.stuckAt === 'waiting_client_reply';
     const updated: Lead = {
       ...current,
       stage: nextStage,
@@ -950,6 +952,7 @@ class DataService {
       ...(nextStage === 'lost' && lead.stage !== 'lost'
         ? { lostAt: now(), lostAtStage: lead.stage, lostReason: entry.lostReason || outcomeLabel(entry.outcome) }
         : {}),
+      ...(contactResolvesStuck ? { stuckAt: undefined, stuckAtDate: undefined } : {}),
     };
     return this.saveLead(updated, userEmail, nextStage === 'lost' ? entry.lostReason || why : why);
   }
@@ -1001,6 +1004,7 @@ class DataService {
     leadId: string,
     plan: {
       date: string;
+      scheduledTime?: string;
       timeSlot: 'morning' | 'afternoon' | 'evening';
       teamId?: string;
       inspectorIds: string[];
@@ -1035,6 +1039,7 @@ class DataService {
       id: lead.inspection?.id || `INSP-${Date.now().toString(36).toUpperCase()}`,
       leadId,
       scheduledDate: plan.date,
+      scheduledTime: plan.scheduledTime || undefined,
       timeSlot: plan.timeSlot,
       teamId: team?.id,
       teamName: team?.name,
@@ -1190,11 +1195,14 @@ class DataService {
     // Only advance to meeting_done from early stages; later stages (proposal_sent, won, etc.) keep their current stage.
     const earlyForReport = stage === 'meeting_scheduled' || stage === 'engaged' || stage === 'contacted' || stage === 'new';
     const nextStage = (isNegoRenewal || !earlyForReport) ? stage : 'meeting_done';
+    // Clear stuckAt reasons that are resolved by completing the meeting
+    const stuckNowResolved = lead.stuckAt === 'meeting_pending' || lead.stuckAt === 'waiting_client_reply';
     const updated: Lead = {
       ...lead,
       stage: nextStage,
       inspection,
       branches: mergedBranches,
+      ...(stuckNowResolved ? { stuckAt: undefined, stuckAtDate: undefined } : {}),
       activities: [
         this.activity({ kind: 'inspection', channel: 'visit', note: `${meetingTypeLabel} report submitted${fuNote}${tlNote}${branches?.length ? `, ${branches.length} site(s) added` : ''}` }),
         ...(lead.activities ?? []),
@@ -1272,10 +1280,12 @@ class DataService {
       completedDate: now().slice(0, 10),
       status: 'completed',
     };
+    const siteStuckResolved = lead.stuckAt === 'meeting_pending' || lead.stuckAt === 'waiting_client_reply';
     const updated: Lead = {
       ...lead,
       siteInspection,
       pestIssues: findings.pestTypesFound.length ? findings.pestTypesFound : lead.pestIssues,
+      ...(siteStuckResolved ? { stuckAt: undefined, stuckAtDate: undefined } : {}),
       activities: [
         this.activity({ kind: 'inspection', channel: 'visit', note: `Site inspection findings submitted (${findings.infestationSeverity} infestation${findings.findings?.length ? `, ${findings.findings.length} risk finding(s)` : ''}${findings.photos?.length ? `, ${findings.photos.length} photo(s)` : ''})` }),
         ...(lead.activities ?? []),
@@ -1299,6 +1309,7 @@ class DataService {
       note: note?.trim() || 'Company profile / documents sent to client',
     });
     const moveToProfileSent = allowedStages.includes(stage);
+    // After sending docs: clear 'asked for profile' and replace with 'waiting for reply'
     const updated: Lead = {
       ...lead,
       stage: moveToProfileSent ? 'profile_sent' : lead.stage,
@@ -1489,11 +1500,13 @@ class DataService {
     if (!['won', 'lost'].includes(stage)) {
       const isNew = created || !lead.proposalIds?.includes(proposal.id);
       if (isNew) {
+        const proposalStuckResolved = lead.stuckAt === 'awaiting_proposal' || lead.stuckAt === 'meeting_pending';
         this.saveLead({
           ...lead,
           stage: 'proposal_sent',
           proposalId: proposal.id,
           proposalIds,
+          ...(proposalStuckResolved ? { stuckAt: undefined, stuckAtDate: undefined } : {}),
           activities: [
             this.activity({ kind: 'proposal', channel: 'note', note: `Proposal ${proposal.id}${proposal.revisionNumber ? ` R${proposal.revisionNumber}` : ''} created (PKR ${Math.round(proposal.totalAmount).toLocaleString()})`, quotedAmount: proposal.totalAmount }),
             ...(lead.activities ?? []),

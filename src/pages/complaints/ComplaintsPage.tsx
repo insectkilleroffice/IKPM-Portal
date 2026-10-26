@@ -443,8 +443,28 @@ export const ComplaintsPage: React.FC = () => {
               </select>
             </div>
             <div className="form-group">
-              <label className="form-label">Contract (optional)</label>
-              <input className="form-input" value={form.contractId ?? ''} onChange={(e) => setForm({ ...form, contractId: e.target.value || undefined })} placeholder="CT-YYYY-XXXX" />
+              <label className="form-label">Related completed job</label>
+              {(() => {
+                const customerJobs = dataService.getJobs().filter((j) => j.customerId === form.customerId && j.status === 'completed');
+                return customerJobs.length > 0 ? (
+                  <select
+                    className="form-select"
+                    value={form.jobId ?? ''}
+                    onChange={(e) => {
+                      const job = customerJobs.find((j) => j.id === e.target.value);
+                      setForm({ ...form, jobId: job?.id || undefined, contractId: job?.contractId || form.contractId });
+                    }}
+                  >
+                    <option value="">— Select job —</option>
+                    {customerJobs.map((j) => (
+                      <option key={j.id} value={j.id}>{j.id} · {formatDate(j.scheduledDate)} · {j.serviceType}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input className="form-input" value={form.jobId ?? ''} onChange={(e) => setForm({ ...form, jobId: e.target.value || undefined })} placeholder="No completed jobs found" disabled={!form.customerId} />
+                );
+              })()}
+              {form.contractId && <div className="form-hint">Contract: {form.contractId}</div>}
             </div>
           </div>
           <div className="form-group">

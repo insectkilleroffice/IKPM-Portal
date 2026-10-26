@@ -11,6 +11,9 @@ import {
   ShieldCheck,
   FileCheck2,
   CheckCircle,
+  MessageSquareWarning,
+  Camera,
+  X,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -50,6 +53,7 @@ export const JobsListPage: React.FC = () => {
   // Reschedule modal (team leader)
   const [rescheduleJob, setRescheduleJob] = useState<ServiceJob | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState('');
+  const [rescheduleTime, setRescheduleTime] = useState('');
   const [rescheduleSlot, setRescheduleSlot] = useState<'morning' | 'afternoon' | 'evening' | 'night_shift'>('morning');
   const [rescheduleReason, setRescheduleReason] = useState('');
   const [rescheduleReasonOther, setRescheduleReasonOther] = useState('');
@@ -70,6 +74,7 @@ export const JobsListPage: React.FC = () => {
     const updated: ServiceJob = {
       ...rescheduleJob,
       scheduledDate: rescheduleDate,
+      scheduledTime: rescheduleTime || undefined,
       timeSlot: rescheduleSlot,
       status: 'scheduled',
       rescheduledReason: reason,
@@ -92,6 +97,9 @@ export const JobsListPage: React.FC = () => {
   const [reportItems, setReportItems] = useState<ReportItem[]>([{ id: 'item_1', name: '', qty: 1, unit: 'ml' }]);
   const [reportNotes, setReportNotes] = useState('');
   const [reportClientName, setReportClientName] = useState('');
+  type ReportPhoto = { id: string; url: string; caption: string };
+  const [reportFindingPhotos, setReportFindingPhotos] = useState<ReportPhoto[]>([]);
+  const [reportFinalPhotos, setReportFinalPhotos] = useState<ReportPhoto[]>([]);
 
   useEffect(() => {
     if (!showReportModal) return;
@@ -103,6 +111,8 @@ export const JobsListPage: React.FC = () => {
     );
     setReportNotes(showReportModal.executionNotes || '');
     setReportClientName(showReportModal.customerSignOff?.acknowledgedByName || '');
+    setReportFindingPhotos([]);
+    setReportFinalPhotos([]);
   }, [showReportModal?.id]);
   const [verifyForm, setVerifyForm] = useState({
     supervisorName: userProfile?.displayName || 'Muhammad Asif (QC Supervisor)',
@@ -127,6 +137,7 @@ export const JobsListPage: React.FC = () => {
     customerType: linkedProposal?.customerType || paramCustomerType,
     proposalId: linkedProposal?.id || '',
     scheduledDate: new Date().toISOString().split('T')[0],
+    scheduledTime: '',
     timeSlot: 'morning' as const,
     serviceType: linkedProposal?.scopeOfWork || 'Preventive Cockroach & Rodent IPM',
     targetPests: (linkedProposal?.lineItems.map((li) => li.targetPest) as PestType[]) || ['cockroaches', 'rodents_rats'],
@@ -197,6 +208,18 @@ export const JobsListPage: React.FC = () => {
       siteAddress = cl?.residentialAddress || 'Residence';
     }
 
+    // Guard: block duplicate job from the same proposal
+    if (newJob.proposalId) {
+      const dupJob = jobs.find((j) => j.proposalId === newJob.proposalId && j.status !== 'cancelled');
+      if (dupJob) {
+        warning(
+          'Job already exists',
+          `${dupJob.id} was already created from proposal ${newJob.proposalId}. Cancel that job first or open it to reschedule.`
+        );
+        return;
+      }
+    }
+
     // Conflict detection check
     const hasConflict = dataService.checkPcoConflict(
       newJob.leadPcoName,
@@ -224,6 +247,7 @@ export const JobsListPage: React.FC = () => {
       serviceType: newJob.serviceType,
       targetPests: newJob.targetPests,
       scheduledDate: newJob.scheduledDate,
+      scheduledTime: newJob.scheduledTime || undefined,
       timeSlot: newJob.timeSlot,
       // Real staff uids: technicians only receive jobs listed here (enforced by firestore.rules)
       assignedTechnicianIds: [newJob.leadPcoId],
@@ -356,17 +380,23 @@ export const JobsListPage: React.FC = () => {
         applicationMethod: 'residual_spray' as const,
       }));
     const memberNames = reportMember.trim() ? reportMember.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    const now = new Date().toISOString();
+    const newPhotos: import('../../types/operations').PhotoEvidence[] = [
+      ...reportFindingPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Findings', type: 'infestation_focus' as const, imageUrl: p.url, capturedAt: now })),
+      ...reportFinalPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Final report', type: 'after' as const, imageUrl: p.url, capturedAt: now })),
+    ];
     const updatedJob: ServiceJob = {
       ...showReportModal,
       status: 'completed',
       chemicalsUsed,
+      photoEvidence: [...(showReportModal.photoEvidence || []), ...newPhotos],
       executionNotes: reportNotes.trim() || undefined,
       assignedTechnicianIds: [showReportModal.leadPcoId],
       assignedTechnicianNames: [showReportModal.leadPcoName, ...memberNames],
       customerSignOff: reportClientName.trim()
-        ? { acknowledgedByName: reportClientName.trim(), feedbackRating: 5, signedAt: new Date().toISOString() }
+        ? { acknowledgedByName: reportClientName.trim(), feedbackRating: 5, signedAt: now }
         : showReportModal.customerSignOff,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
     };
     dataService.saveJob(updatedJob, userProfile?.email);
     success('Service report submitted', `${showReportModal.id} marked completed. Ready for supervisor QC.`);
@@ -428,8 +458,8 @@ export const JobsListPage: React.FC = () => {
               <th>Job ID</th>
               <th>Customer Name</th>
               <th>Site & Address</th>
-              <th>Scheduled Date</th>
-              <th>Time Slot</th>
+              <th>Scheduled Date & Time</th>
+              <th>Shift</th>
               <th>Team Leader</th>
               <th>QC Verification</th>
               <th>Status</th>
@@ -459,7 +489,10 @@ export const JobsListPage: React.FC = () => {
                     <div style={{ fontWeight: 500 }}>{j.siteName}</div>
                     <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{j.siteAddress}</div>
                   </td>
-                  <td style={{ fontWeight: 600 }}>{formatDate(j.scheduledDate)}</td>
+                  <td style={{ fontWeight: 600 }}>
+                    <div>{formatDate(j.scheduledDate)}</div>
+                    {j.scheduledTime && <div style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-700)', fontWeight: 700 }}>{j.scheduledTime}</div>}
+                  </td>
                   <td><span className="badge-status badge-slate">{j.timeSlot}</span></td>
                   <td>{j.leadPcoName}</td>
                   <td>
@@ -485,6 +518,7 @@ export const JobsListPage: React.FC = () => {
                           onClick={() => {
                             setRescheduleJob(j);
                             setRescheduleDate(j.scheduledDate);
+                            setRescheduleTime(j.scheduledTime || '');
                             setRescheduleSlot(j.timeSlot as any);
                             setRescheduleReason(j.rescheduledReason || '');
                             setRescheduleReasonOther('');
@@ -525,6 +559,16 @@ export const JobsListPage: React.FC = () => {
                       >
                         <Download size={12} />
                       </button>
+                      {(j.status === 'completed' || j.supervisorVerification?.isVerified) && (
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem', color: 'var(--ikpm-rose-600)', borderColor: 'var(--ikpm-rose-200)' }}
+                          title="Raise a complaint against this completed job"
+                          onClick={() => navigate(`/complaints?action=log&jobId=${j.id}&customerId=${j.customerId}&customerName=${encodeURIComponent(j.customerName)}${j.contractId ? `&contractId=${j.contractId}` : ''}`)}
+                        >
+                          <MessageSquareWarning size={12} /> Complain
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -538,53 +582,43 @@ export const JobsListPage: React.FC = () => {
       <Modal
         isOpen={showNewJobModal}
         onClose={() => setShowNewJobModal(false)}
-        title="Schedule Operations Service Visit"
-        subtitle={linkedProposal ? `Pre-filled from Approved Proposal ${linkedProposal.id}` : 'Assign technicians, prevent schedule conflicts, and allocate chemical checklists.'}
+        title="Schedule Service Visit"
+        subtitle={linkedProposal ? `Pre-filled from proposal ${linkedProposal.id}` : 'Assign a team member and set the date.'}
         maxWidth="620px"
       >
         <form onSubmit={handleCreateJob}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">Client Type</label>
+          <div className="form-group">
+            <label className="form-label">Client <span className="required">*</span></label>
+            {(linkedProposal || paramCustomerId) ? (
+              <select className="form-select" value={newJob.customerId} disabled>
+                <option value={newJob.customerId}>
+                  {newJob.customerType === 'company' ? companies.find(c => c.id === newJob.customerId)?.legalCompanyName : clients.find(c => c.id === newJob.customerId)?.fullName} ({newJob.customerId})
+                </option>
+              </select>
+            ) : (
               <select
                 className="form-select"
-                value={newJob.customerType}
+                value={`${newJob.customerType}:${newJob.customerId}`}
                 onChange={(e) => {
-                  setNewJob({
-                    ...newJob,
-                    customerType: e.target.value as any,
-                    customerId: e.target.value === 'company' ? companies[0]?.id || '' : clients[0]?.id || '',
-                  });
+                  const [type, id] = e.target.value.split(':');
+                  setNewJob({ ...newJob, customerType: type as 'company' | 'individual', customerId: id });
                 }}
               >
-                <option value="company">Corporate Company</option>
-                <option value="individual">Individual Client</option>
+                <optgroup label="Companies">
+                  {companies.map((c) => (
+                    <option key={c.id} value={`company:${c.id}`}>{c.legalCompanyName} ({c.id})</option>
+                  ))}
+                </optgroup>
+                <optgroup label="Individual Clients">
+                  {clients.map((cl) => (
+                    <option key={cl.id} value={`individual:${cl.id}`}>{cl.fullName} ({cl.id})</option>
+                  ))}
+                </optgroup>
               </select>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Select Customer Account <span className="required">*</span></label>
-              <select
-                className="form-select"
-                value={newJob.customerId}
-                onChange={(e) => setNewJob({ ...newJob, customerId: e.target.value })}
-              >
-                {newJob.customerType === 'company'
-                  ? companies.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.legalCompanyName} ({c.id})
-                      </option>
-                    ))
-                  : clients.map((cl) => (
-                      <option key={cl.id} value={cl.id}>
-                        {cl.fullName} ({cl.id})
-                      </option>
-                    ))}
-              </select>
-            </div>
+            )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
             <div className="form-group">
               <label className="form-label">Scheduled Date <span className="required">*</span></label>
               <input
@@ -597,15 +631,26 @@ export const JobsListPage: React.FC = () => {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Time Slot Shift</label>
+              <label className="form-label">Start Time</label>
+              <input
+                type="time"
+                className="form-input"
+                value={newJob.scheduledTime}
+                onChange={(e) => setNewJob({ ...newJob, scheduledTime: e.target.value })}
+              />
+              <div className="form-hint">Optional exact time</div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Shift</label>
               <select
                 className="form-select"
                 value={newJob.timeSlot}
                 onChange={(e) => setNewJob({ ...newJob, timeSlot: e.target.value as any })}
               >
-                <option value="morning">Morning (09:00 AM - 01:00 PM)</option>
-                <option value="afternoon">Afternoon (02:00 PM - 06:00 PM)</option>
-                <option value="evening">Evening (06:00 PM - 10:00 PM)</option>
+                <option value="morning">Morning (09:00 – 13:00)</option>
+                <option value="afternoon">Afternoon (14:00 – 18:00)</option>
+                <option value="evening">Evening (18:00 – 22:00)</option>
                 <option value="night_shift">Night Shift (Plant Off-Hours)</option>
               </select>
             </div>
@@ -613,7 +658,7 @@ export const JobsListPage: React.FC = () => {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '1rem' }}>
             <div className="form-group">
-              <label className="form-label">Service Type Scope</label>
+              <label className="form-label">Service / scope</label>
               <input
                 type="text"
                 className="form-input"
@@ -624,7 +669,7 @@ export const JobsListPage: React.FC = () => {
 
             <div className="form-group">
               <label className="form-label">
-                Assigned Team Leader <span className="required">* (Guard Rail)</span>
+                Assign Team Member <span className="required">*</span>
               </label>
               <select
                 className="form-select"
@@ -675,13 +720,17 @@ export const JobsListPage: React.FC = () => {
             </>
           }
         >
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
             <div className="form-group">
               <label className="form-label">New date <span className="required">*</span></label>
               <input type="date" className="form-input" value={rescheduleDate} onChange={(e) => setRescheduleDate(e.target.value)} />
             </div>
             <div className="form-group">
-              <label className="form-label">Time slot</label>
+              <label className="form-label">Start time</label>
+              <input type="time" className="form-input" value={rescheduleTime} onChange={(e) => setRescheduleTime(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Shift</label>
               <select className="form-select" value={rescheduleSlot} onChange={(e) => setRescheduleSlot(e.target.value as any)}>
                 <option value="morning">Morning (09:00 – 13:00)</option>
                 <option value="afternoon">Afternoon (14:00 – 18:00)</option>
@@ -1010,6 +1059,92 @@ export const JobsListPage: React.FC = () => {
               />
             </div>
 
+            {/* Findings photos */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>
+                  <Camera size={14} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  Findings photos <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.75rem' }}>(pest activity, problem areas)</span>
+                </label>
+                <label className="btn btn-sm btn-secondary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Camera size={13} /> Add photo
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    style={{ display: 'none' }}
+                    multiple
+                    onChange={(e) => {
+                      Array.from(e.target.files || []).forEach((file) => {
+                        const reader = new FileReader();
+                        reader.onload = () => setReportFindingPhotos((p) => [...p, { id: `fp_${Date.now()}_${Math.random()}`, url: reader.result as string, caption: '' }]);
+                        reader.readAsDataURL(file);
+                      });
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+              {reportFindingPhotos.length > 0 && (
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  {reportFindingPhotos.map((p, idx) => (
+                    <div key={p.id} style={{ position: 'relative', width: 80 }}>
+                      <img src={p.url} alt="" style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border-subtle)' }} />
+                      <button type="button" onClick={() => setReportFindingPhotos((prev) => prev.filter((_, i) => i !== idx))}
+                        style={{ position: 'absolute', top: 2, right: 2, background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: '50%', cursor: 'pointer', padding: 2, display: 'flex' }}>
+                        <X size={10} color="white" />
+                      </button>
+                      <input className="form-input" value={p.caption} placeholder="Caption" style={{ fontSize: '0.68rem', padding: '2px 4px', marginTop: 2 }}
+                        onChange={(e) => setReportFindingPhotos((prev) => prev.map((r, i) => i === idx ? { ...r, caption: e.target.value } : r))} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Final report photos */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>
+                  <Camera size={14} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  Final report photos <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.75rem' }}>(after treatment)</span>
+                </label>
+                <label className="btn btn-sm btn-secondary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Camera size={13} /> Add photo
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    style={{ display: 'none' }}
+                    multiple
+                    onChange={(e) => {
+                      Array.from(e.target.files || []).forEach((file) => {
+                        const reader = new FileReader();
+                        reader.onload = () => setReportFinalPhotos((p) => [...p, { id: `rp_${Date.now()}_${Math.random()}`, url: reader.result as string, caption: '' }]);
+                        reader.readAsDataURL(file);
+                      });
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+              {reportFinalPhotos.length > 0 && (
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  {reportFinalPhotos.map((p, idx) => (
+                    <div key={p.id} style={{ position: 'relative', width: 80 }}>
+                      <img src={p.url} alt="" style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border-subtle)' }} />
+                      <button type="button" onClick={() => setReportFinalPhotos((prev) => prev.filter((_, i) => i !== idx))}
+                        style={{ position: 'absolute', top: 2, right: 2, background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: '50%', cursor: 'pointer', padding: 2, display: 'flex' }}>
+                        <X size={10} color="white" />
+                      </button>
+                      <input className="form-input" value={p.caption} placeholder="Caption" style={{ fontSize: '0.68rem', padding: '2px 4px', marginTop: 2 }}
+                        onChange={(e) => setReportFinalPhotos((prev) => prev.map((r, i) => i === idx ? { ...r, caption: e.target.value } : r))} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Client representative name (optional sign-off)</label>
               <input
@@ -1018,7 +1153,6 @@ export const JobsListPage: React.FC = () => {
                 onChange={(e) => setReportClientName(e.target.value)}
                 placeholder="Name of client contact who acknowledged the visit"
               />
-              <div className="form-hint">Photos are optional — attach them later from the job details if taken on site.</div>
             </div>
           </div>
         </Modal>

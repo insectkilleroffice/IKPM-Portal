@@ -95,6 +95,8 @@ export interface ServiceJob extends FolderMeta {
   serviceType: string;
   targetPests: PestType[];
   scheduledDate: string;
+  /** Exact start time as HH:MM (24-hour), e.g. "09:30". Optional — shift covers broad windows. */
+  scheduledTime?: string;
   timeSlot: 'morning' | 'afternoon' | 'evening' | 'night_shift';
   assignedTechnicianIds: string[];
   assignedTechnicianNames: string[];

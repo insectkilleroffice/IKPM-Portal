@@ -105,6 +105,7 @@ export const ContractsListPage: React.FC = () => {
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const proposals = dataService.getProposals();
+  const teamLeaders = dataService.getStaff(['team_leader', 'operations_manager', 'field_supervisor']);
 
   // If fromProposal is provided, find and prefill
   const fromPropId = searchParams.get('fromProposal');
@@ -112,7 +113,7 @@ export const ContractsListPage: React.FC = () => {
 
   const [newContract, setNewContract] = useState(() =>
     linkedProposal
-      ? fromProposal(linkedProposal)
+      ? { ...fromProposal(linkedProposal), assignedTeamLeaderId: '', assignedTeamLeaderName: '' }
       : {
           contractType: 'amc_recurring' as ContractType,
           proposalId: '',
@@ -126,6 +127,8 @@ export const ContractsListPage: React.FC = () => {
           billingTerm: 'monthly_billing' as const,
           serviceScope: 'Integrated Pest Management (IPM) maintenance',
           warrantyPeriodMonths: 0,
+          assignedTeamLeaderId: '',
+          assignedTeamLeaderName: '',
         }
   );
 
@@ -135,7 +138,7 @@ export const ContractsListPage: React.FC = () => {
     if (!linkedId) return;
     const p = dataService.getProposalById(linkedId);
     if (p) {
-      setNewContract(fromProposal(p));
+      setNewContract((prev) => ({ ...fromProposal(p), assignedTeamLeaderId: prev.assignedTeamLeaderId ?? '', assignedTeamLeaderName: prev.assignedTeamLeaderName ?? '' }));
       setShowNewContractModal(true);
     }
   }, [linkedId]);
@@ -167,6 +170,35 @@ export const ContractsListPage: React.FC = () => {
 
   const handleCreateContract = (e: React.FormEvent) => {
     e.preventDefault();
+    // Guard: block if this proposal already has a contract
+    if (newContract.proposalId) {
+      const propConflict = dataService.getContracts().find(
+        (c) => c.proposalId === newContract.proposalId && c.status !== 'cancelled'
+      );
+      if (propConflict) {
+        error(
+          'Contract already exists',
+          `${propConflict.id} was already created from proposal ${newContract.proposalId}. Open that contract to renew or manage it.`
+        );
+        return;
+      }
+    }
+    // Guard: block if an active contract already exists for this client/branch
+    const activeConflict = dataService.getContracts().find(
+      (c) => c.customerId === newContract.customerId &&
+        (c.branchId || undefined) === (newContract.branchId || undefined) &&
+        effectiveContractStatus(c, today) === 'active'
+    );
+    if (activeConflict) {
+      const daysLeft = Math.ceil((new Date(activeConflict.endDate).getTime() - Date.now()) / 86400000);
+      error(
+        'Active contract exists',
+        daysLeft <= 30
+          ? `${activeConflict.id} expires in ${daysLeft} day(s) — use Renew instead.`
+          : `${activeConflict.id} is still active. Cancel it or wait for it to expire first.`
+      );
+      return;
+    }
     let customerName = '';
     let branchName: string | undefined = undefined;
 
@@ -186,6 +218,7 @@ export const ContractsListPage: React.FC = () => {
     const nextId = generatePermanentId('CT', contracts.length + 1);
 
     const sourceProposal = newContract.proposalId ? dataService.getProposalById(newContract.proposalId) : undefined;
+    const teamLeaderUser = newContract.assignedTeamLeaderId ? dataService.getStaff().find((u) => u.uid === newContract.assignedTeamLeaderId) : undefined;
     const created: Contract = {
       ...planFieldsFrom(sourceProposal),
       id: nextId,
@@ -206,6 +239,8 @@ export const ContractsListPage: React.FC = () => {
       warrantyPeriodMonths: Number(newContract.warrantyPeriodMonths),
       totalJobsScheduled: 0,
       totalJobsCompleted: 0,
+      assignedTeamLeaderId: teamLeaderUser?.uid,
+      assignedTeamLeaderName: teamLeaderUser?.displayName,
       status: 'active',
       renewalAlertDate: new Date(new Date(newContract.endDate).getTime() - 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
       createdAt: new Date().toISOString(),
@@ -213,7 +248,7 @@ export const ContractsListPage: React.FC = () => {
     };
 
     dataService.saveContract(created, userProfile?.email);
-    success('Contract Registered & Activated', `Contract ${created.id} created for ${created.customerName}`);
+    success('Contract Registered & Activated', `Contract ${created.id} created for ${created.customerName}${teamLeaderUser ? ` · Assigned to ${teamLeaderUser.displayName}` : ''}. Next: generate the visit schedule.`);
     const pack = dataService.getOnboardingPack(created.customerId);
     if (!pack || packStatus(pack) !== 'sent') warning('Onboarding pack not sent', `Send ${created.customerName} their SOP, MSDS, certificates and layout from the customer's Onboarding tab.`);
     setShowNewContractModal(false);
@@ -627,18 +662,22 @@ export const ContractsListPage: React.FC = () => {
       <Modal
         isOpen={showNewContractModal}
         onClose={() => setShowNewContractModal(false)}
-        title="Register & Activate Service Contract"
-        subtitle={linkedProposal ? `Pre-filled from Approved Proposal ${linkedProposal.id}` : 'Create Annual Maintenance Agreement (AMC)'}
+        title="Create Contract"
+        subtitle={linkedProposal ? `Pre-filled from proposal ${linkedProposal.id}` : 'Fill in the details below'}
         maxWidth="680px"
       >
         <form onSubmit={handleCreateContract}>
-          {/* Primary path: select an accepted proposal and auto-fill everything */}
+          {/* Optional: link to an accepted proposal to auto-fill */}
           {(() => {
             const accepted = proposals.filter((p) => p.status === 'accepted');
-            return accepted.length > 0 ? (
+            if (accepted.length === 0) return null;
+            const contractedProposalIds = new Set(
+              dataService.getContracts().filter((c) => c.proposalId && c.status !== 'cancelled').map((c) => c.proposalId!)
+            );
+            return (
               <div className="form-group" style={{ marginBottom: '1.25rem', padding: '0.85rem 1rem', background: 'var(--bg-surface-alt)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)' }}>
                 <label className="form-label" style={{ fontWeight: 700 }}>
-                  From accepted proposal <span style={{ color: 'var(--ikpm-emerald-600)', fontSize: '0.78rem', fontWeight: 400 }}>(recommended — auto-fills the form)</span>
+                  Link to a proposal <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem', fontWeight: 400 }}>(optional — auto-fills the form)</span>
                 </label>
                 <select
                   className="form-select"
@@ -660,16 +699,16 @@ export const ContractsListPage: React.FC = () => {
                     });
                   }}
                 >
-                  <option value="">— Manual entry (no proposal) —</option>
-                  {accepted.map((p) => (
-                    <option key={p.id} value={p.id}>{p.id} · {p.customerName}{p.branchName ? ` / ${p.branchName}` : ''} · {new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', maximumFractionDigits: 0 }).format(p.totalAmount)}</option>
-                  ))}
+                  <option value="">— No proposal (manual entry) —</option>
+                  {accepted.map((p) => {
+                    const hasContract = contractedProposalIds.has(p.id);
+                    return (
+                      <option key={p.id} value={p.id} disabled={hasContract}>
+                        {p.id} · {p.customerName}{p.branchName ? ` / ${p.branchName}` : ''} · {new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', maximumFractionDigits: 0 }).format(p.totalAmount)}{hasContract ? ' (contract exists)' : ''}
+                      </option>
+                    );
+                  })}
                 </select>
-              </div>
-            ) : (
-              <div className="error-hint" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                <AlertTriangle size={15} />
-                <span>No accepted proposals found. The recommended flow is: create a proposal → client accepts it → create contract from proposal. You can still enter contract details manually below.</span>
               </div>
             );
           })()}
@@ -689,61 +728,55 @@ export const ContractsListPage: React.FC = () => {
           })()}
           {(() => {
             const allContracts = dataService.getContracts();
-            const dupes = allContracts.filter(
+            const active = allContracts.filter(
               (c) => c.customerId === newContract.customerId &&
                 (c.branchId || undefined) === (newContract.branchId || undefined) &&
-                c.status === 'active'
+                effectiveContractStatus(c, today) === 'active'
             );
-            return dupes.length > 0 ? (
-              <div className="error-hint" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                <AlertTriangle size={15} />
-                <span style={{ flex: 1 }}>
-                  {dupes.length} active contract{dupes.length > 1 ? 's' : ''} already exist{dupes.length === 1 ? 's' : ''} for this client{newContract.branchId ? ' / branch' : ''} ({dupes.map((c) => c.id).join(', ')}). Consider renewing instead of creating a duplicate.
-                </span>
+            if (active.length === 0) return null;
+            const daysLeft = Math.ceil((new Date(active[0].endDate).getTime() - Date.now()) / 86400000);
+            const nearExpiry = daysLeft <= 30;
+            return (
+              <div className="error-hint" style={{ marginBottom: '0.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem' }}>
+                  <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div>
+                    <strong>Cannot create a new contract.</strong>
+                    {' '}{active[0].id} is already active for this client{newContract.branchId ? ' / branch' : ''} ({daysLeft > 0 ? `${daysLeft} day${daysLeft !== 1 ? 's' : ''} remaining` : 'expires today'}).
+                    {nearExpiry
+                      ? <> Use the <strong>Renew</strong> button on that contract to extend it for the next period.</>
+                      : <> Cancel or wait for the existing contract to expire before creating a new one.</>
+                    }
+                  </div>
+                </div>
               </div>
-            ) : null;
+            );
           })()}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '1rem' }}>
-            <div className="form-group">
-              <label className="form-label">Client Type</label>
-              <select
-                className="form-select"
-                value={newContract.customerType}
-                onChange={(e) => {
-                  const val = e.target.value as any;
-                  setNewContract({
-                    ...newContract,
-                    customerType: val,
-                    customerId: val === 'company' ? companies[0]?.id || '' : clients[0]?.id || '',
-                    branchId: '',
-                  });
-                }}
-              >
-                <option value="company">Corporate Company</option>
-                <option value="individual">Individual Client</option>
-              </select>
+          {!newContract.proposalId && (
+            <div className="chip-row" style={{ marginBottom: '0.75rem' }}>
+              <button type="button" className={`chip ${newContract.customerType === 'company' ? 'chip-on' : ''}`} onClick={() => setNewContract({ ...newContract, customerType: 'company', customerId: companies[0]?.id || '', branchId: '' })}>Company</button>
+              <button type="button" className={`chip ${newContract.customerType === 'individual' ? 'chip-on' : ''}`} onClick={() => setNewContract({ ...newContract, customerType: 'individual', customerId: clients[0]?.id || '', branchId: '' })}>Individual</button>
             </div>
-
-            <div className="form-group">
-              <label className="form-label">Select Customer Account <span className="required">*</span></label>
-              <select
-                className="form-select"
-                value={newContract.customerId}
-                onChange={(e) => setNewContract({ ...newContract, customerId: e.target.value, branchId: '' })}
-              >
-                {newContract.customerType === 'company'
-                  ? companies.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.legalCompanyName} ({c.id})
-                      </option>
-                    ))
-                  : clients.map((cl) => (
-                      <option key={cl.id} value={cl.id}>
-                        {cl.fullName} ({cl.id})
-                      </option>
-                    ))}
-              </select>
-            </div>
+          )}
+          <div className="form-group">
+            <label className="form-label">Client <span className="required">*</span></label>
+            <select
+              className="form-select"
+              value={newContract.customerId}
+              onChange={(e) => setNewContract({ ...newContract, customerId: e.target.value, branchId: '' })}
+            >
+              {newContract.customerType === 'company'
+                ? companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.legalCompanyName} ({c.id})
+                    </option>
+                  ))
+                : clients.map((cl) => (
+                    <option key={cl.id} value={cl.id}>
+                      {cl.fullName} ({cl.id})
+                    </option>
+                  ))}
+            </select>
           </div>
 
           {newContract.customerType === 'company' && (() => {
@@ -770,7 +803,7 @@ export const ContractsListPage: React.FC = () => {
             );
           })()}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
             <div className="form-group">
               <label className="form-label">Contract Type</label>
               <select
@@ -779,7 +812,7 @@ export const ContractsListPage: React.FC = () => {
                 onChange={(e) => setNewContract({ ...newContract, contractType: e.target.value as any })}
               >
                 <option value="amc_recurring">Annual AMC (Recurring)</option>
-                <option value="one_time">One-Time Project</option>
+                <option value="one_time">One-Time Job</option>
               </select>
             </div>
 
@@ -790,12 +823,12 @@ export const ContractsListPage: React.FC = () => {
                 value={newContract.frequency}
                 onChange={(e) => setNewContract({ ...newContract, frequency: e.target.value as any })}
               >
-                <option value="monthly">Monthly (12 visits/yr)</option>
-                <option value="bi_monthly">Bi-Monthly (6 visits/yr)</option>
-                <option value="quarterly">Quarterly (4 visits/yr)</option>
-                <option value="fortnightly">Fortnightly (24 visits/yr)</option>
-                <option value="weekly">Weekly (52 visits/yr)</option>
-                <option value="one_off">One-Off Job</option>
+                <option value="monthly">Monthly</option>
+                <option value="bi_monthly">Bi-Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="fortnightly">Fortnightly</option>
+                <option value="weekly">Weekly</option>
+                <option value="one_off">One-Off</option>
               </select>
             </div>
 
@@ -845,15 +878,43 @@ export const ContractsListPage: React.FC = () => {
             />
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
-            <button type="button" className="btn btn-secondary" onClick={() => setShowNewContractModal(false)}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary">
-              <FileSignature size={15} />
-              <span>Register & Activate Contract</span>
-            </button>
-          </div>
+          {teamLeaders.length > 0 && (
+            <div className="form-group">
+              <label className="form-label">Assign Team Leader <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional — can be changed later)</span></label>
+              <select
+                className="form-select"
+                value={newContract.assignedTeamLeaderId}
+                onChange={(e) => {
+                  const tl = teamLeaders.find((u) => u.uid === e.target.value);
+                  setNewContract({ ...newContract, assignedTeamLeaderId: e.target.value, assignedTeamLeaderName: tl?.displayName || '' });
+                }}
+              >
+                <option value="">— Assign later —</option>
+                {teamLeaders.map((u) => (
+                  <option key={u.uid} value={u.uid}>{u.displayName} ({u.role})</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {(() => {
+            const hasActiveConflict = dataService.getContracts().some(
+              (c) => c.customerId === newContract.customerId &&
+                (c.branchId || undefined) === (newContract.branchId || undefined) &&
+                effectiveContractStatus(c, today) === 'active'
+            );
+            return (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setShowNewContractModal(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={hasActiveConflict} title={hasActiveConflict ? 'An active contract already exists for this client / branch' : undefined}>
+                  <FileSignature size={15} />
+                  <span>Register & Activate Contract</span>
+                </button>
+              </div>
+            );
+          })()}
         </form>
       </Modal>
 

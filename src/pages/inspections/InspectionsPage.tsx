@@ -12,7 +12,39 @@ import { canAccessModule, canEditModule } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { primaryContact } from '../../lib/leadWorkflow';
 import { toWhatsAppNumber } from '../../services/outreachService';
-import type { Lead } from '../../types/crm';
+import type { Lead, SiteInspection } from '../../types/crm';
+
+/** Builds a SiteInspection-shaped view from an inline meeting inspection so it renders in the same table. */
+function inlineAsSiteInspection(l: Lead): SiteInspection | null {
+  const i = l.inspection;
+  if (!i || i.inspectionHandling !== 'done_inline') return null;
+  return {
+    id: i.id || `inline-${l.id}`,
+    status: i.status === 'completed' ? 'completed' : 'scheduled',
+    scheduledDate: i.scheduledDate || i.completedDate || '',
+    completedDate: i.completedDate,
+    branchId: i.branchId,
+    branchName: i.branchName,
+    branchAddress: undefined,
+    assignedTechIds: i.inspectorId ? [i.inspectorId] : [],
+    assignedTechNames: i.inspectorName ? [i.inspectorName] : [],
+    teamLeaderId: i.assignedTeamLeaderId,
+    teamLeaderName: i.assignedTeamLeaderName,
+    requestedAt: i.scheduledDate || '',
+    requestedBy: i.inspectorName || '',
+    pestTypesFound: i.pestTypesFound,
+    infestationSeverity: i.infestationSeverity,
+    areaSqFt: i.areaSqFt,
+    criticalFindings: i.criticalFindings,
+    recommendedTreatment: i.recommendedTreatment,
+    photoEvidenceUrls: i.photoEvidenceUrls,
+    photos: i.photos,
+    findings: i.findings,
+    reportTitle: i.reportTitle,
+    observedBy: i.observedBy || i.inspectorName,
+    notes: i.teamLeaderNotes,
+  };
+}
 
 type Tab = 'upcoming' | 'today' | 'completed';
 
@@ -30,25 +62,35 @@ export const InspectionsPage: React.FC = () => {
   const canOpenLeads = canAccessModule(effectiveRole, 'crm');
   const store = useDataStore();
 
-  const all = store.getLeads().filter((l) => l.siteInspection && l.siteInspection.status !== 'cancelled');
+  const getInspView = (l: Lead): SiteInspection | null =>
+    l.siteInspection && l.siteInspection.status !== 'cancelled'
+      ? l.siteInspection
+      : inlineAsSiteInspection(l);
+
+  const all = store.getLeads().filter((l) => getInspView(l) !== null);
+
   const filtered = useMemo(() => {
     const q = query.toLowerCase().trim();
     const uid = userProfile?.uid || '';
-    return all
-      .filter((l) => !mine || (l.siteInspection!.assignedTechIds ?? []).includes(uid) || l.siteInspection!.teamLeaderId === uid)
-      .filter((l) => !q || [l.title, l.city, l.area, l.siteInspection!.branchName, l.siteInspection!.teamLeaderName, l.siteInspection!.assignedTechNames?.join(' ')].filter(Boolean).join(' ').toLowerCase().includes(q));
+    return all.filter((l) => {
+      const si = getInspView(l)!;
+      if (mine && !(si.assignedTechIds ?? []).includes(uid) && si.teamLeaderId !== uid) return false;
+      if (q && ![l.title, l.city, l.area, si.branchName, si.teamLeaderName, si.assignedTechNames?.join(' ')].filter(Boolean).join(' ').toLowerCase().includes(q)) return false;
+      return true;
+    });
   }, [all, mine, query, userProfile?.uid]);
 
   const byTab = {
-    today: filtered.filter((l) => l.siteInspection!.status === 'scheduled' && l.siteInspection!.scheduledDate <= today()),
-    upcoming: filtered.filter((l) => l.siteInspection!.status === 'scheduled'),
-    completed: filtered.filter((l) => l.siteInspection!.status === 'completed'),
+    today: filtered.filter((l) => { const si = getInspView(l)!; return si.status === 'scheduled' && si.scheduledDate <= today(); }),
+    upcoming: filtered.filter((l) => getInspView(l)!.status === 'scheduled'),
+    completed: filtered.filter((l) => getInspView(l)!.status === 'completed'),
   };
-  const rows = [...byTab[tab]].sort((a, b) =>
-    tab === 'completed'
-      ? (b.siteInspection!.completedDate || '').localeCompare(a.siteInspection!.completedDate || '')
-      : a.siteInspection!.scheduledDate.localeCompare(b.siteInspection!.scheduledDate)
-  );
+  const rows = [...byTab[tab]].sort((a, b) => {
+    const sa = getInspView(a)!, sb = getInspView(b)!;
+    return tab === 'completed'
+      ? (sb.completedDate || '').localeCompare(sa.completedDate || '')
+      : sa.scheduledDate.localeCompare(sb.scheduledDate);
+  });
 
   return (
     <div className="animate-fade-in">
@@ -103,7 +145,8 @@ export const InspectionsPage: React.FC = () => {
             </thead>
             <tbody>
               {rows.map((l) => {
-                const si = l.siteInspection!;
+                const si = getInspView(l)!;
+                const isInline = !l.siteInspection || l.siteInspection.status === 'cancelled';
                 const p = primaryContact(l);
                 const overdue = si.status === 'scheduled' && si.scheduledDate < today();
                 return (
@@ -112,6 +155,7 @@ export const InspectionsPage: React.FC = () => {
                       <div className="cell-title">{formatDate(si.status === 'completed' ? si.completedDate : si.scheduledDate)}</div>
                       <div className="cell-sub">
                         {overdue ? <span className="badge-status badge-rose">Overdue</span> : null}
+                        {isInline && <span className="badge-status badge-blue" style={{ marginLeft: overdue ? 4 : 0 }}>Done during meeting</span>}
                       </div>
                     </td>
                     <td>
@@ -148,7 +192,7 @@ export const InspectionsPage: React.FC = () => {
                             <Download size={15} />
                           </button>
                         )}
-                        {canRecord && (
+                        {canRecord && !isInline && (
                           <button className={`btn btn-sm ${si.status === 'completed' ? 'btn-secondary' : 'btn-primary'}`} onClick={() => setFindingsLead(l)}>
                             <ClipboardCheck size={14} /> {si.status === 'completed' ? 'Edit findings' : 'Record findings'}
                           </button>

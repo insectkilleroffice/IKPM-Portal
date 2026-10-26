@@ -462,25 +462,33 @@ class DocBuilder {
   }
 
   /**
-   * Company stamp block: places the stamp image (if available) on the left and a
-   * client acceptance line on the right. When no stampUrl is configured only the
-   * client acceptance line is shown.
+   * Company stamp block: company authorized-signatory line on the left (with stamp
+   * image above it when available) and a client acceptance line on the right.
    */
   stampBlock(stamp: Img | null, clientLabel = 'Accepted by client', attName?: string, attDesignation?: string) {
     const h = 32;
     this.ensure(h + 4);
     const half = (CONTENT_W - 10) / 2;
-    // Company side: stamp image
+    const lineY = this.y + h - 8;
+
+    // Left side — company authorized signatory
     if (stamp) {
-      const maxSide = 24;
+      const maxSide = 20;
       const scale = Math.min(maxSide / stamp.w, maxSide / stamp.h);
       const sw = stamp.w * scale;
       const sh = stamp.h * scale;
-      this.doc.addImage(stamp.data, 'PNG', M, this.y + 2, sw, sh, undefined, 'FAST');
+      this.doc.addImage(stamp.data, 'PNG', M, this.y + (lineY - this.y - sh) / 2, sw, sh, undefined, 'FAST');
     }
-    // Client acceptance line on the right
+    this.color([148, 163, 184], 'draw');
+    this.doc.setLineWidth(0.3);
+    this.doc.line(M, lineY, M + half, lineY);
+    this.font(7.2, 'bold', MUTED);
+    this.doc.text('AUTHORIZED SIGNATORY', M, lineY + 4, { charSpace: 0.2 });
+    this.font(7.5, 'normal', MUTED);
+    this.doc.text(`${this.profile.shortName || this.profile.legalName} · signature & stamp`, M, lineY + 8.5, { maxWidth: half });
+
+    // Right side — client acceptance line
     const rx = M + half + 10;
-    const lineY = this.y + h - 8;
     this.color([148, 163, 184], 'draw');
     this.doc.setLineWidth(0.3);
     this.doc.line(rx, lineY, rx + half, lineY);
@@ -781,17 +789,35 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
     (proposal.servicePlan ?? []).map((row, i) => [i + 1, row.service, row.frequency]),
     { columnStyles: { 0: { cellWidth: 9, halign: 'center' }, 1: { fontStyle: 'bold' }, 2: { cellWidth: 52 } } }
   );
-  const pco = proposal.pcoCountMin || proposal.pcoCountMax
-    ? proposal.pcoCountMin && proposal.pcoCountMax && proposal.pcoCountMin !== proposal.pcoCountMax
-      ? `${proposal.pcoCountMin} to ${proposal.pcoCountMax}`
-      : String(proposal.pcoCountMax || proposal.pcoCountMin)
-    : undefined;
   b.keyValues([
-    ['Service visits per month', proposal.serviceVisitsPerMonth ? String(proposal.serviceVisitsPerMonth) : undefined],
+    ['Total service visits per month', proposal.serviceVisitsPerMonth ? String(proposal.serviceVisitsPerMonth) : undefined],
     ['Follow-up visits per month', proposal.followUpVisitsPerMonth ? String(proposal.followUpVisitsPerMonth) : undefined],
-    ['PCOs per visit (as per client requirement)', pco],
+    ['PCOs per visit', 'As per requirement'],
   ], 3);
   if (proposal.documentationIncluded?.length) b.noteBox('Documentation included', proposal.documentationIncluded.map((d) => `•  ${d}`));
+
+  if (proposal.branchBreakdowns?.length) {
+    const SVC: Record<string, string> = {
+      general_fumigation: 'General fumigation', cockroach_gel: 'Cockroach gel', rodent_control: 'Rodent control',
+      termite_treatment: 'Termite treatment', bedbug_treatment: 'Bedbug treatment', mosquito_fogging: 'Mosquito / fly fogging',
+      ant_treatment: 'Ant treatment', stored_grain_pest: 'Stored grain pest control', snake_reptile: 'Snake / reptile control',
+      monitoring_visit: 'Monitoring visit',
+    };
+    const svcLabel = (s: string) => SVC[s] || s.replace(/_/g, ' ');
+    b.section('Branch-wise service schedule', 40);
+    b.table(
+      ['Branch / site', 'Services / treatments', 'Visits\n/month', 'Monthly\ncharges (PKR)'],
+      proposal.branchBreakdowns.map((br) => [
+        br.branchName + (br.address ? `\n${br.address}` : ''),
+        (br.services || []).map((sv) => svcLabel(sv.service)).join(', ') || br.treatment || '—',
+        String(br.visitsPerMonth ?? 1),
+        money(br.monthlyAmount),
+      ]),
+      { columnStyles: { 0: { fontStyle: 'bold', cellWidth: 40 }, 1: { cellWidth: 70 }, 2: { halign: 'center', cellWidth: 18 }, 3: { halign: 'right', cellWidth: 44 } } }
+    );
+    const branchTotal = proposal.branchBreakdowns.reduce((s, br) => s + (br.monthlyAmount || 0), 0);
+    b.keyValues([['Total monthly charges (all branches)', pkr(branchTotal)]], 2);
+  }
 
   b.section('Charges & tenure', 40);
   const taxLabel = proposal.taxPercent > 0 ? `Sales tax (${proposal.taxPercent}%)` : 'Sales tax';

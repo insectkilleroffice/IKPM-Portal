@@ -64,6 +64,8 @@ export interface OutreachRequest {
   /** Windows opened synchronously in the click handler, so links aren't popup-blocked after async work. */
   linkWindow?: Window | null;
   emailWindow?: Window | null;
+  /** When true the compose body contains no document URLs — used when files are sent as real attachments. */
+  noLinksInBody?: boolean;
 }
 
 export interface OutreachResult {
@@ -178,7 +180,7 @@ function composeUrl(via: EmailVia, req: OutreachRequest, body: string): string {
 }
 
 async function sendEmail(req: OutreachRequest, attachments: Attachment[]): Promise<OutreachResult> {
-  const body = withLinks(req.message, attachments);
+  const body = req.noLinksInBody ? req.message : withLinks(req.message, attachments);
   if (req.emailVia === 'api' && integrations.outreachApi) {
     const data = await callApi('send-email', {
       to: req.email,

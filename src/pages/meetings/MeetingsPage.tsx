@@ -116,7 +116,10 @@ export const MeetingsPage: React.FC = () => {
                     <td>
                       <div className="cell-title">{formatDate(i.status === 'completed' ? i.completedDate : i.scheduledDate)}</div>
                       <div className="cell-sub" style={{ textTransform: 'capitalize' }}>
-                        {overdue ? <span className="badge-status badge-rose">Overdue</span> : i.timeSlot || ''}
+                        {overdue
+                          ? <span className="badge-status badge-rose">Overdue</span>
+                          : <>{i.scheduledTime && <strong style={{ color: 'var(--ikpm-emerald-700)' }}>{i.scheduledTime} · </strong>}{i.timeSlot || ''}</>
+                        }
                       </div>
                     </td>
                     <td>

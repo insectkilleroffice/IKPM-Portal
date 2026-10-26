@@ -27,6 +27,30 @@ export type TemplateType =
   | 'fumigation_export'
   | 'cockroach_gel';
 
+/** One service / treatment line within a branch — multiple services can be done in one visit. */
+export interface BranchServiceLine {
+  service: string;
+  pestType?: string;
+  /** How often this service is done, e.g. "Twice per month", "Once per month". */
+  frequency?: string;
+}
+
+/** Per-branch service breakdown inside a multi-site proposal. */
+export interface ProposalBranchBreakdown {
+  branchId: string;
+  branchName: string;
+  address?: string;
+  /** Structured service lines per branch — replaces the old flat pestTypes/treatment fields. */
+  services?: BranchServiceLine[];
+  /** Legacy flat fields kept for backward compat. */
+  pestTypes?: string[];
+  treatment?: string;
+  visitsPerMonth: number;
+  followUpVisitsPerMonth?: number;
+  monthlyAmount: number;
+  notes?: string;
+}
+
 export interface ProposalLineItem {
   id: string;
   serviceName: string;
@@ -105,7 +129,7 @@ export interface Proposal extends FolderMeta, TemplateStamp {
 
   // ---- Monthly IPM service plan (quotation format). All optional: older proposals use line items only.
   /** Person the cover letter is addressed to. */
-  attentionTo?: { name: string; designation?: string };
+  attentionTo?: { name: string; designation?: string; email?: string; phone?: string };
   clientAddress?: string;
   coverLetter?: string;
   /** Scope of services A / B / C. */
@@ -132,6 +156,8 @@ export interface Proposal extends FolderMeta, TemplateStamp {
   deviceOwnership?: string;
   /** Products to be used (Fendona, K-Othrine…); the onboarding pack needs an MSDS for each. */
   chemicals?: string[];
+  /** Per-branch visit schedule and pricing for multi-site proposals. */
+  branchBreakdowns?: ProposalBranchBreakdown[];
 
   createdAt: string;
   updatedAt: string;

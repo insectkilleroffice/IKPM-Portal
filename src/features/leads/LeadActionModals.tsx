@@ -38,6 +38,7 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
   const [stuckAt, setStuckAt] = useState<string>('');
   const [note, setNote] = useState('');
   const [followUp, setFollowUp] = useState(addDays(2));
+  const [followUpTime, setFollowUpTime] = useState('');
   const [lostReason, setLostReason] = useState('');
   const [showExtra, setShowExtra] = useState(false);
   const [editContacts, setEditContacts] = useState<LeadContact[]>([]);
@@ -90,7 +91,7 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
       }
       updated = store.logLeadContact(
         lead.id,
-        { channel, outcome, note: note.trim() || undefined, contactId: contactId || undefined, nextFollowUp: needsFollowUp ? followUp : undefined, lostReason: closing ? lostReason.trim() || undefined : undefined },
+        { channel, outcome, note: note.trim() || undefined, contactId: contactId || undefined, nextFollowUp: needsFollowUp ? (followUpTime ? `${followUp}T${followUpTime}` : followUp) : undefined, lostReason: closing ? lostReason.trim() || undefined : undefined },
         userProfile?.email
       );
       if (stuckAt !== (lead.stuckAt || '')) {
@@ -147,14 +148,9 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
 
       <div className="form-group">
         <label className="form-label">Outcome</label>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '0.5rem' }}>
-          {OUTCOMES.map((o) => (
-            <label key={o.value} className="doc-check" style={{ border: `1px solid ${outcome === o.value ? 'var(--ikpm-emerald-600)' : 'var(--border-subtle)'}`, background: outcome === o.value ? 'var(--ikpm-emerald-50)' : undefined }}>
-              <input type="radio" name="outcome" checked={outcome === o.value} onChange={() => setOutcome(o.value)} />
-              <span className={`badge-status badge-${o.tone}`}>{o.label}</span>
-            </label>
-          ))}
-        </div>
+        <select className="form-select" value={outcome} onChange={(e) => setOutcome(e.target.value as ContactOutcome)}>
+          {OUTCOMES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
       </div>
 
       <div className="form-group">
@@ -169,7 +165,8 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
         <div className="form-group">
           <label className="form-label">Next follow-up</label>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            <input type="date" className="form-input" style={{ width: 180 }} value={followUp} min={today()} onChange={(e) => setFollowUp(e.target.value)} />
+            <input type="date" className="form-input" style={{ width: 160 }} value={followUp} min={today()} onChange={(e) => setFollowUp(e.target.value)} />
+            <input type="time" className="form-input" style={{ width: 120 }} value={followUpTime} onChange={(e) => setFollowUpTime(e.target.value)} placeholder="Time (optional)" />
             {[1, 2, 7].map((d) => (
               <button key={d} type="button" className={`chip ${followUp === addDays(d) ? 'chip-on' : ''}`} onClick={() => setFollowUp(addDays(d))}>
                 {d === 1 ? 'Tomorrow' : d === 7 ? 'Next week' : `In ${d} days`}
@@ -305,6 +302,7 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
   const { userProfile } = useAuth();
   const { success, warning, error } = useNotification();
   const [date, setDate] = useState(addDays(1));
+  const [scheduledTime, setScheduledTime] = useState('');
   const [timeSlot, setTimeSlot] = useState<'morning' | 'afternoon' | 'evening'>('morning');
   const [teamId, setTeamId] = useState('');
   const [teamLeaderId, setTeamLeaderId] = useState('');
@@ -320,6 +318,7 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
     if (!lead) return;
     const i = lead.inspection;
     setDate(i?.scheduledDate || addDays(1));
+    setScheduledTime(i?.scheduledTime || '');
     setTimeSlot(i?.timeSlot || 'morning');
     const initialTeamId = i?.teamId || teams[0]?.id || '';
     setTeamId(initialTeamId);
@@ -365,6 +364,7 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
         lead.id,
         {
           date,
+          scheduledTime: scheduledTime || undefined,
           timeSlot,
           teamId: teamId || undefined,
           teamLeaderId,
@@ -416,13 +416,18 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
         {meetingType === 'renewal' && <div className="cell-sub" style={{ marginTop: '0.3rem' }}>Renewal discussion — no inspection required. Report covers renewal terms and next steps.</div>}
       </div>
 
-      <div className="form-grid-2">
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
         <div className="form-group">
           <label className="form-label">Date</label>
           <input type="date" className="form-input" value={date} min={today()} onChange={(e) => setDate(e.target.value)} />
         </div>
         <div className="form-group">
-          <label className="form-label">Time</label>
+          <label className="form-label">Start time</label>
+          <input type="time" className="form-input" value={scheduledTime} onChange={(e) => setScheduledTime(e.target.value)} />
+          <div className="form-hint">Optional exact time</div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Shift</label>
           <div className="chip-row" style={{ marginBottom: 0 }}>
             {(['morning', 'afternoon', 'evening'] as const).map((t) => (
               <button key={t} type="button" className={`chip ${timeSlot === t ? 'chip-on' : ''}`} onClick={() => setTimeSlot(t)}>
