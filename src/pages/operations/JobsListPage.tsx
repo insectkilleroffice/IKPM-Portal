@@ -152,6 +152,7 @@ export const JobsListPage: React.FC = () => {
         customerType: linkedProposal.customerType,
         proposalId: linkedProposal.id,
         scheduledDate: new Date().toISOString().split('T')[0],
+        scheduledTime: '',
         timeSlot: 'morning',
         serviceType: linkedProposal.scopeOfWork,
         targetPests: linkedProposal.lineItems.map((li) => li.targetPest) as PestType[],

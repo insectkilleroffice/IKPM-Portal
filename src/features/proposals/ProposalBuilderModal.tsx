@@ -201,7 +201,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
     const br = brId ? dataService.getBranchById(brId) : undefined;
     const jur = jurisdictionFor(br ?? (type === 'company' ? dataService.getCompanyById(id) : dataService.getClientById(id)));
     setJurisdiction(jur);
-    setTaxPct(jur === 'exempt' ? 0 : taxRateFor(rules, jur).percent);
+    setTaxPct(taxRateFor(rules, jur).percent);
   };
 
   const create = () => {

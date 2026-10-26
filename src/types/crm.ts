@@ -197,6 +197,8 @@ export interface InspectionAssessment {
   instructions?: string;
   /** Notes added by the team leader / for technician follow-up. */
   teamLeaderNotes?: string;
+  branchId?: string;
+  branchName?: string;
   /** Address where the meeting / inspection takes place. */
   meetingAddress?: string;
   findingsBy?: string;
