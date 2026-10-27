@@ -151,27 +151,46 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
   // Collect company / lead contacts available for quick-pick
   const availableContacts: EmailRecipient[] = (() => {
     const contacts: EmailRecipient[] = [];
+    const addUnique = (name: string, email: string | undefined) => {
+      if (isValidEmail(email) && !contacts.some((x) => x.email === email)) {
+        contacts.push({ name, email: email! });
+      }
+    };
+
+    // From the proposal's customer record
     if (proposal?.customerId) {
       if (proposal.customerType === 'company') {
         const co = dataService.getCompanyById(proposal.customerId);
         if (co) {
-          [co.primaryContact, ...co.additionalContacts.filter((c) => !c.isPrimary)].forEach((c) => {
-            if (isValidEmail(c.email)) contacts.push({ name: c.fullName, email: c.email! });
-          });
+          [co.primaryContact, ...co.additionalContacts.filter((c) => !c.isPrimary)].forEach((c) => addUnique(c.fullName, c.email));
         }
       } else {
         const cl = dataService.getClientById(proposal.customerId);
-        if (cl && isValidEmail(cl.email)) contacts.push({ name: cl.fullName, email: cl.email! });
+        if (cl) addUnique(cl.fullName, cl.email);
       }
     }
-    if (proposal?.leadId) {
-      const lead = dataService.getLeadById(proposal.leadId);
-      lead?.contacts?.forEach((c) => {
-        if (isValidEmail(c.email) && !contacts.some((x) => x.email === c.email)) {
-          contacts.push({ name: c.name, email: c.email! });
-        }
-      });
+
+    // From the proposal's lead (if any)
+    const proposalLeadId = proposal?.leadId;
+    if (proposalLeadId) {
+      dataService.getLeadById(proposalLeadId)?.contacts?.forEach((c) => addUnique(c.name, c.email));
     }
+
+    // From the `related` record (covers cases where no proposal is attached — direct lead send)
+    if (related.kind === 'lead' && related.id !== proposalLeadId) {
+      dataService.getLeadById(related.id)?.contacts?.forEach((c) => addUnique(c.name, c.email));
+    }
+    if (related.kind === 'company') {
+      const co = dataService.getCompanyById(related.id);
+      if (co) {
+        [co.primaryContact, ...co.additionalContacts.filter((c) => !c.isPrimary)].forEach((c) => addUnique(c.fullName, c.email));
+      }
+    }
+    if (related.kind === 'client') {
+      const cl = dataService.getClientById(related.id);
+      if (cl) addUnique(cl.fullName, cl.email);
+    }
+
     return contacts;
   })();
 
@@ -455,8 +474,19 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
             </div>
             <div className="form-group" style={{ flex: 2, marginBottom: 0 }}>
               <label className="form-label" style={{ fontSize: '0.73rem' }}>Email address</label>
+              <datalist id="sdm-email-suggestions">
+                {availableContacts.filter((c) => !emailRecipients.some((r) => r.email === c.email)).map((c, i) => (
+                  <option key={i} value={c.email}>{c.name}</option>
+                ))}
+              </datalist>
               <input className="form-input" type="email" placeholder="procurement@client.com" value={manualEmailInput}
-                onChange={(e) => setManualEmailInput(e.target.value)}
+                list="sdm-email-suggestions"
+                onChange={(e) => {
+                  setManualEmailInput(e.target.value);
+                  // Auto-fill name when user selects a suggestion from the datalist
+                  const match = availableContacts.find((c) => c.email === e.target.value);
+                  if (match && !manualNameInput) setManualNameInput(match.name);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();

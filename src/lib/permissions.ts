@@ -6,7 +6,7 @@
 
 import type { DataScope, UserRole } from '../types';
 
-export type SystemRole = 'super_admin' | 'admin' | 'sales' | 'team_leader' | 'operations' | 'finance' | 'technician';
+export type SystemRole = 'super_admin' | 'admin' | 'sales' | 'team_leader' | 'operations' | 'technician';
 
 export type ModuleKey =
   | 'dashboard'
@@ -71,19 +71,14 @@ export const MODULES: { key: ModuleKey; label: string; group: string; hint?: str
 const all = (level: AccessLevel, keys: ModuleKey[]) => Object.fromEntries(keys.map((k) => [k, level])) as Partial<Record<ModuleKey, AccessLevel>>;
 
 // ── Role Workflow ────────────────────────────────────────────────────────────
-// Super Admin   : Full portal access — users, roles, settings, all data.
-// Admin         : Daily back-office — edits all operational records, sends
-//                 documents to clients. Cannot touch roles, staff or invoices.
-// CRO           : Lead generation and B2B proposals. Proposals require a
-//                 signed client document to be accepted.
-// Operations Mgr: Receives CRO-approved signed docs. Schedules and assigns
-//                 Karachi field teams to jobs, meetings & inspections.
-//                 Reviews and approves field reports.
-// Operation     : Karachi field team leader (Operation Person). Executes
-//   Teams         scheduled jobs, leads 5 technicians, submits reports.
-//               : Technician (PCO) — sees and works only their own jobs.
-// Finance       : Invoices, receipts, WHT and tax rules. Read-only on
-//                 customers, contracts and completed jobs.
+// Super Admin            : Full portal access — users, roles, settings, all data.
+// Admin                  : Daily back-office — all operational records and docs.
+// CRO (sales)            : Leads, meetings, proposals. Hands off when proposal accepted.
+// Operation Coordinator  : Sees CRO meetings → assigns team leader → creates
+//   (operations)           contract → schedules and dispatches jobs.
+// Team Leader            : Field team. Submits meeting reports and job reports.
+//   (team_leader)          Leads PCO technicians on site.
+// Technician (PCO)       : Sees and completes only their own assigned jobs.
 // ────────────────────────────────────────────────────────────────────────────
 
 export const DEFAULT_ROLES: RoleDefinition[] = [
@@ -119,65 +114,45 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     isSystem: true,
     defaultScope: 'company',
     color: '#1A73E8',
-    description: 'Lead generation and B2B proposal management. Proposals require a signed client document to be accepted.',
+    description: 'Lead generation, proposals and contract initiation. Creates contracts from accepted proposals; Operations dispatches jobs.',
     modules: {
-      ...all('edit', ['dashboard', 'customers', 'crm', 'proposals', 'files', 'complaints']),
+      ...all('edit', ['dashboard', 'customers', 'crm', 'proposals', 'contracts', 'files', 'complaints']),
       documents: 'view',
       company_files: 'view',
       approvals: 'view',
-    },
-  },
-  {
-    id: 'team_leader',
-    name: 'Operations Manager',
-    basedOn: 'team_leader',
-    isSystem: true,
-    defaultScope: 'company',
-    color: '#9A3412',
-    description: 'Receives CRO-approved signed documents. Schedules Karachi field teams, assigns inspections/meetings, approves field reports.',
-    modules: {
-      ...all('edit', ['dashboard', 'inspections', 'contracts', 'calendar', 'jobs', 'pco', 'files', 'documents', 'complaints', 'approvals']),
-      customers: 'view',
-      crm: 'view',
-      proposals: 'view',
-      company_files: 'view',
-      invoices: 'view',
-      settings: 'view',
-      team: 'edit',
     },
   },
   {
     id: 'operations',
-    name: 'Operation Person',
+    name: 'Operation Coordinator',
     basedOn: 'operations',
     isSystem: true,
     defaultScope: 'company',
     color: '#D97706',
-    description: 'Karachi dispatcher. Sees all CRO meetings, assigns team leaders, creates contracts and schedules jobs.',
+    description: 'Sees all CRO meetings, assigns team leaders, creates contracts and dispatches service jobs.',
     modules: {
-      ...all('edit', ['dashboard', 'inspections', 'jobs', 'pco', 'files', 'complaints']),
+      ...all('edit', ['dashboard', 'customers', 'inspections', 'contracts', 'calendar', 'jobs', 'pco', 'files', 'complaints']),
       crm: 'view',
-      calendar: 'view',
-      customers: 'view',
-      contracts: 'view',
+      proposals: 'view',
       documents: 'view',
+      company_files: 'view',
     },
   },
   {
-    id: 'finance',
-    name: 'Finance',
-    basedOn: 'finance',
+    id: 'team_leader',
+    name: 'Team Leader',
+    basedOn: 'team_leader',
     isSystem: true,
     defaultScope: 'company',
-    color: '#0E8A5F',
-    description: 'Invoices, receipts, WHT and tax rules. Read-only on customers, contracts, jobs and complaints.',
+    color: '#9A3412',
+    description: 'Field team leader. Submits meeting reports and job reports. Leads PCO technicians on site.',
     modules: {
-      ...all('edit', ['dashboard', 'invoices', 'tax']),
+      ...all('edit', ['dashboard', 'inspections', 'jobs', 'pco', 'files', 'complaints']),
+      crm: 'view',
       customers: 'view',
       contracts: 'view',
-      files: 'view',
-      jobs: 'view',
-      approvals: 'view',
+      calendar: 'view',
+      company_files: 'view',
     },
   },
   {
@@ -187,7 +162,7 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     isSystem: true,
     defaultScope: 'own',
     color: '#0891B2',
-    description: 'Field technician — part of Operation Teams. Sees and updates only service jobs assigned to them.',
+    description: 'Field technician. Sees and completes only their own assigned service jobs.',
     modules: { dashboard: 'view', jobs: 'view', pco: 'edit' },
   },
 ];

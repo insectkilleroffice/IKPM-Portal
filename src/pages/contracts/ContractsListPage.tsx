@@ -35,7 +35,7 @@ const isoDay = (d: Date) => d.toISOString().split('T')[0];
 /** Contract form values from a proposal (plan proposals carry tenure, visits and pricing). */
 function fromProposal(p: Proposal) {
   const plan = Boolean(p.servicePlan?.length);
-  const start = p.tenureStart || isoDay(new Date());
+  const start = p.suggestedStartDate || p.tenureStart || isoDay(new Date());
   return {
     contractType: 'amc_recurring' as ContractType,
     proposalId: p.id,
@@ -847,6 +847,12 @@ export const ContractsListPage: React.FC = () => {
             </div>
           </div>
 
+          {linkedProposal?.suggestedStartDate && (
+            <div className="info-hint" style={{ marginBottom: '0.5rem' }}>
+              <strong>Suggested start date from CRO:</strong> {linkedProposal.suggestedStartDate}
+              {linkedProposal.acceptanceNote && <span> — {linkedProposal.acceptanceNote}</span>}
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
             <div className="form-group">
               <label className="form-label">Start Date <span className="required">*</span></label>

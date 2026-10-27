@@ -14,6 +14,7 @@ import {
   MessageSquareWarning,
   Camera,
   X,
+  UserCheck,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -42,6 +43,7 @@ export const JobsListPage: React.FC = () => {
   useDataStore();
 
   const canInvoice = canEditModule(effectiveRole, 'invoices');
+  const canDispatch = canEditModule(effectiveRole, 'jobs');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -86,6 +88,31 @@ export const JobsListPage: React.FC = () => {
     setRescheduleJob(null);
     setRescheduleReason('');
     setRescheduleReasonOther('');
+  };
+
+  // Assign team leader to a scheduled job
+  const [assignTlJob, setAssignTlJob] = useState<ServiceJob | null>(null);
+  const [assignTlId, setAssignTlId] = useState('');
+
+  const handleAssignTl = () => {
+    if (!assignTlJob) return;
+    const tl = dataService.getStaff(['team_leader']).find((u) => u.uid === assignTlId);
+    if (!tl) { warning('No team leader selected', 'Please select a team leader first.'); return; }
+    const updated: ServiceJob = {
+      ...assignTlJob,
+      assignedTeamLeaderId: tl.uid,
+      assignedTeamLeaderName: tl.displayName,
+      leadPcoId: tl.uid,
+      leadPcoName: tl.displayName,
+      assignedTechnicianIds: [tl.uid, ...assignTlJob.assignedTechnicianIds.filter((id) => id !== assignTlJob.leadPcoId)],
+      assignedTechnicianNames: [tl.displayName, ...assignTlJob.assignedTechnicianNames.filter((n) => n !== assignTlJob.leadPcoName)],
+      updatedAt: new Date().toISOString(),
+    };
+    dataService.saveJob(updated, userProfile?.email);
+    success('Team leader assigned', `${tl.displayName} assigned to ${assignTlJob.id} (${formatDate(assignTlJob.scheduledDate)}).`);
+    if (selectedJob?.id === updated.id) setSelectedJob(updated);
+    setAssignTlJob(null);
+    setAssignTlId('');
   };
 
   // Supervisor QC Verification Modal
@@ -495,7 +522,21 @@ export const JobsListPage: React.FC = () => {
                     {j.scheduledTime && <div style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-700)', fontWeight: 700 }}>{j.scheduledTime}</div>}
                   </td>
                   <td><span className="badge-status badge-slate">{j.timeSlot}</span></td>
-                  <td>{j.leadPcoName}</td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <span>{j.leadPcoName || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>Unassigned</span>}</span>
+                      {canDispatch && j.status === 'scheduled' && (
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.15rem 0.35rem', fontSize: '0.7rem' }}
+                          title="Assign / change team leader"
+                          onClick={() => { setAssignTlJob(j); setAssignTlId(j.leadPcoId || ''); }}
+                        >
+                          <UserCheck size={11} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
                   <td>
                     {j.supervisorVerification?.isVerified ? (
                       <span className="badge-status badge-emerald" title={`Verified by ${j.supervisorVerification.supervisorName}`}>
@@ -757,6 +798,42 @@ export const JobsListPage: React.FC = () => {
               <input className="form-input" value={rescheduleReasonOther} onChange={(e) => setRescheduleReasonOther(e.target.value)} placeholder="Describe the reason…" />
             </div>
           )}
+        </Modal>
+      )}
+
+      {/* Modal: Assign Team Leader to a scheduled job */}
+      {assignTlJob && (
+        <Modal
+          isOpen
+          onClose={() => setAssignTlJob(null)}
+          title={`Assign team leader: ${assignTlJob.id}`}
+          subtitle={`${assignTlJob.customerName} · ${formatDate(assignTlJob.scheduledDate)} (${assignTlJob.timeSlot})`}
+          maxWidth="400px"
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setAssignTlJob(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleAssignTl} disabled={!assignTlId}>
+                <UserCheck size={14} /> Assign
+              </button>
+            </>
+          }
+        >
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Team leader <span className="required">*</span></label>
+            <select
+              className="form-select"
+              value={assignTlId}
+              onChange={(e) => setAssignTlId(e.target.value)}
+            >
+              <option value="">— Select —</option>
+              {dataService.getStaff(['team_leader']).map((u) => (
+                <option key={u.uid} value={u.uid}>{u.displayName}</option>
+              ))}
+            </select>
+            {assignTlJob.leadPcoName && (
+              <div className="cell-sub" style={{ marginTop: 4 }}>Currently: {assignTlJob.leadPcoName}</div>
+            )}
+          </div>
         </Modal>
       )}
 

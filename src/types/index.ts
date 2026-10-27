@@ -1,7 +1,7 @@
 // Core shared types for IKPM Portal
 
 /**
- * A role id: one of the built-in roles ('super_admin', 'admin', 'sales', 'team_leader', 'operations', 'finance', 'technician')
+ * A role id: one of the built-in roles ('super_admin', 'admin', 'sales', 'operations', 'team_leader', 'technician')
  * or a custom role created by the super admin.
  * Definitions live in src/lib/permissions.ts and the Firestore `roles` collection.
  */

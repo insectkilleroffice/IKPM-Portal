@@ -183,8 +183,9 @@ export const MeetingsPage: React.FC = () => {
                             <CalendarClock size={14} /> Schedule another
                           </button>
                         )}
-                        {canRecord && i.status === 'completed' &&
-                          i.meetingFollowUps?.some((f) => f.type === 'inspection') &&
+                        {canAssign && i.status === 'completed' &&
+                          (i.meetingFollowUps?.some((f) => f.type === 'inspection') ||
+                           i.inspectionHandling === 'tl_schedule' || i.inspectionHandling === 'separate_visit') &&
                           !l.siteInspection && (
                           <button className="btn btn-sm btn-primary" onClick={() => setInspectLead(l)}>
                             <ClipboardCheck size={14} /> Schedule inspection

@@ -223,7 +223,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [effectiveRole, userProfile, simulatedRole]
   );
 
-  const canViewFinancials = useCallback(() => hasRole(['super_admin', 'finance', 'team_leader']), [hasRole]);
+  const canViewFinancials = useCallback(() => hasRole(['super_admin', 'admin']), [hasRole]);
   const canApproveProposals = useCallback(() => hasRole(['super_admin', 'team_leader']), [hasRole]);
   const canManageOperations = useCallback(() => hasRole(['super_admin', 'admin', 'team_leader', 'operations']), [hasRole]);
 

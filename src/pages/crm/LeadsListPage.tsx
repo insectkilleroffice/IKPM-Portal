@@ -25,6 +25,8 @@ import {
   ArrowRight,
   MapPin,
   PauseCircle,
+  CalendarCheck,
+  ArrowUpDown,
 } from 'lucide-react';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { Modal } from '../../components/common/Modal';
@@ -119,6 +121,11 @@ export const LeadsListPage: React.FC = () => {
   const [sourceFilter, setSourceFilter] = useState('all');
   const [onlyMine, setOnlyMine] = useState(false);
   const [onlyDue, setOnlyDue] = useState(false);
+  const [onlyToday, setOnlyToday] = useState(false);
+  type SortBy = 'default' | 'alpha' | 'oldest' | 'follow_up';
+  const [sortBy, setSortBy] = useState<SortBy>('default');
+
+  const todayStr = new Date().toISOString().slice(0, 10);
 
   const [formLead, setFormLead] = useState<Lead | null | undefined>(searchParams.get('action') === 'new_lead' ? null : undefined);
   const [showImport, setShowImport] = useState(false);
@@ -146,6 +153,10 @@ export const LeadsListPage: React.FC = () => {
     return c;
   }, [leads]);
   const dueCount = leads.filter(isFollowUpDue).length;
+  const todayCount = leads.filter((l) =>
+    l.nextFollowUp === todayStr ||
+    (l.inspection?.scheduledDate === todayStr && l.inspection?.status === 'scheduled')
+  ).length;
 
   const visible = useMemo(() => {
     const q = query.toLowerCase().trim();
@@ -154,6 +165,10 @@ export const LeadsListPage: React.FC = () => {
       .filter((l) => sourceFilter === 'all' || l.source === sourceFilter)
       .filter((l) => !onlyMine || (l as Lead & { ownerUid?: string }).ownerUid === userProfile?.uid || l.assignedToUserId === userProfile?.uid)
       .filter((l) => !onlyDue || isFollowUpDue(l))
+      .filter((l) => !onlyToday || (
+        l.nextFollowUp === todayStr ||
+        (l.inspection?.scheduledDate === todayStr && l.inspection?.status === 'scheduled')
+      ))
       .filter((l) => {
         if (!q) return true;
         const hay = [l.id, l.title, l.companyName, l.city, l.area, l.industry, ...contactsOf(l).flatMap((c) => [c.name, c.phone, c.email, c.designation])]
@@ -163,11 +178,19 @@ export const LeadsListPage: React.FC = () => {
         return hay.includes(q);
       })
       .sort((a, b) => {
-        // Follow-ups due first, then most recently updated
+        if (sortBy === 'alpha') return (a.title || '').localeCompare(b.title || '');
+        if (sortBy === 'oldest') return (a.createdAt || '').localeCompare(b.createdAt || '');
+        if (sortBy === 'updated') return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+        if (sortBy === 'follow_up') {
+          const fa = a.nextFollowUp || '9999-99-99';
+          const fb = b.nextFollowUp || '9999-99-99';
+          return fa.localeCompare(fb);
+        }
+        // default: due first, then most recently updated
         const d = Number(isFollowUpDue(b)) - Number(isFollowUpDue(a));
         return d || (b.updatedAt || '').localeCompare(a.updatedAt || '');
       });
-  }, [leads, tab, sourceFilter, onlyMine, onlyDue, query, userProfile?.uid]);
+  }, [leads, tab, sourceFilter, onlyMine, onlyDue, onlyToday, sortBy, query, userProfile?.uid, todayStr]);
 
   const switchTab = (t: Tab) => {
     setTab(t);
@@ -330,12 +353,25 @@ export const LeadsListPage: React.FC = () => {
           <option value="all">All sources</option>
           {SOURCES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
         </select>
+        <button type="button" className={`chip ${onlyToday ? 'chip-on' : ''}`} onClick={() => { setOnlyToday((v) => !v); setOnlyDue(false); }}>
+          <CalendarCheck size={14} /> Today's work {todayCount > 0 && <span className="tab-count" style={{ background: onlyToday ? '#fff3' : '#DBEAFE', color: onlyToday ? '#fff' : '#1D4ED8' }}>{todayCount}</span>}
+        </button>
+        <button type="button" className={`chip ${onlyDue ? 'chip-on' : ''}`} onClick={() => { setOnlyDue((v) => !v); setOnlyToday(false); }}>
+          <Clock size={14} /> Follow-up due {dueCount > 0 && <span className="tab-count" style={{ background: '#FEE2E2', color: '#991B1B' }}>{dueCount}</span>}
+        </button>
         <button type="button" className={`chip ${onlyMine ? 'chip-on' : ''}`} onClick={() => setOnlyMine((v) => !v)}>
           <User size={14} /> My leads
         </button>
-        <button type="button" className={`chip ${onlyDue ? 'chip-on' : ''}`} onClick={() => setOnlyDue((v) => !v)}>
-          <Clock size={14} /> Follow-up due {dueCount > 0 && <span className="tab-count" style={{ background: '#FEE2E2', color: '#991B1B' }}>{dueCount}</span>}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <ArrowUpDown size={14} color="var(--text-muted)" />
+          <select className="form-select" style={{ width: 'auto', minHeight: 32, fontSize: '0.82rem' }} value={sortBy} onChange={(e) => setSortBy(e.target.value as SortBy)}>
+            <option value="default">Due first</option>
+            <option value="follow_up">By follow-up date</option>
+            <option value="updated">Recently updated</option>
+            <option value="oldest">Oldest first</option>
+            <option value="alpha">A → Z</option>
+          </select>
+        </div>
         {activeTabMeta && <span className="cell-sub" style={{ marginLeft: 'auto' }}>{activeTabMeta.hint}</span>}
       </div>
 

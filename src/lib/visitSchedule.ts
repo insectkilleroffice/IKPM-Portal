@@ -25,6 +25,8 @@ export interface PlannedVisit {
   closingTime?: string;
   pcoId?: string;
   pcoName?: string;
+  /** Services to be performed during this visit (from the contract's service plan). */
+  services?: string[];
 }
 
 export interface PlanInput {
@@ -50,6 +52,14 @@ const addDays = (s: string, n: number) => {
   const d = parse(s);
   d.setDate(d.getDate() + n);
   return ymd(d);
+};
+
+/** Add n calendar months to d, clamping to the last day of the target month (e.g. Jan 31 + 1 month = Feb 28). */
+const addMonthsClamped = (d: Date, n: number): Date => {
+  const result = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+  result.setDate(Math.min(d.getDate(), lastDay));
+  return result;
 };
 
 const minutes = (hhmm?: string) => {
@@ -89,35 +99,49 @@ const visitsIn = (perMonth: number, monthIndex: number) => {
 export function planVisits(input: PlanInput): PlannedVisit[] {
   const out: PlannedVisit[] = [];
   const gap = input.followUpGapDays ?? 3;
-  const start = parse(input.start);
+  const startDate = parse(input.start);
   const end = input.end.slice(0, 10);
   let totalService = 0;
   input.branches.forEach((b, bi) => {
     const slot = slotFor(b);
-    // Branches are staggered by a day so one team can cover them
     const stagger = bi % 3;
+    // Track dates already used per branch so two visits never land on the same day
+    const used = new Set<string>();
     for (let mi = 0; ; mi++) {
-      const monthStart = new Date(start.getFullYear(), start.getMonth() + mi, mi === 0 ? start.getDate() : 1);
-      if (ymd(monthStart) > end) break;
+      // Each cycle starts on the same day-of-month as the service start date,
+      // so the schedule rhythm never resets at calendar month boundaries.
+      const cycleStart = addMonthsClamped(startDate, mi);
+      if (ymd(cycleStart) > end) break;
       if (input.maxVisits !== undefined && totalService >= input.maxVisits) break;
-      const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0);
-      const span = monthEnd.getDate() - monthStart.getDate() + 1;
+      // Cycle ends the day before the next cycle starts (handles variable month lengths).
+      const nextCycle = addMonthsClamped(startDate, mi + 1);
+      const cycleEndMs = nextCycle.getTime() - 24 * 60 * 60 * 1000;
+      const span = Math.round((cycleEndMs - cycleStart.getTime()) / (24 * 60 * 60 * 1000)) + 1;
       const n = visitsIn(input.serviceVisitsPerMonth, mi);
       const f = Math.min(n, visitsIn(input.followUpVisitsPerMonth, mi));
       for (let i = 0; i < n; i++) {
         if (input.maxVisits !== undefined && totalService >= input.maxVisits) break;
         const offset = Math.floor((i * span) / n) + stagger;
-        const date = workingDay(ymd(new Date(monthStart.getFullYear(), monthStart.getMonth(), monthStart.getDate() + Math.min(offset, span - 1))), input);
+        const rawMs = cycleStart.getTime() + Math.min(offset, span - 1) * 24 * 60 * 60 * 1000;
+        let date = workingDay(ymd(new Date(rawMs)), input);
+        // Push forward if this date is already taken for this branch
+        let guard = 0;
+        while (used.has(date) && guard++ < 31) date = workingDay(addDays(date, 1), input);
         if (date > end) continue;
-        const key = `${b.id}:${date}:s`;
+        used.add(date);
+        const key = `${b.id}:${date}:s:${totalService}`;
         const base = { branchId: b.id, branchName: b.name, timeSlot: slot, windowStart: b.windowStart, windowEnd: b.windowEnd, closingTime: b.closingTime };
         const visit: PlannedVisit = { ...base, key, date, kind: 'service' };
         out.push(visit);
         totalService++;
         if (i < f) {
-          const fuDate = workingDay(addDays(date, gap), input);
+          let fuDate = workingDay(addDays(date, gap), input);
+          // Follow-up must not collide with a service visit on the same day
+          guard = 0;
+          while (used.has(fuDate) && guard++ < 31) fuDate = workingDay(addDays(fuDate, 1), input);
           if (fuDate <= end) {
-            const fuKey = `${b.id}:${fuDate}:f`;
+            used.add(fuDate);
+            const fuKey = `${b.id}:${fuDate}:f:${totalService}`;
             visit.pairKey = fuKey;
             out.push({ ...base, key: fuKey, date: fuDate, kind: 'follow_up', pairKey: key });
           }

@@ -120,6 +120,8 @@ export interface ServiceJob extends FolderMeta {
   /** Contract schedule (Step 14): service visit or its follow-up; the pair share pairedJobId links. */
   visitKind?: 'service' | 'follow_up';
   pairedJobId?: string;
+  /** Services to be performed in this visit, e.g. ["Cockroach Control", "Rodent Control"]. */
+  visitServices?: string[];
   /** Visit window at the branch ("HH:MM"), copied from the branch when scheduled. */
   windowStart?: string;
   windowEnd?: string;

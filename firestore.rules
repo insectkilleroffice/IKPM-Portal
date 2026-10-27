@@ -45,28 +45,18 @@
           ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
             'contracts':'edit','files':'edit','documents':'edit','company_files':'edit','calendar':'edit',
             'jobs':'edit','pco':'edit','complaints':'edit','invoices':'view','settings':'view','approvals':'view'}
-          : r == 'management'
-          ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
-            'contracts':'edit','files':'edit','documents':'edit','calendar':'edit','jobs':'edit',
-            'pco':'edit','invoices':'edit','tax':'edit','complaints':'edit','settings':'view','company_files':'view','templates':'edit','approvals':'edit'}
           : r == 'sales'
-          ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
-            'contracts':'edit','files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
+          ? {'dashboard':'edit','customers':'edit','crm':'edit','proposals':'edit','contracts':'edit',
+            'files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
           : r == 'operations'
-          ? {'dashboard':'edit','inspections':'edit','calendar':'edit','jobs':'edit','pco':'edit',
-            'files':'edit','complaints':'edit','crm':'view','customers':'view','contracts':'view','documents':'view','company_files':'view'}
-          : r == 'finance'
-          ? {'dashboard':'edit','invoices':'edit','tax':'edit','customers':'view','contracts':'view',
-            'files':'view','jobs':'view','complaints':'view','approvals':'view'}
+          ? {'dashboard':'edit','customers':'edit','inspections':'edit','contracts':'edit','calendar':'edit',
+            'jobs':'edit','pco':'edit','files':'edit','complaints':'edit',
+            'crm':'view','proposals':'view','documents':'view','company_files':'view'}
           : r == 'team_leader'
-          ? {'dashboard':'edit','crm':'view','inspections':'edit','pco':'edit',
-            'customers':'view','proposals':'view','contracts':'view'}
-          : r == 'auditor'
-          ? {'dashboard':'view','customers':'view','crm':'view','inspections':'view','proposals':'view',
-            'contracts':'view','files':'view','documents':'view','company_files':'view',
-            'calendar':'view','jobs':'view','invoices':'view','settings':'view','complaints':'view','approvals':'view'}
+          ? {'dashboard':'edit','inspections':'edit','jobs':'edit','pco':'edit','files':'edit','complaints':'edit',
+            'crm':'view','customers':'view','contracts':'view','calendar':'view','company_files':'view'}
           : r == 'technician'
-          ? {'pco':'edit'}
+          ? {'dashboard':'view','jobs':'view','pco':'edit'}
           : {};
       }
 
@@ -286,10 +276,14 @@
         allow read: if readMod('crm') || (canView('inspections') && assignedInspector());
         allow create: if createMod('crm');
         // Assigned inspectors may record findings, but not reassign the lead or change its contacts
+        // Operation coordinators (crm: view + inspections: edit) may update inspection/team assignment fields only
         allow update: if updateMod('crm')
           || (canEdit('inspections') && assignedInspector()
               && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-                ['ownerUid', 'teamId', 'inspectorIds', 'contacts', 'companyName', 'title', 'customerType', 'existingCustomerId']));
+                ['ownerUid', 'teamId', 'inspectorIds', 'contacts', 'companyName', 'title', 'customerType', 'existingCustomerId']))
+          || (canView('crm') && canEdit('inspections') && inScope(resource.data)
+              && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['inspection', 'inspectorIds', 'assignedTeamLeaderId', 'assignedTeamLeaderName', 'stage', 'activities', 'updatedAt']));
         allow delete: if isSuperAdmin();
       }
 

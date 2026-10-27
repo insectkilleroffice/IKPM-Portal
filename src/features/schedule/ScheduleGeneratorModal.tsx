@@ -45,7 +45,8 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
   const { success, error } = useNotification();
 
   const technicians = store.getStaff(['team_leader', 'operations', 'technician']);
-  const existingJobs = store.getJobs();
+  // Exclude this contract's own jobs so regenerating a schedule doesn't flag self-conflicts
+  const existingJobs = store.getJobs().filter((j) => j.contractId !== contract.id);
 
   // Load branches for the contract
   const companyBranches: CompanyBranch[] = useMemo(() => {
@@ -88,9 +89,24 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
   const [isExporting, setIsExporting] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
 
-  const rates = useMemo(() => visitsPerMonth(contract), [contract]);
-
   const isOneOff = contract.frequency === 'one_off' || contract.contractType === 'one_time';
+
+  // Visit rates come directly from the contract/proposal — not re-entered in the form
+  const rates = useMemo(() => visitsPerMonth(contract), [contract]);
+  const serviceVpm = rates.service;
+  const followUpVpm = rates.followUp;
+
+  // Actual pest-control services from the contract — visit types and operational activities
+  // (Follow-up visit, Supervisor visit, Entomologist visit, Risk assessment) are excluded because
+  // they describe the visit itself, not work to be done during it.
+  const servicePlanItems: string[] = useMemo(() => {
+    const VISIT_TYPE_KEYWORDS = ['visit', 'assessment', 'entomologist'];
+    return (contract.servicePlan ?? [])
+      .map((s) => s.service)
+      .filter((s): s is string =>
+        Boolean(s) && !VISIT_TYPE_KEYWORDS.some((kw) => s.toLowerCase().includes(kw))
+      );
+  }, [contract]);
 
   // Generate initial planned visits
   const initialVisits = useMemo(() => {
@@ -104,8 +120,8 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
     const planned = planVisits({
       start: contract.startDate,
       end: contract.endDate,
-      serviceVisitsPerMonth: rates.service,
-      followUpVisitsPerMonth: rates.followUp,
+      serviceVisitsPerMonth: isOneOff ? 1 : serviceVpm,
+      followUpVisitsPerMonth: followUpVpm,
       branches: branchConfigs,
       skipSundays,
       holidays,
@@ -117,12 +133,15 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
       ...v,
       pcoId: defaultTech?.uid,
       pcoName: defaultTech?.displayName,
+      // Start with no services selected — staff assigns per visit
+      services: servicePlanItems.length > 0 ? [] : undefined,
     }));
-  }, [contract, rates, branchConfigs, skipSundays, holidaysText, defaultPcoId, technicians]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [visits, setVisits] = useState<PlannedVisit[]>(initialVisits);
 
-  // Re-plan if branch configs or options change
+  // Re-plan with current parameters (called by Regenerate button)
   const handleRegenerate = () => {
     const holidays = holidaysText
       .split(',')
@@ -134,8 +153,8 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
     const planned = planVisits({
       start: contract.startDate,
       end: contract.endDate,
-      serviceVisitsPerMonth: rates.service,
-      followUpVisitsPerMonth: rates.followUp,
+      serviceVisitsPerMonth: isOneOff ? 1 : serviceVpm,
+      followUpVisitsPerMonth: followUpVpm,
       branches: branchConfigs,
       skipSundays,
       holidays,
@@ -148,6 +167,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
         ...v,
         pcoId: defaultTech?.uid,
         pcoName: defaultTech?.displayName,
+        services: servicePlanItems.length > 0 ? [] : undefined,
       }))
     );
     success('Schedule Generated', `Generated ${planned.length} visits across contract tenure.`);
@@ -291,11 +311,11 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
             <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{contract.serviceScope}</div>
           </div>
           <div>
-            <span style={{ color: 'var(--text-muted)' }}>Visits per Month:</span>
+            <span style={{ color: 'var(--text-muted)' }}>Visits per month (from proposal):</span>
             <div style={{ fontWeight: 700 }}>
-              {rates.service} Service Visits {rates.followUp > 0 ? `+ ${rates.followUp} Follow-ups` : ''}
+              {serviceVpm} service{followUpVpm > 0 ? ` + ${followUpVpm} follow-up` : ''} visits/month
             </div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Frequency: {contract.frequency}</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Multiple services can be done in one visit — assign below</div>
           </div>
           <div>
             <span style={{ color: 'var(--text-muted)' }}>Tenure Window:</span>
@@ -526,6 +546,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
                 <th style={{ width: '40px' }}>#</th>
                 <th>Branch / Location</th>
                 <th>Kind</th>
+                <th>Services for this visit</th>
                 <th>Date</th>
                 <th>Time Slot</th>
                 <th>Closing / Window</th>
@@ -547,6 +568,40 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
                       >
                         {v.kind === 'service' ? 'Service Visit' : 'Follow-up'}
                       </span>
+                    </td>
+                    <td style={{ minWidth: '180px' }}>
+                      {servicePlanItems.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          {servicePlanItems.map((svc) => {
+                            const checked = v.services?.includes(svc) ?? false;
+                            return (
+                              <label key={svc} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem', cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const current = v.services ?? [...servicePlanItems];
+                                    const next = e.target.checked
+                                      ? [...current.filter((s) => s !== svc), svc]
+                                      : current.filter((s) => s !== svc);
+                                    handleUpdateVisit(v.key, { services: next });
+                                  }}
+                                />
+                                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '150px' }}>{svc}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <input
+                          type="text"
+                          className="form-input"
+                          style={{ height: '30px', fontSize: '0.75rem', width: '160px' }}
+                          placeholder="e.g. Cockroach, Rodent…"
+                          value={v.services?.join(', ') ?? ''}
+                          onChange={(e) => handleUpdateVisit(v.key, { services: e.target.value ? e.target.value.split(',').map((s) => s.trim()).filter(Boolean) : undefined })}
+                        />
+                      )}
                     </td>
                     <td>
                       <input

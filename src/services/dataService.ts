@@ -1829,7 +1829,7 @@ class DataService {
    */
   public createScheduledJobs(
     contract: Contract,
-    visits: { key: string; branchId: string; branchName: string; date: string; kind: 'service' | 'follow_up'; pairKey?: string; timeSlot: ServiceJob['timeSlot']; windowStart?: string; windowEnd?: string; pcoId?: string; pcoName?: string }[],
+    visits: { key: string; branchId: string; branchName: string; date: string; kind: 'service' | 'follow_up'; pairKey?: string; timeSlot: ServiceJob['timeSlot']; windowStart?: string; windowEnd?: string; pcoId?: string; pcoName?: string; services?: string[] }[],
     userEmail = 'admin'
   ): ServiceJob[] {
     const booked = new Set<string>();
@@ -1859,7 +1859,10 @@ class DataService {
         siteId: site?.id || 'SITE-01',
         siteName: site?.siteName || v.branchName,
         siteAddress: site?.addressLine1 || branch?.physicalAddress || '',
-        serviceType: v.kind === 'follow_up' ? `Follow-up: ${contract.serviceScope}` : contract.serviceScope,
+        serviceType: v.kind === 'follow_up'
+          ? `Follow-up: ${v.services?.length ? v.services.join(', ') : contract.serviceScope}`
+          : v.services?.length ? v.services.join(', ') : contract.serviceScope,
+        visitServices: v.services?.length ? v.services : undefined,
         targetPests: [],
         scheduledDate: v.date,
         timeSlot: v.timeSlot,

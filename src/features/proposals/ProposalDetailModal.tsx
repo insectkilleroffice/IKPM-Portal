@@ -10,6 +10,8 @@ import type { Proposal } from '../../types/proposal';
 interface Props {
   proposal: Proposal;
   canApprove: boolean;
+  /** CRO and admin can record the client's accept/decline decision. */
+  canAccept: boolean;
   pdfBusy: boolean;
   onClose: () => void;
   onExportPdf: () => void;
@@ -23,7 +25,7 @@ interface Props {
 }
 
 /** Proposal details with approval, client decision, contract / job hand-off and sharing. */
-export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onAccept, onDecline, onSend, onAssign }) => {
+export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, canAccept, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onAccept, onDecline, onSend, onAssign }) => {
   const navigate = useNavigate();
   const isPlan = Boolean(p.servicePlan?.length);
   const pricing = isPlan
@@ -54,7 +56,7 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
                 <button className="btn btn-primary" onClick={onApprove}><CheckCircle2 size={15} /> <span>Approve</span></button>
               </>
             )}
-            {['approved', 'sent_to_client', 'negotiation'].includes(p.status) && (
+            {canAccept && ['approved', 'sent_to_client', 'negotiation'].includes(p.status) && (
               <>
                 <button className="btn btn-secondary" onClick={onDecline}>Client declined</button>
                 <button className="btn btn-primary" onClick={onAccept}><CheckCircle2 size={15} /> <span>Client accepted</span></button>
@@ -80,6 +82,26 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', fontSize: '0.85rem' }}>
+        {p.revisionNumber > 1 && p.revisionsHistory.length > 0 && (() => {
+          const latest = p.revisionsHistory[p.revisionsHistory.length - 1];
+          return (
+            <div style={{ padding: '0.5rem 0.75rem', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '0.4rem', fontSize: '0.82rem', color: '#92400E' }}>
+              <strong>Revision R{latest.revisionNumber}</strong> by {latest.changedByName} on {latest.timestamp.slice(0, 10)}
+              {latest.changeReason && <> — {latest.changeReason}</>}
+            </div>
+          );
+        })()}
+        {p.status === 'accepted' && (
+          <div style={{ padding: '0.6rem 0.85rem', background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            <div style={{ fontWeight: 700, color: 'var(--ikpm-emerald-800)' }}>✓ Client accepted{p.acceptedDate ? ` on ${p.acceptedDate.slice(0, 10)}` : ''}</div>
+            {p.suggestedStartDate && (
+              <div style={{ fontSize: '0.82rem', color: 'var(--ikpm-emerald-700)' }}>
+                <strong>Suggested job start date:</strong> {p.suggestedStartDate} — Operations: use this when creating the contract.
+              </div>
+            )}
+            {p.acceptanceNote && <div style={{ fontSize: '0.82rem', color: 'var(--ikpm-emerald-700)' }}><strong>Note:</strong> {p.acceptanceNote}</div>}
+          </div>
+        )}
         {p.approval && (
           <div className={p.approval.status === 'approved' ? 'info-hint' : 'error-hint'}>
             <strong>Approval:</strong> {p.approval.status} ({p.approval.ruleId}). {p.approval.ruleDescription}

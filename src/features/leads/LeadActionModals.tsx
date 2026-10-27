@@ -933,7 +933,7 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
     }
     setTechIds(si?.assignedTechIds ?? []);
     setTeamLeaderId(si?.teamLeaderId || lead.assignedTeamLeaderId || '');
-    setNotes(si?.notes || '');
+    setNotes(si?.notes || lead.inspection?.schedulingNote || '');
   }, [lead]);
 
   if (!lead) return null;
@@ -999,11 +999,21 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
     >
       {(() => {
         const fu = lead.inspection?.meetingFollowUps?.find((f) => f.type === 'inspection');
-        return fu?.addressTbd ? (
-          <div className="info-hint" style={{ marginBottom: '1rem', background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E' }}>
-            ⚠ Team Leader indicated the address hasn't been confirmed with the client yet. Please verify before scheduling.
-          </div>
-        ) : null;
+        const schedNote = lead.inspection?.schedulingNote;
+        return (
+          <>
+            {schedNote && (
+              <div className="info-hint" style={{ marginBottom: '1rem', background: '#EFF6FF', borderColor: '#BFDBFE', color: '#1E40AF' }}>
+                <strong>Team Leader's notes for this inspection:</strong> {schedNote}
+              </div>
+            )}
+            {fu?.addressTbd && (
+              <div className="info-hint" style={{ marginBottom: '1rem', background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E' }}>
+                ⚠ Team Leader indicated the address hasn't been confirmed with the client yet. Please verify before scheduling.
+              </div>
+            )}
+          </>
+        );
       })()}
       <div className="form-grid-2">
         <div className="form-group">

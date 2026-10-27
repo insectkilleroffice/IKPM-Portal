@@ -125,6 +125,10 @@ export interface Proposal extends FolderMeta, TemplateStamp {
   revisionsHistory: ProposalRevision[];
   sentDate?: string;
   acceptedDate?: string;
+  /** Suggested date for the first service job — filled by CRO when recording client acceptance. Operations uses this when creating the contract. */
+  suggestedStartDate?: string;
+  /** Note from CRO when recording client acceptance (e.g. "client wants to start after Eid"). */
+  acceptanceNote?: string;
   pdfUrl?: string;
 
   // ---- Monthly IPM service plan (quotation format). All optional: older proposals use line items only.

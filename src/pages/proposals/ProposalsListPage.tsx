@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Search, Download, Send, FileSignature, RotateCw } from 'lucide-react';
+import { Plus, Search, Download, Send, FileSignature, RotateCw, CheckCircle2, CalendarClock, Paperclip } from 'lucide-react';
 import { useDataStore } from '../../hooks/useDataStore';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import { ProposalBuilderModal, type ProposalPrefill } from '../../features/proposals/ProposalBuilderModal';
@@ -8,6 +8,7 @@ import { ProposalDetailModal } from '../../features/proposals/ProposalDetailModa
 import { ReviseProposalModal } from '../../features/proposals/ReviseProposalModal';
 import { fileProposalPdf } from '../../features/proposals/proposalFiles';
 import { dataService } from '../../services/dataService';
+import { uploadFile } from '../../lib/cloudinary';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { Modal } from '../../components/common/Modal';
 import { StatusBadge } from '../../components/common/StatusBadge';
@@ -18,6 +19,7 @@ import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { baseRoleOf } from '../../lib/permissions';
 import type { Proposal } from '../../types/proposal';
 import type { Contract, ServiceFrequency } from '../../types/operations';
 
@@ -38,11 +40,17 @@ export const ProposalsListPage: React.FC = () => {
   const navigate = useNavigate();
   const { success, error, warning } = useNotification();
   const pdfAction = usePdfAction();
-  const { userProfile, canApproveProposals } = useAuth();
+  const { userProfile, canApproveProposals, effectiveRole, isSuperAdmin } = useAuth();
+  const baseRole = baseRoleOf(effectiveRole) ?? '';
+  const canAccept = isSuperAdmin || ['admin', 'sales'].includes(baseRole);
+  const isOperations = baseRole === 'operations';
+
+  const [acceptTarget, setAcceptTarget] = useState<Proposal | null>(null);
   useDataStore();
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState(searchParams.get('filter') || 'all');
+  // Operations only sees accepted proposals — lock their default filter and hide the filter bar
+  const [statusFilter, setStatusFilter] = useState(searchParams.get('filter') || (isOperations ? 'accepted' : 'all'));
   // undefined = follow the ?view= deep link (it may load after the first render); null = closed
   const [selectedId, setSelectedId] = useState<string | null | undefined>(undefined);
   const [showBuilder, setShowBuilder] = useState(searchParams.get('action') === 'new_proposal');
@@ -207,6 +215,7 @@ export const ProposalsListPage: React.FC = () => {
     });
 
   const filtered = proposals.filter((p) => {
+    if (isOperations && p.status !== 'accepted') return false;
     const q = searchQuery.toLowerCase();
     const hit = p.id.toLowerCase().includes(q) || p.customerName.toLowerCase().includes(q) || (p.branchName ?? '').toLowerCase().includes(q);
     return hit && (statusFilter === 'all' || p.status === statusFilter);
@@ -227,13 +236,18 @@ export const ProposalsListPage: React.FC = () => {
       </div>
 
       <div className="card" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <div className="chip-row" style={{ marginBottom: 0 }}>
-          {STATUS_FILTERS.map((sf) => (
-            <button key={sf.value} type="button" className={`chip ${statusFilter === sf.value ? 'chip-on' : ''}`} onClick={() => setStatusFilter(sf.value)}>
-              {sf.label}
-            </button>
-          ))}
-        </div>
+        {!isOperations && (
+          <div className="chip-row" style={{ marginBottom: 0 }}>
+            {STATUS_FILTERS.map((sf) => (
+              <button key={sf.value} type="button" className={`chip ${statusFilter === sf.value ? 'chip-on' : ''}`} onClick={() => setStatusFilter(sf.value)}>
+                {sf.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {isOperations && (
+          <span className="badge-status badge-emerald" style={{ fontSize: '0.82rem', padding: '0.3rem 0.7rem' }}>Showing: Accepted proposals only</span>
+        )}
         <div className="drive-search" style={{ width: 260 }}>
           <Search size={15} color="var(--text-muted)" />
           <input placeholder="Search proposals…" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
@@ -259,6 +273,11 @@ export const ProposalsListPage: React.FC = () => {
                 <td>
                   <div className="cell-title">{p.id}</div>
                   <div className="cell-sub">R{p.revisionNumber} · {formatDate(p.createdAt)}</div>
+                  {p.revisionNumber > 1 && p.revisionsHistory.length > 0 && (
+                    <div className="cell-sub" style={{ marginTop: 2, fontStyle: 'italic', color: 'var(--ikpm-amber-700, #b45309)' }}>
+                      {p.revisionsHistory[p.revisionsHistory.length - 1].changeReason}
+                    </div>
+                  )}
                 </td>
                 <td>
                   <div style={{ fontWeight: 600 }}>{p.customerName}</div>
@@ -316,6 +335,7 @@ export const ProposalsListPage: React.FC = () => {
         <ProposalDetailModal
           proposal={selected}
           canApprove={canApproveProposals()}
+          canAccept={canAccept}
           pdfBusy={pdfAction.busy === selected.id}
           onClose={() => setSelectedId(null)}
           onExportPdf={() => pdfAction.run(selected.id, () => pdfGenerator.generateProposalPDF(selected))}
@@ -323,7 +343,6 @@ export const ProposalsListPage: React.FC = () => {
           onApprove={() => decide('approved')}
           onReject={() => setShowRejectDialog(true)}
           onAccept={() => {
-            // Guard: only one accepted proposal per lead
             if (selected.leadId) {
               const alreadyWon = proposals.find((p) => p.id !== selected.id && p.leadId === selected.leadId && p.status === 'accepted');
               if (alreadyWon) {
@@ -331,9 +350,7 @@ export const ProposalsListPage: React.FC = () => {
                 return;
               }
             }
-            save({ ...selected, status: 'accepted', acceptedDate: new Date().toISOString() }, () =>
-              success('Accepted', selected.leadId ? `Lead ${selected.leadId} is now Won. Next: onboarding pack and contract.` : 'Proposal accepted by the client.')
-            );
+            setAcceptTarget(selected);
           }}
           onDecline={() => save({ ...selected, status: 'declined' }, () => warning('Declined', selected.leadId ? `Lead ${selected.leadId} moved to Negotiation. Schedule a negotiation meeting as the next step.` : 'Proposal declined by the client.'))}
           onSend={canSend(selected) ? () => setSendTarget(selected) : undefined}
@@ -365,8 +382,146 @@ export const ProposalsListPage: React.FC = () => {
         requireReason
         confirmLabel="Reject"
       />
+
+      {acceptTarget && (
+        <AcceptProposalModal
+          proposal={acceptTarget}
+          onClose={() => setAcceptTarget(null)}
+          onConfirm={(suggestedStartDate, acceptanceNote) => {
+            save(
+              { ...acceptTarget, status: 'accepted', acceptedDate: new Date().toISOString(), suggestedStartDate: suggestedStartDate || undefined, acceptanceNote: acceptanceNote || undefined },
+              () => success('Accepted', acceptTarget.leadId ? `Lead ${acceptTarget.leadId} is now Won. Next: create the contract.` : 'Proposal accepted by the client.')
+            );
+            setAcceptTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 };
 
 export default ProposalsListPage;
+
+// ---------------------------------------------------------------------------
+// Accept Proposal Modal
+// ---------------------------------------------------------------------------
+const AcceptProposalModal: React.FC<{
+  proposal: Proposal;
+  onClose: () => void;
+  onConfirm: (suggestedStartDate: string, acceptanceNote: string) => void;
+}> = ({ proposal: p, onClose, onConfirm }) => {
+  const { userProfile } = useAuth();
+  const { error: notifError } = useNotification();
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [suggestedStartDate, setSuggestedStartDate] = useState(p.suggestedStartDate || '');
+  const [acceptanceNote, setAcceptanceNote] = useState(p.acceptanceNote || '');
+  const [letterFile, setLetterFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleConfirm = async () => {
+    setSaving(true);
+    try {
+      // Upload acceptance letter if provided
+      if (letterFile) {
+        try {
+          const stored = await uploadFile(letterFile, {
+            scope: dataService.uploadScopeFor({ kind: 'proposal', id: p.id }, 'proposal'),
+            subPath: p.id,
+            fileName: letterFile.name,
+          });
+          dataService.saveDocument(
+            {
+              id: `DOC-ACCEPT-${p.id}-${Date.now()}`,
+              title: `Acceptance letter — ${p.id} (${p.customerName})`,
+              category: 'other',
+              fileCategory: 'correspondence',
+              owner: { kind: 'proposal', id: p.id },
+              ownerScope: 'client',
+              clientId: p.customerId,
+              clientType: p.customerType === 'company' ? 'company' : 'individual',
+              source: 'uploaded',
+              file: stored,
+              uploadedBy: userProfile?.email || 'admin',
+              uploadedByName: userProfile?.displayName || 'Staff',
+              uploadedAt: new Date().toISOString(),
+            },
+            userProfile?.email
+          );
+        } catch (err) {
+          notifError('Letter upload failed', err instanceof Error ? err.message : String(err));
+        }
+      }
+
+      onConfirm(suggestedStartDate, acceptanceNote);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={`Client accepted: ${p.id}`}
+      subtitle={`${p.customerName} · R${p.revisionNumber} · ${p.totalAmount ? `PKR ${p.totalAmount.toLocaleString()}` : ''}`}
+      maxWidth="480px"
+      footer={
+        <>
+          <button className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleConfirm} disabled={saving}>
+            <CheckCircle2 size={15} /> {saving ? 'Saving…' : 'Confirm acceptance'}
+          </button>
+        </>
+      }
+    >
+      <div className="info-hint" style={{ marginBottom: '1rem' }}>
+        Recording this will mark the proposal as <strong>Accepted</strong> and move the lead to <strong>Won</strong>. Operations will be able to create the contract.
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">
+          <CalendarClock size={13} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+          Suggested job start date
+          <span className="cell-sub" style={{ marginLeft: 6, fontSize: '0.75rem' }}>Operations will see this when creating the contract</span>
+        </label>
+        <input
+          type="date"
+          className="form-input"
+          value={suggestedStartDate}
+          min={todayStr}
+          onChange={(e) => setSuggestedStartDate(e.target.value)}
+        />
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">
+          <Paperclip size={13} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+          Acceptance / confirmation letter
+          <span className="cell-sub" style={{ marginLeft: 6, fontSize: '0.75rem' }}>Saved to client folder</span>
+        </label>
+        <input
+          type="file"
+          className="form-input"
+          style={{ padding: '0.35rem 0.6rem' }}
+          accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+          onChange={(e) => setLetterFile(e.target.files?.[0] || null)}
+        />
+        {letterFile && (
+          <div className="cell-sub" style={{ marginTop: 4 }}>
+            {letterFile.name} ({(letterFile.size / 1024).toFixed(0)} KB)
+          </div>
+        )}
+      </div>
+
+      <div className="form-group" style={{ marginBottom: 0 }}>
+        <label className="form-label">Note (optional)</label>
+        <input
+          className="form-input"
+          value={acceptanceNote}
+          onChange={(e) => setAcceptanceNote(e.target.value)}
+          placeholder="e.g. client wants to start after Eid, signed via email"
+        />
+      </div>
+    </Modal>
+  );
+};
