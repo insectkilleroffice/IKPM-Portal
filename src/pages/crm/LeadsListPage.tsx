@@ -122,7 +122,7 @@ export const LeadsListPage: React.FC = () => {
   const [onlyMine, setOnlyMine] = useState(false);
   const [onlyDue, setOnlyDue] = useState(false);
   const [onlyToday, setOnlyToday] = useState(false);
-  type SortBy = 'default' | 'alpha' | 'oldest' | 'follow_up';
+  type SortBy = 'default' | 'alpha' | 'oldest' | 'updated' | 'follow_up';
   const [sortBy, setSortBy] = useState<SortBy>('default');
 
   const todayStr = new Date().toISOString().slice(0, 10);
