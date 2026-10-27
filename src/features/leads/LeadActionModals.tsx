@@ -5,7 +5,7 @@ import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { blankLeadBranch, CHANNELS, contactsOf, INSPECTION_PHOTO_TYPES, OUTCOMES, stageOf, STUCK_AT_REASONS, syncLeadFields } from '../../lib/leadWorkflow';
-import { roleLabel } from '../../lib/permissions';
+import { baseRoleOf, roleLabel } from '../../lib/permissions';
 import { dataService } from '../../services/dataService';
 import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadBranch, LeadContact, MeetingFollowUp, MeetingFollowUpType, PestType, RiskFinding, StuckAtReason } from '../../types/crm';
 import type { SitePhoto } from '../../types/operations';
@@ -299,8 +299,9 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
 // ---------------------------------------------------------------------------
 export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
   const store = useDataStore();
-  const { userProfile } = useAuth();
+  const { userProfile, effectiveRole } = useAuth();
   const { success, warning, error } = useNotification();
+  const isCRO = baseRoleOf(effectiveRole) === 'sales';
   const [date, setDate] = useState(addDays(1));
   const [scheduledTime, setScheduledTime] = useState('');
   const [timeSlot, setTimeSlot] = useState<'morning' | 'afternoon' | 'evening'>('morning');
@@ -354,10 +355,6 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
         : lead.branches?.find((b) => b.id === addressChoice)?.address || addressChoice;
 
   const save = () => {
-    if (!teamLeaderId) {
-      warning('Assign a team leader', 'Select a team leader who will own the visit and follow-up.');
-      return;
-    }
     let updated: Lead | undefined;
     try {
       updated = store.scheduleLeadInspection(
@@ -366,9 +363,9 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
           date,
           scheduledTime: scheduledTime || undefined,
           timeSlot,
-          teamId: teamId || undefined,
-          teamLeaderId,
-          inspectorIds: [teamLeaderId],
+          teamId: isCRO ? undefined : (teamId || undefined),
+          teamLeaderId: isCRO ? undefined : (teamLeaderId || undefined),
+          inspectorIds: isCRO ? [] : (teamLeaderId ? [teamLeaderId] : []),
           instructions: instructions.trim() || undefined,
           meetingAddress: selectedMeetingAddress || undefined,
           meetingType,
@@ -379,7 +376,11 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
       return error('Could not schedule meeting / inspection', err instanceof Error ? err.message : String(err));
     }
     if (updated) {
-      success('Meeting / inspection scheduled', `${new Date(date).toLocaleDateString('en-GB')} (${timeSlot}). Assigned to team leader.`);
+      if (teamLeaderId) {
+        success('Meeting scheduled & assigned', `${new Date(date).toLocaleDateString('en-GB')} (${timeSlot}). Assigned to team leader.`);
+      } else {
+        success('Meeting scheduled', `${new Date(date).toLocaleDateString('en-GB')} (${timeSlot}). Pending team assignment by Operations Manager.`);
+      }
       onDone?.(updated);
     }
     onClose();
@@ -395,7 +396,7 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
       footer={
         <>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save}>Schedule & assign</button>
+          <button className="btn btn-primary" onClick={save}>{isCRO ? 'Schedule meeting' : teamLeaderId ? 'Schedule & assign' : 'Schedule (unassigned)'}</button>
         </>
       }
     >
@@ -438,26 +439,33 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
         </div>
       </div>
 
-      <div className="form-grid-2">
-        <div className="form-group">
-          <label className="form-label">Team</label>
-          <select className="form-select" value={teamId} onChange={(e) => pickTeam(e.target.value)}>
-            <option value="">No team specified</option>
-            {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+      {!isCRO && (
+        <div className="form-grid-2">
+          <div className="form-group">
+            <label className="form-label">Team</label>
+            <select className="form-select" value={teamId} onChange={(e) => pickTeam(e.target.value)}>
+              <option value="">No team specified</option>
+              {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Team Leader</label>
+            <select className="form-select" value={teamLeaderId} onChange={(e) => setTeamLeaderId(e.target.value)}>
+              <option value="">— Unassigned —</option>
+              {eligibleLeaders.map((u) => (
+                <option key={u.uid} value={u.uid}>
+                  {u.displayName} ({roleLabel(u.role)})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-        <div className="form-group">
-          <label className="form-label">Team Leader (responsible — submits the report)</label>
-          <select className="form-select" value={teamLeaderId} onChange={(e) => setTeamLeaderId(e.target.value)}>
-            <option value="">Select team leader…</option>
-            {eligibleLeaders.map((u) => (
-              <option key={u.uid} value={u.uid}>
-                {u.displayName} ({roleLabel(u.role)})
-              </option>
-            ))}
-          </select>
+      )}
+      {isCRO && (
+        <div className="form-hint" style={{ padding: '0.5rem 0.75rem', background: 'var(--ikpm-amber-50, #fffbeb)', border: '1px solid var(--ikpm-amber-200, #fde68a)', borderRadius: 6, marginBottom: '0.5rem' }}>
+          Operations Manager will assign a team leader after you schedule this meeting.
         </div>
-      </div>
+      )}
 
       <div className="form-group">
         <label className="form-label">Meeting location / address</label>

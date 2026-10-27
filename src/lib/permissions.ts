@@ -117,7 +117,7 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     name: 'CRO',
     basedOn: 'sales',
     isSystem: true,
-    defaultScope: 'own',
+    defaultScope: 'company',
     color: '#1A73E8',
     description: 'Lead generation and B2B proposal management. Proposals require a signed client document to be accepted.',
     modules: {
@@ -151,11 +151,12 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     name: 'Operation Person',
     basedOn: 'operations',
     isSystem: true,
-    defaultScope: 'team',
+    defaultScope: 'company',
     color: '#D97706',
-    description: 'Karachi field team leader. Executes scheduled jobs, leads 5 technicians, submits reports to Operations Manager.',
+    description: 'Karachi dispatcher. Sees all CRO meetings, assigns team leaders, creates contracts and schedules jobs.',
     modules: {
       ...all('edit', ['dashboard', 'inspections', 'jobs', 'pco', 'files', 'complaints']),
+      crm: 'view',
       calendar: 'view',
       customers: 'view',
       contracts: 'view',

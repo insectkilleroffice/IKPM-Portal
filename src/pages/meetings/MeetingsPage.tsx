@@ -1,18 +1,18 @@
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ClipboardCheck, Search, MapPin, Phone, MessageCircle, CalendarClock } from 'lucide-react';
+import { ClipboardCheck, Search, MapPin, Phone, MessageCircle, CalendarClock, UserCog } from 'lucide-react';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { EmptyState } from '../../components/common/EmptyState';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { MeetingReportModal, ScheduleInspectionModal, ScheduleSiteInspectionModal } from '../../features/leads/LeadActionModals';
-import { canAccessModule, canEditModule } from '../../lib/permissions';
+import { canAccessModule, canEditModule, baseRoleOf } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { primaryContact } from '../../lib/leadWorkflow';
 import { toWhatsAppNumber } from '../../services/outreachService';
 import type { Lead } from '../../types/crm';
 
-type Tab = 'upcoming' | 'today' | 'done';
+type Tab = 'unassigned' | 'upcoming' | 'today' | 'done';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -33,6 +33,7 @@ export const MeetingsPage: React.FC = () => {
   const [scheduleLead, setScheduleLead] = useState<Lead | null>(null);
   const [inspectLead, setInspectLead] = useState<Lead | null>(null);
   const canRecord = canEditModule(effectiveRole, 'pco') || canEditModule(effectiveRole, 'inspections');
+  const canAssign = baseRoleOf(effectiveRole) === 'team_leader' || baseRoleOf(effectiveRole) === 'operations' || baseRoleOf(effectiveRole) === 'super_admin' || baseRoleOf(effectiveRole) === 'admin';
   const canOpenLeads = canAccessModule(effectiveRole, 'crm');
 
   const all = store.getLeads().filter((l) => l.inspection && l.inspection.status !== 'cancelled');
@@ -44,7 +45,11 @@ export const MeetingsPage: React.FC = () => {
       .filter((l) => !q || [l.title, l.city, l.area, l.inspection!.teamName, l.inspection!.assignedTeamLeaderName, l.inspection!.inspectorName].filter(Boolean).join(' ').toLowerCase().includes(q));
   }, [all, mine, query, userProfile?.uid]);
 
+  const needsAssignment = (l: (typeof filtered)[0]) =>
+    !l.inspection!.assignedTeamLeaderId || !l.inspection!.assignedTeamLeaderName;
+
   const byTab = {
+    unassigned: filtered.filter((l) => l.inspection!.status === 'scheduled' && needsAssignment(l)),
     today: filtered.filter((l) => l.inspection!.status === 'scheduled' && l.inspection!.scheduledDate <= today()),
     upcoming: filtered.filter((l) => l.inspection!.status === 'scheduled'),
     done: filtered.filter((l) => l.inspection!.status === 'completed'),
@@ -54,6 +59,7 @@ export const MeetingsPage: React.FC = () => {
       ? (b.inspection!.completedDate || '').localeCompare(a.inspection!.completedDate || '')
       : a.inspection!.scheduledDate.localeCompare(b.inspection!.scheduledDate)
   );
+  const isUnassignedTab = tab === 'unassigned';
 
   return (
     <div className="animate-fade-in">
@@ -66,8 +72,15 @@ export const MeetingsPage: React.FC = () => {
       </div>
 
       <div className="tab-bar" role="tablist">
+        <button className={`tab-btn ${tab === 'unassigned' ? 'active' : ''}`} onClick={() => setTab('unassigned')} style={{ position: 'relative' }}>
+          <UserCog size={16} /> Unassigned
+          {byTab.unassigned.length > 0 && (
+            <span className="tab-count" style={{ background: 'var(--ikpm-amber-500, #f59e0b)', color: '#fff' }}>{byTab.unassigned.length}</span>
+          )}
+          {byTab.unassigned.length === 0 && <span className="tab-count">{byTab.unassigned.length}</span>}
+        </button>
         <button className={`tab-btn ${tab === 'today' ? 'active' : ''}`} onClick={() => setTab('today')}>
-          <CalendarClock size={16} /> Today & overdue <span className="tab-count">{byTab.today.length}</span>
+          <CalendarClock size={16} /> Today &amp; overdue <span className="tab-count">{byTab.today.length}</span>
         </button>
         <button className={`tab-btn ${tab === 'upcoming' ? 'active' : ''}`} onClick={() => setTab('upcoming')}>
           Scheduled <span className="tab-count">{byTab.upcoming.length}</span>
@@ -89,9 +102,9 @@ export const MeetingsPage: React.FC = () => {
 
       {rows.length === 0 ? (
         <EmptyState
-          icon={CalendarClock}
-          title={tab === 'done' ? 'No completed meetings' : 'No meetings scheduled'}
-          description={canOpenLeads ? 'Meetings are scheduled from the Leads pipeline.' : 'Meetings assigned to you will appear here.'}
+          icon={tab === 'unassigned' ? UserCog : CalendarClock}
+          title={tab === 'unassigned' ? 'No unassigned meetings' : tab === 'done' ? 'No completed meetings' : 'No meetings scheduled'}
+          description={tab === 'unassigned' ? 'All scheduled meetings have a team leader assigned.' : canOpenLeads ? 'Meetings are scheduled from the Leads pipeline.' : 'Meetings assigned to you will appear here.'}
         />
       ) : (
         <div className="table-container">
@@ -139,8 +152,14 @@ export const MeetingsPage: React.FC = () => {
                       ) : '—'}
                     </td>
                     <td className="cell-sub">
-                      {i.teamName && <div className="cell-title">{i.teamName}</div>}
-                      {i.assignedTeamLeaderName || i.inspectorName || '—'}
+                      {!needsAssignment(l) ? (
+                        <>
+                          {i.teamName && <div className="cell-title">{i.teamName}</div>}
+                          {i.assignedTeamLeaderName || i.inspectorName}
+                        </>
+                      ) : (
+                        <span className="badge-status badge-amber" style={{ fontSize: '0.75rem', fontWeight: 600 }}>Unassigned</span>
+                      )}
                     </td>
                     <td className="cell-sub" style={{ maxWidth: 280 }}>
                       {i.status === 'completed'
@@ -149,7 +168,12 @@ export const MeetingsPage: React.FC = () => {
                     </td>
                     <td>
                       <div className="cell-actions" style={{ flexWrap: 'wrap', gap: '0.35rem' }}>
-                        {canRecord && i.status === 'scheduled' && (
+                        {canAssign && i.status === 'scheduled' && needsAssignment(l) && (
+                          <button className="btn btn-sm btn-primary" onClick={() => setScheduleLead(l)}>
+                            <UserCog size={14} /> Assign team
+                          </button>
+                        )}
+                        {canRecord && i.status === 'scheduled' && !needsAssignment(l) && (
                           <button className="btn btn-sm btn-secondary" onClick={() => setScheduleLead(l)}>
                             <CalendarClock size={14} /> Reschedule
                           </button>

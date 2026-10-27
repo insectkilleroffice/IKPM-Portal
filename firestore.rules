@@ -54,7 +54,7 @@
             'contracts':'edit','files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
           : r == 'operations'
           ? {'dashboard':'edit','inspections':'edit','calendar':'edit','jobs':'edit','pco':'edit',
-            'files':'edit','complaints':'edit','customers':'view','contracts':'view','documents':'view','company_files':'view'}
+            'files':'edit','complaints':'edit','crm':'view','customers':'view','contracts':'view','documents':'view','company_files':'view'}
           : r == 'finance'
           ? {'dashboard':'edit','invoices':'edit','tax':'edit','customers':'view','contracts':'view',
             'files':'view','jobs':'view','complaints':'view','approvals':'view'}

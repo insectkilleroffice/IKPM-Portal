@@ -48,11 +48,18 @@ export function setPreferredEmailVia(v: EmailVia) {
 /** Link-based modes open a new tab, which must be opened synchronously inside the click handler. */
 export const emailOpensWindow = (v: EmailVia) => v === 'gmail' || v === 'outlook';
 
+export interface EmailRecipient {
+  name: string;
+  email: string;
+}
+
 export interface OutreachRequest {
   channels: OutreachChannel[];
   recipientName: string;
   phone?: string;
   email?: string;
+  /** Multiple email recipients. When set, overrides `email` for the email channel. */
+  emailRecipients?: EmailRecipient[];
   subject: string;
   message: string;
   documents: PortalDocument[];
@@ -168,7 +175,9 @@ function openIn(win: Window | null | undefined, url: string) {
 }
 
 function composeUrl(via: EmailVia, req: OutreachRequest, body: string): string {
-  const to = req.email || '';
+  // Compose-mode: join all email recipients (comma-separated is supported by Gmail, Outlook, mailto)
+  const recipients = req.emailRecipients?.length ? req.emailRecipients : req.email ? [{ email: req.email, name: req.recipientName }] : [];
+  const to = recipients.map((r) => r.email).join(',');
   if (via === 'gmail') {
     // authuser picks the matching signed-in Google account, so the draft opens in the sender's own mailbox
     return `https://mail.google.com/mail/?authuser=${encodeURIComponent(req.sender.businessEmail)}&view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(req.subject)}&body=${encodeURIComponent(body)}`;
@@ -182,17 +191,30 @@ function composeUrl(via: EmailVia, req: OutreachRequest, body: string): string {
 async function sendEmail(req: OutreachRequest, attachments: Attachment[]): Promise<OutreachResult> {
   const body = req.noLinksInBody ? req.message : withLinks(req.message, attachments);
   if (req.emailVia === 'api' && integrations.outreachApi) {
-    const data = await callApi('send-email', {
-      to: req.email,
-      subject: req.subject,
-      text: body,
-      attachments: attachments.map((a) => ({ filename: a.fileName, path: a.url })),
-    });
+    const recipients = req.emailRecipients?.length ? req.emailRecipients : req.email ? [{ email: req.email, name: req.recipientName }] : [];
+    // Send to each recipient separately via the API
+    const errors: string[] = [];
+    for (const r of recipients) {
+      try {
+        await callApi('send-email', {
+          to: r.email,
+          subject: req.subject,
+          text: body,
+          attachments: attachments.map((a) => ({ filename: a.fileName, path: a.url })),
+        });
+      } catch (err) {
+        errors.push(`${r.email}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (errors.length > 0 && errors.length === recipients.length) throw new Error(errors.join('; '));
+    const data = { sentAsSelf: true };
     return {
       channel: 'email',
       mode: 'api',
       ok: true,
-      note: data.sentAsSelf === false ? `Sent as "${req.sender.name} via IKPM". Replies go to ${req.sender.businessEmail}.` : undefined,
+      note: errors.length > 0
+        ? `Sent to ${recipients.length - errors.length}/${recipients.length} recipients. Failed: ${errors.join(', ')}`
+        : data.sentAsSelf === false ? `Sent as "${req.sender.name} via IKPM". Replies go to ${req.sender.businessEmail}.` : undefined,
     };
   }
   const via = req.emailVia === 'api' ? 'gmail' : req.emailVia;
@@ -222,7 +244,7 @@ export async function sendOutreach(req: OutreachRequest): Promise<OutreachResult
       status: !result.ok ? 'failed' : result.mode === 'api' ? 'sent' : 'opened',
       error: result.error,
       recipientName: req.recipientName,
-      recipient: channel === 'whatsapp' ? req.phone || '' : req.email || '',
+      recipient: channel === 'whatsapp' ? req.phone || '' : (req.emailRecipients?.length ? req.emailRecipients.map((r) => r.email).join(', ') : req.email || ''),
       senderEmail: channel === 'email' ? req.sender.businessEmail : undefined,
       subject: channel === 'email' ? req.subject : undefined,
       message: req.message,

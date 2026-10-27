@@ -61,6 +61,7 @@ export interface LeadContact {
   name: string;
   designation?: string; // e.g. Operations Manager, CMO, Admin Officer
   phone: string;
+  alternatePhone?: string;
   email?: string;
   isPrimary: boolean;
 }
@@ -175,6 +176,7 @@ export interface RiskFinding {
   risk: string;
   recommendation: string;
 }
+
 
 export interface InspectionAssessment {
   id: string;

@@ -5,6 +5,7 @@ import { useDataStore } from '../../hooks/useDataStore';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import { ProposalBuilderModal, type ProposalPrefill } from '../../features/proposals/ProposalBuilderModal';
 import { ProposalDetailModal } from '../../features/proposals/ProposalDetailModal';
+import { ReviseProposalModal } from '../../features/proposals/ReviseProposalModal';
 import { fileProposalPdf } from '../../features/proposals/proposalFiles';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -47,6 +48,7 @@ export const ProposalsListPage: React.FC = () => {
   const [showBuilder, setShowBuilder] = useState(searchParams.get('action') === 'new_proposal');
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [sendTarget, setSendTarget] = useState<Proposal | null>(null);
+  const [reviseTarget, setReviseTarget] = useState<Proposal | null>(null);
   const [assignTarget, setAssignTarget] = useState<Proposal | null>(null);
   const [assignLeaderId, setAssignLeaderId] = useState('');
   const [assignStartDate, setAssignStartDate] = useState(new Date().toISOString().split('T')[0]);
@@ -96,34 +98,7 @@ export const ProposalsListPage: React.FC = () => {
     }
   };
 
-  const reviseProposal = (p: Proposal) => {
-    const now = new Date().toISOString();
-    const id = generatePermanentId('P', proposals.length + 1);
-    const revised: Proposal = {
-      ...p,
-      id,
-      revisionNumber: p.revisionNumber + 1,
-      parentProposalId: p.parentProposalId || p.id,
-      status: 'draft',
-      approval: undefined,
-      sentDate: undefined,
-      acceptedDate: undefined,
-      pdfUrl: undefined,
-      revisionsHistory: [
-        ...p.revisionsHistory,
-        { revisionNumber: p.revisionNumber + 1, timestamp: now, changedBy: userProfile?.email || 'admin', changedByName: userProfile?.displayName || 'Staff', changeReason: 'Revision', subtotal: p.subtotal, discountPercent: p.discountPercent, totalAmount: p.totalAmount },
-      ],
-      createdAt: now,
-      updatedAt: now,
-    };
-    try {
-      dataService.saveProposal(revised, userProfile?.email);
-      success('Revision created', `${id} (R${revised.revisionNumber}) is a draft. Open it to adjust pricing or scope before sending.`);
-      setSelectedId(id);
-    } catch (err) {
-      error('Could not create revision', err instanceof Error ? err.message : String(err));
-    }
-  };
+  const reviseProposal = (p: Proposal) => setReviseTarget(p);
 
   const markSent = (p: Proposal) => {
     if (p.status === 'sent_to_client' || p.status === 'negotiation') return;
@@ -329,6 +304,13 @@ export const ProposalsListPage: React.FC = () => {
       </div>
 
       {showBuilder && <ProposalBuilderModal isOpen onClose={() => setShowBuilder(false)} prefill={prefill} onCreated={(p) => setSelectedId(p.id)} />}
+      {reviseTarget && (
+        <ReviseProposalModal
+          proposal={reviseTarget}
+          onClose={() => setReviseTarget(null)}
+          onRevised={(revised) => { setReviseTarget(null); setSelectedId(revised.id); }}
+        />
+      )}
 
       {selected && (
         <ProposalDetailModal

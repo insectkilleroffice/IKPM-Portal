@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Send, MessageCircle, Mail, Package, FileText, CheckSquare, Square, Zap, ExternalLink, Download } from 'lucide-react';
+import { Send, MessageCircle, Mail, Package, FileText, CheckSquare, Square, Zap, ExternalLink, Download, Plus, X, Users, UserCheck } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -18,9 +18,11 @@ import {
   setPreferredEmailVia,
   toWhatsAppNumber,
   type Attachment,
+  type EmailRecipient,
   type EmailVia,
   type OutreachResult,
 } from '../../services/outreachService';
+import { dataService } from '../../services/dataService';
 import { COMPANY_DOC_CATEGORIES, type OutreachChannel, type OutreachLog, type PortalDocument } from '../../types/document';
 import type { Proposal } from '../../types/proposal';
 import { expiryState, isShareable } from '../documents/documentUtils';
@@ -65,7 +67,9 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
 
   const [name, setName] = useState(recipient.name);
   const [phone, setPhone] = useState(recipient.phone || '');
-  const [email, setEmail] = useState(recipient.email || '');
+  const [emailRecipients, setEmailRecipients] = useState<EmailRecipient[]>([]);
+  const [manualEmailInput, setManualEmailInput] = useState('');
+  const [manualNameInput, setManualNameInput] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [activePack, setActivePack] = useState<string | null>(null);
   const [attachProposal, setAttachProposal] = useState(Boolean(proposal));
@@ -81,7 +85,11 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     if (!isOpen) return;
     setName(recipient.name);
     setPhone(recipient.phone || '');
-    setEmail(recipient.email || '');
+    // Seed email recipients from the passed recipient
+    const initial: EmailRecipient[] = isValidEmail(recipient.email) ? [{ name: recipient.name, email: recipient.email! }] : [];
+    setEmailRecipients(initial);
+    setManualEmailInput('');
+    setManualNameInput('');
     setAttachProposal(Boolean(proposal));
     const initialChannels = new Set<OutreachChannel>();
     if (recipient.phone) initialChannels.add('whatsapp');
@@ -138,12 +146,39 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
   const selectedDocs = sendable.filter((d) => selected.has(d.id));
   const localOnly = selectedDocs.filter((d) => d.file.storage === 'local');
   const phoneValid = toWhatsAppNumber(phone).length === 12;
-  const emailValid = isValidEmail(email);
+  const hasValidEmail = emailRecipients.length > 0 && emailRecipients.every((r) => isValidEmail(r.email));
+
+  // Collect company / lead contacts available for quick-pick
+  const availableContacts: EmailRecipient[] = (() => {
+    const contacts: EmailRecipient[] = [];
+    if (proposal?.customerId) {
+      if (proposal.customerType === 'company') {
+        const co = dataService.getCompanyById(proposal.customerId);
+        if (co) {
+          [co.primaryContact, ...(co.contacts?.filter((c) => !c.isPrimary) ?? [])].forEach((c) => {
+            if (isValidEmail(c.email)) contacts.push({ name: c.fullName, email: c.email! });
+          });
+        }
+      } else {
+        const cl = dataService.getClientById(proposal.customerId);
+        if (cl && isValidEmail(cl.email)) contacts.push({ name: cl.fullName, email: cl.email! });
+      }
+    }
+    if (proposal?.leadId) {
+      const lead = dataService.getLeadById(proposal.leadId);
+      lead?.contacts?.forEach((c) => {
+        if (isValidEmail(c.email) && !contacts.some((x) => x.email === c.email)) {
+          contacts.push({ name: c.name, email: c.email! });
+        }
+      });
+    }
+    return contacts;
+  })();
 
   const problems: string[] = [];
   if (channels.size === 0) problems.push('Choose WhatsApp and/or Email.');
   if (channels.has('whatsapp') && !phoneValid) problems.push('Enter a valid mobile number for WhatsApp (03XX XXXXXXX).');
-  if (channels.has('email') && !emailValid) problems.push('Enter a valid email address.');
+  if (channels.has('email') && !hasValidEmail) problems.push('Add at least one valid email address.');
   if (selectedDocs.length === 0 && !attachProposal) problems.push('Select at least one document.');
   else if (!integrations.cloudinary && localOnly.length === selectedDocs.length && !(attachProposal && proposal)) {
     problems.push('These files are stored on this device only, so there are no links to send. Configure Cloudinary first.');
@@ -189,6 +224,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     // Open link tabs synchronously so the browser doesn't block them after async work
     const linkWindow = channels.has('whatsapp') && !integrations.outreachApi ? window.open('', '_blank') : null;
     const emailWindow = channels.has('email') && emailOpensWindow(emailVia) ? window.open('', '_blank') : null;
+    const primaryEmail = emailRecipients[0]?.email || '';
     setPreferredEmailVia(emailVia);
 
     try {
@@ -258,7 +294,8 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
         channels: (['whatsapp', 'email'] as OutreachChannel[]).filter((c) => channels.has(c)),
         recipientName: name,
         phone,
-        email,
+        email: primaryEmail,
+        emailRecipients: emailRecipients.length > 0 ? emailRecipients : undefined,
         subject,
         message,
         documents: selectedDocs,
@@ -335,27 +372,126 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     >
       {/* 1. Recipient */}
       <section className="flow-step">
-        <div className="flow-step-title"><span className="flow-step-num">1</span> Recipient & channel</div>
-        <div className="form-grid-3">
-          <div className="form-group">
-            <label className="form-label">Contact name</label>
+        <div className="flow-step-title"><span className="flow-step-num">1</span> Recipient &amp; channel</div>
+        <div className="form-grid-2" style={{ marginBottom: '0.75rem' }}>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Contact name (WhatsApp)</label>
             <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
-          <div className="form-group">
+          <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">WhatsApp number</label>
             <input className="form-input" placeholder="03001234567" value={phone} onChange={(e) => setPhone(e.target.value)} />
           </div>
-          <div className="form-group">
-            <label className="form-label">Email</label>
-            <input className="form-input" type="email" placeholder="procurement@client.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </div>
+
+        {/* Email recipients */}
+        <div className="form-group" style={{ marginBottom: '0.5rem' }}>
+          <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Mail size={13} /> Email recipients
+            {emailRecipients.length > 0 && (
+              <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.75rem' }}>({emailRecipients.length})</span>
+            )}
+          </label>
+
+          {/* Current recipients as removable chips */}
+          {emailRecipients.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginBottom: '0.5rem' }}>
+              {emailRecipients.map((r, i) => (
+                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--ikpm-emerald-50, #f0fdf4)', border: '1px solid var(--ikpm-emerald-200, #a7f3d0)', borderRadius: 99, padding: '3px 10px 3px 8px', fontSize: '0.78rem', color: 'var(--ikpm-emerald-800, #065f46)' }}>
+                  <UserCheck size={12} />
+                  <span>{r.name ? `${r.name} · ${r.email}` : r.email}</span>
+                  <button type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1, color: 'var(--ikpm-rose-500)', marginLeft: 2 }}
+                    onClick={() => setEmailRecipients((prev) => prev.filter((_, idx) => idx !== i))}>
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Quick-pick from company / lead contacts */}
+          {availableContacts.length > 0 && (
+            <div style={{ marginBottom: '0.5rem' }}>
+              <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '0.3rem', display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Users size={11} /> Company contacts
+                <button type="button" className="chip" style={{ fontSize: '0.68rem', padding: '1px 8px', marginLeft: 8 }}
+                  onClick={() => {
+                    const toAdd = availableContacts.filter((c) => !emailRecipients.some((r) => r.email === c.email));
+                    if (toAdd.length) setEmailRecipients((prev) => [...prev, ...toAdd]);
+                    setChannels((prev) => { const n = new Set(prev); n.add('email'); return n; });
+                  }}>
+                  Add all
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                {availableContacts.map((c, i) => {
+                  const already = emailRecipients.some((r) => r.email === c.email);
+                  return (
+                    <button key={i} type="button"
+                      className={`chip ${already ? 'chip-on' : ''}`}
+                      style={{ fontSize: '0.75rem' }}
+                      onClick={() => {
+                        if (already) {
+                          setEmailRecipients((prev) => prev.filter((r) => r.email !== c.email));
+                        } else {
+                          setEmailRecipients((prev) => [...prev, c]);
+                          setChannels((prev) => { const n = new Set(prev); n.add('email'); return n; });
+                        }
+                      }}>
+                      {already ? <X size={11} /> : <Plus size={11} />}
+                      {c.name} &middot; {c.email}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Manual add */}
+          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'flex-end' }}>
+            <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+              <label className="form-label" style={{ fontSize: '0.73rem' }}>Name (optional)</label>
+              <input className="form-input" placeholder="e.g. Ahmed Khan" value={manualNameInput} onChange={(e) => setManualNameInput(e.target.value)} />
+            </div>
+            <div className="form-group" style={{ flex: 2, marginBottom: 0 }}>
+              <label className="form-label" style={{ fontSize: '0.73rem' }}>Email address</label>
+              <input className="form-input" type="email" placeholder="procurement@client.com" value={manualEmailInput}
+                onChange={(e) => setManualEmailInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (isValidEmail(manualEmailInput) && !emailRecipients.some((r) => r.email === manualEmailInput)) {
+                      setEmailRecipients((prev) => [...prev, { name: manualNameInput.trim(), email: manualEmailInput.trim() }]);
+                      setManualEmailInput('');
+                      setManualNameInput('');
+                      setChannels((prev) => { const n = new Set(prev); n.add('email'); return n; });
+                    }
+                  }
+                }}
+              />
+            </div>
+            <button type="button" className="btn btn-sm btn-secondary" style={{ marginBottom: 0, flexShrink: 0 }}
+              disabled={!isValidEmail(manualEmailInput) || emailRecipients.some((r) => r.email === manualEmailInput)}
+              onClick={() => {
+                if (isValidEmail(manualEmailInput) && !emailRecipients.some((r) => r.email === manualEmailInput)) {
+                  setEmailRecipients((prev) => [...prev, { name: manualNameInput.trim(), email: manualEmailInput.trim() }]);
+                  setManualEmailInput('');
+                  setManualNameInput('');
+                  setChannels((prev) => { const n = new Set(prev); n.add('email'); return n; });
+                }
+              }}>
+              <Plus size={13} /> Add
+            </button>
           </div>
         </div>
+
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button type="button" className={`chip ${channels.has('whatsapp') ? 'chip-on whatsapp' : ''}`} onClick={() => toggleChannel('whatsapp')}>
             <MessageCircle size={14} /> WhatsApp
           </button>
-          <button type="button" className={`chip ${channels.has('email') ? 'chip-on' : ''}`} onClick={() => toggleChannel('email')}>
-            <Mail size={14} /> Email
+          <button type="button" className={`chip ${channels.has('email') ? 'chip-on' : ''}`} onClick={() => toggleChannel('email')}
+            title={emailRecipients.length === 0 ? 'Add at least one email address above' : undefined}>
+            <Mail size={14} /> Email {emailRecipients.length > 0 && `(${emailRecipients.length})`}
           </button>
         </div>
       </section>

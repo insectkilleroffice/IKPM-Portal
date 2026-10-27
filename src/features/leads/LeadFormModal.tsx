@@ -108,6 +108,7 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
   else if (!validPhone(primary.phone)) problems.push('The primary contact\u2019s phone number looks incomplete.');
   form.contacts.forEach((c, i) => {
     if (!c.isPrimary && (c.name || c.phone) && c.phone && !validPhone(c.phone)) problems.push(`Contact ${i + 1}: phone number looks incomplete.`);
+    if (c.alternatePhone && !validPhone(c.alternatePhone)) problems.push(`Contact ${i + 1}: alternate phone number looks incomplete.`);
     if (!validEmail(c.email)) problems.push(`Contact ${i + 1}: email is not valid.`);
   });
   if (!validEmail(form.companyEmail)) problems.push('Company email is not valid.');
@@ -119,6 +120,7 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
       ...c,
       name: c.name.trim(),
       phone: c.phone.trim(),
+      alternatePhone: c.alternatePhone?.trim() || undefined,
       email: c.email?.trim() || undefined,
       designation: c.designation?.trim() || undefined,
     }));
@@ -280,6 +282,10 @@ export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved 
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Mobile / phone {c.isPrimary && <span className="required">*</span>}</label>
                 <input className="form-input" value={c.phone} onChange={(e) => setContact(c.id, { phone: e.target.value })} placeholder="03XX XXXXXXX" inputMode="tel" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Alternate phone</label>
+                <input className="form-input" value={c.alternatePhone || ''} onChange={(e) => setContact(c.id, { alternatePhone: e.target.value || undefined })} placeholder="03XX XXXXXXX" inputMode="tel" />
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">Email</label>
