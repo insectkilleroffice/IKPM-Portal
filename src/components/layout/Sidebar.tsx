@@ -2,11 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
-  Users2,
-  Building2,
   CalendarDays,
   FileSpreadsheet,
-  FileSignature,
   Truck,
   Receipt,
   Settings,
@@ -15,7 +12,6 @@ import {
   UserPlus,
   CalendarCheck,
   SearchCheck,
-  MessageSquareWarning,
   ShieldCheck,
   FolderOpen,
   type LucideIcon,
@@ -43,13 +39,9 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
   {
     title: 'Sales & pipeline',
     items: [
-      { to: '/customers', label: 'Customer Accounts', icon: Building2, module: 'customers' },
-      { to: '/crm', label: 'Leads Pipeline', icon: Users2, module: 'crm' },
       { to: '/meetings', label: 'Meetings', icon: CalendarCheck, module: 'pco' },
       { to: '/inspections', label: 'Site Inspections', icon: SearchCheck, module: 'inspections' },
       { to: '/proposals', label: 'Proposals', icon: FileSpreadsheet, module: 'proposals' },
-      { to: '/contracts', label: 'Contracts & AMCs', icon: FileSignature, module: 'contracts' },
-      { to: '/complaints', label: 'Complaints', icon: MessageSquareWarning, module: 'complaints' },
     ],
   },
   {
@@ -82,9 +74,6 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
 ];
 
 const QUICK_CREATE: { label: string; to: string; module: ModuleKey; icon: LucideIcon }[] = [
-  { label: 'New lead', to: '/crm?action=new_lead', module: 'crm', icon: Users2 },
-  { label: 'New company account', to: '/customers?action=new_company', module: 'customers', icon: Building2 },
-  { label: 'New individual client', to: '/customers?action=new_individual', module: 'customers', icon: UsersRound },
   { label: 'New proposal', to: '/proposals?action=new_proposal', module: 'proposals', icon: FileSpreadsheet },
   { label: 'Schedule service job', to: '/operations/jobs?action=new_job', module: 'jobs', icon: Truck },
   { label: 'Add staff member', to: '/admin/team?action=new_user', module: 'team', icon: UserPlus },
