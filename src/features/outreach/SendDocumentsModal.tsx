@@ -155,7 +155,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
       if (proposal.customerType === 'company') {
         const co = dataService.getCompanyById(proposal.customerId);
         if (co) {
-          [co.primaryContact, ...(co.contacts?.filter((c) => !c.isPrimary) ?? [])].forEach((c) => {
+          [co.primaryContact, ...co.additionalContacts.filter((c) => !c.isPrimary)].forEach((c) => {
             if (isValidEmail(c.email)) contacts.push({ name: c.fullName, email: c.email! });
           });
         }
