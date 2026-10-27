@@ -47,14 +47,14 @@
             'jobs':'edit','pco':'edit','complaints':'edit','invoices':'view','settings':'view','approvals':'view'}
           : r == 'sales'
           ? {'dashboard':'edit','customers':'edit','crm':'edit','proposals':'edit','contracts':'edit',
-            'files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
+            'pco':'edit','files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
           : r == 'operations'
           ? {'dashboard':'edit','customers':'edit','inspections':'edit','contracts':'edit','calendar':'edit',
-            'jobs':'edit','pco':'edit','files':'edit','complaints':'edit',
-            'crm':'view','proposals':'view','documents':'view','company_files':'view'}
+            'jobs':'edit','pco':'view','files':'edit','complaints':'edit',
+            'proposals':'view','documents':'view','company_files':'view'}
           : r == 'team_leader'
-          ? {'dashboard':'edit','inspections':'edit','jobs':'edit','pco':'edit','files':'edit','complaints':'edit',
-            'crm':'view','customers':'view','contracts':'view','calendar':'view','company_files':'view'}
+          ? {'dashboard':'edit','inspections':'edit','jobs':'edit','pco':'view','files':'edit','complaints':'edit',
+            'customers':'view','contracts':'view','calendar':'view','company_files':'view'}
           : r == 'technician'
           ? {'dashboard':'view','jobs':'view','pco':'edit'}
           : {};
@@ -273,15 +273,18 @@
       }
 
       match /leads/{id} {
-        allow read: if readMod('crm') || (canView('inspections') && assignedInspector());
+        // crm readers, inspectors on the lead, and pco viewers (operations) may read leads.
+        allow read: if readMod('crm')
+          || (canView('inspections') && assignedInspector())
+          || (canView('pco') && inScope(resource.data));
         allow create: if createMod('crm');
-        // Assigned inspectors may record findings, but not reassign the lead or change its contacts
-        // Operation coordinators (crm: view + inspections: edit) may update inspection/team assignment fields only
+        // Assigned inspectors may record findings, but not reassign the lead or change its contacts.
+        // Operation coordinators (pco: view + inspections: edit) may update meeting/team-assignment fields only.
         allow update: if updateMod('crm')
           || (canEdit('inspections') && assignedInspector()
               && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
                 ['ownerUid', 'teamId', 'inspectorIds', 'contacts', 'companyName', 'title', 'customerType', 'existingCustomerId']))
-          || (canView('crm') && canEdit('inspections') && inScope(resource.data)
+          || (canView('pco') && canEdit('inspections') && inScope(resource.data)
               && request.resource.data.diff(resource.data).affectedKeys()
                  .hasOnly(['inspection', 'inspectorIds', 'assignedTeamLeaderId', 'assignedTeamLeaderName', 'stage', 'activities', 'updatedAt']));
         allow delete: if isSuperAdmin();

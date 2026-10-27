@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Search, Download, Send, FileSignature, RotateCw, CheckCircle2, CalendarClock, Paperclip } from 'lucide-react';
+import { Plus, Search, Download, Send, FileSignature, RotateCw, CheckCircle2, CalendarClock, Paperclip, Calendar, Truck } from 'lucide-react';
 import { useDataStore } from '../../hooks/useDataStore';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import { ProposalBuilderModal, type ProposalPrefill } from '../../features/proposals/ProposalBuilderModal';
@@ -296,11 +296,29 @@ export const ProposalsListPage: React.FC = () => {
                 <td><StatusBadge status={p.status} /></td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                    {p.status === 'accepted' && (
-                      <button className="btn btn-sm btn-primary" title="Create the contract from this proposal" onClick={() => navigate(`/contracts?action=new_contract&fromProposal=${p.id}`)}>
-                        <FileSignature size={12} /> <span>Contract</span>
-                      </button>
-                    )}
+                    {p.status === 'accepted' && (() => {
+                      const linked = contracts.find((c) => c.proposalId === p.id && c.status !== 'cancelled');
+                      if (!linked) {
+                        return (
+                          <button className="btn btn-sm btn-primary" title="Create the contract from this proposal" onClick={() => navigate(`/contracts?action=new_contract&fromProposal=${p.id}`)}>
+                            <FileSignature size={12} /> <span>Contract</span>
+                          </button>
+                        );
+                      }
+                      const hasJobs = (linked.totalJobsScheduled || 0) > 0;
+                      if (!hasJobs) {
+                        return (
+                          <button className="btn btn-sm btn-primary" title={`Generate visit schedule for ${linked.id}`} onClick={() => navigate('/contracts')}>
+                            <Calendar size={12} /> <span>Generate Schedule</span>
+                          </button>
+                        );
+                      }
+                      return (
+                        <button className="btn btn-sm btn-outline-emerald" title={`${linked.totalJobsScheduled} jobs scheduled — view in Operations`} onClick={() => navigate('/operations/jobs')}>
+                          <Truck size={12} /> <span>Jobs ({linked.totalJobsScheduled})</span>
+                        </button>
+                      );
+                    })()}
                     {['sent_to_client', 'declined', 'rejected', 'expired', 'accepted', 'negotiation'].includes(p.status) && (
                       <button className="btn btn-sm btn-secondary" title="Create a revised version of this proposal" onClick={() => reviseProposal(p)}>
                         <RotateCw size={12} /> <span>Revise</span>

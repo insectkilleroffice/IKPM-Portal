@@ -27,12 +27,16 @@ export const MeetingsPage: React.FC = () => {
   const store = useDataStore();
   const { userProfile, effectiveRole } = useAuth();
   const [tab, setTab] = useState<Tab>('upcoming');
-  const [mine, setMine] = useState(!canAccessModule(effectiveRole, 'crm'));
+  // Operations role has no CRO (crm) access but needs to see all meetings to assign team leaders.
+  const [mine, setMine] = useState(!canAccessModule(effectiveRole, 'crm') && baseRoleOf(effectiveRole) !== 'operations');
   const [query, setQuery] = useState('');
   const [reportLead, setReportLead] = useState<Lead | null>(null);
   const [scheduleLead, setScheduleLead] = useState<Lead | null>(null);
   const [inspectLead, setInspectLead] = useState<Lead | null>(null);
   const canRecord = canEditModule(effectiveRole, 'pco') || canEditModule(effectiveRole, 'inspections');
+  // Rescheduling and editing submitted reports is restricted to ops/admin/CRO.
+  // Team leaders may only submit a new report; the operations coordinator handles the calendar.
+  const canReschedule = canEditModule(effectiveRole, 'crm') || ['operations', 'admin', 'super_admin'].includes(baseRoleOf(effectiveRole) ?? '');
   const canAssign = baseRoleOf(effectiveRole) === 'team_leader' || baseRoleOf(effectiveRole) === 'operations' || baseRoleOf(effectiveRole) === 'super_admin' || baseRoleOf(effectiveRole) === 'admin';
   const canOpenLeads = canAccessModule(effectiveRole, 'crm');
 
@@ -95,7 +99,7 @@ export const MeetingsPage: React.FC = () => {
           <Search size={16} color="var(--text-muted)" />
           <input placeholder="Search company, city, team…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
-        {canOpenLeads && (
+        {(canOpenLeads || canAccessModule(effectiveRole, 'pco')) && (
           <button type="button" className={`chip ${mine ? 'chip-on' : ''}`} onClick={() => setMine((v) => !v)}>Assigned to me</button>
         )}
       </div>
@@ -173,12 +177,12 @@ export const MeetingsPage: React.FC = () => {
                             <UserCog size={14} /> Assign team
                           </button>
                         )}
-                        {canRecord && i.status === 'scheduled' && !needsAssignment(l) && (
+                        {canReschedule && i.status === 'scheduled' && !needsAssignment(l) && (
                           <button className="btn btn-sm btn-secondary" onClick={() => setScheduleLead(l)}>
                             <CalendarClock size={14} /> Reschedule
                           </button>
                         )}
-                        {canRecord && i.status === 'completed' && (
+                        {canReschedule && i.status === 'completed' && (
                           <button className="btn btn-sm btn-secondary" onClick={() => setScheduleLead(l)}>
                             <CalendarClock size={14} /> Schedule another
                           </button>
@@ -191,9 +195,14 @@ export const MeetingsPage: React.FC = () => {
                             <ClipboardCheck size={14} /> Schedule inspection
                           </button>
                         )}
-                        {canRecord && (
-                          <button className={`btn btn-sm ${i.status === 'completed' ? 'btn-secondary' : 'btn-primary'}`} onClick={() => setReportLead(l)}>
-                            <ClipboardCheck size={14} /> {i.status === 'completed' ? 'Edit report' : 'Submit report'}
+                        {canRecord && i.status === 'scheduled' && (
+                          <button className="btn btn-sm btn-primary" onClick={() => setReportLead(l)}>
+                            <ClipboardCheck size={14} /> Submit report
+                          </button>
+                        )}
+                        {canReschedule && i.status === 'completed' && (
+                          <button className="btn btn-sm btn-secondary" onClick={() => setReportLead(l)}>
+                            <ClipboardCheck size={14} /> Edit report
                           </button>
                         )}
                       </div>

@@ -20,7 +20,7 @@ import { formatPKR, formatDate, generatePermanentId } from '../../lib/formatters
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
-import { canEditModule } from '../../lib/permissions';
+import { baseRoleOf, canEditModule } from '../../lib/permissions';
 import { effectiveContractStatus } from '../../lib/contractUtils';
 import type { Contract, ContractType, ServiceFrequency } from '../../types/operations';
 import type { Approval } from '../../types/approvals';
@@ -88,6 +88,10 @@ export const ContractsListPage: React.FC = () => {
   const canEdit = canEditModule(effectiveRole, 'contracts');
   const canDirectAction = canEditModule(effectiveRole, 'approvals');
   const canAdminAction = ['super_admin', 'admin'].includes(effectiveRole ?? '');
+  // Operations coordinators manage scheduling/assignment but don't own financials.
+  const isOpsRole = baseRoleOf(effectiveRole) === 'operations';
+  const canCreateContract = canEditModule(effectiveRole, 'crm') || canAdminAction;
+  const canSeeFinancials = !isOpsRole;
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<ContractStatusFilter>('all');
@@ -433,10 +437,12 @@ export const ContractsListPage: React.FC = () => {
           </p>
         </div>
 
-        <button className="btn btn-primary" onClick={() => setShowNewContractModal(true)}>
-          <Plus size={16} />
-          <span>+ Create New Contract</span>
-        </button>
+        {canCreateContract && (
+          <button className="btn btn-primary" onClick={() => setShowNewContractModal(true)}>
+            <Plus size={16} />
+            <span>+ Create New Contract</span>
+          </button>
+        )}
       </div>
 
       {/* 60-Day AMC Expiry Warning Banner (Step 15) */}
@@ -530,7 +536,7 @@ export const ContractsListPage: React.FC = () => {
               <th>Branch / Location</th>
               <th>Type & Frequency</th>
               <th>Term Period</th>
-              <th>Contract Value</th>
+              {canSeeFinancials && <th>Contract Value</th>}
               <th>Visit Schedule</th>
               <th>Status</th>
               <th>Next Action</th>
@@ -571,7 +577,7 @@ export const ContractsListPage: React.FC = () => {
                     <div>Start: {formatDate(c.startDate)}</div>
                     <div style={{ color: 'var(--text-muted)' }}>End: {formatDate(c.endDate)}</div>
                   </td>
-                  <td style={{ fontWeight: 700 }}>{formatPKR(c.totalContractValue)}</td>
+                  {canSeeFinancials && <td style={{ fontWeight: 700 }}>{formatPKR(c.totalContractValue)}</td>}
                   <td>
                     <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>
                       {c.totalJobsCompleted || 0} / {c.totalJobsScheduled || 0} completed
@@ -975,8 +981,8 @@ export const ContractsListPage: React.FC = () => {
                 </div>
                 <dl className="detail-list" style={{ marginTop: '0.75rem' }}>
                   <dt>Visits / month</dt><dd>{selectedContract.serviceVisitsPerMonth ?? '—'} service · {selectedContract.followUpVisitsPerMonth ?? 0} follow-up</dd>
-                  {selectedContract.monthlyRate ? (<><dt>Monthly rate</dt><dd>{formatPKR(selectedContract.monthlyRate)} ({selectedContract.taxMode === 'inclusive' ? 'incl.' : 'excl.'} {selectedContract.taxPercent ?? 0}% tax)</dd></>) : null}
-                  {selectedContract.paymentTermsDays ? (<><dt>Payment</dt><dd>Within {selectedContract.paymentTermsDays} days of invoice</dd></>) : null}
+                  {canSeeFinancials && selectedContract.monthlyRate ? (<><dt>Monthly rate</dt><dd>{formatPKR(selectedContract.monthlyRate)} ({selectedContract.taxMode === 'inclusive' ? 'incl.' : 'excl.'} {selectedContract.taxPercent ?? 0}% tax)</dd></>) : null}
+                  {canSeeFinancials && selectedContract.paymentTermsDays ? (<><dt>Payment</dt><dd>Within {selectedContract.paymentTermsDays} days of invoice</dd></>) : null}
                   {selectedContract.exclusions && (<><dt>Exclusions</dt><dd>{selectedContract.exclusions}</dd></>)}
                 </dl>
               </div>
@@ -992,12 +998,14 @@ export const ContractsListPage: React.FC = () => {
                   {selectedContract.contractType.replace('_', ' ')} ({selectedContract.frequency})
                 </div>
               </div>
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>Contract Value:</span>
-                <div style={{ fontWeight: 700, color: 'var(--ikpm-emerald-600)' }}>
-                  {formatPKR(selectedContract.totalContractValue)}
+              {canSeeFinancials && (
+                <div>
+                  <span style={{ color: 'var(--text-muted)' }}>Contract Value:</span>
+                  <div style={{ fontWeight: 700, color: 'var(--ikpm-emerald-600)' }}>
+                    {formatPKR(selectedContract.totalContractValue)}
+                  </div>
                 </div>
-              </div>
+              )}
               <div>
                 <span style={{ color: 'var(--text-muted)' }}>Visit Progress:</span>
                 <div>

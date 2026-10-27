@@ -45,8 +45,14 @@ export const JobsListPage: React.FC = () => {
   const canInvoice = canEditModule(effectiveRole, 'invoices');
   const canDispatch = canEditModule(effectiveRole, 'jobs');
 
+  const todayStr = new Date().toISOString().split('T')[0];
+  const tomorrowStr = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+  const weekEndStr = new Date(Date.now() + 6 * 86400000).toISOString().split('T')[0];
+
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'tomorrow' | 'week' | 'custom'>('all');
+  const [customDate, setCustomDate] = useState(todayStr);
   const [selectedJob, setSelectedJob] = useState<ServiceJob | null>(null);
   const [showNewJobModal, setShowNewJobModal] = useState(
     searchParams.get('action') === 'new_job' || Boolean(searchParams.get('fromProposal'))
@@ -200,13 +206,21 @@ export const JobsListPage: React.FC = () => {
   const filteredJobs = jobs.filter((j) => {
     const q = searchQuery.toLowerCase();
     const matchSearch =
+      !q ||
       j.id.toLowerCase().includes(q) ||
       j.customerName.toLowerCase().includes(q) ||
       j.siteName.toLowerCase().includes(q) ||
       j.leadPcoName.toLowerCase().includes(q);
 
     const matchStatus = statusFilter === 'all' || j.status === statusFilter;
-    return matchSearch && matchStatus;
+
+    let matchDate = true;
+    if (dateFilter === 'today') matchDate = j.scheduledDate === todayStr;
+    else if (dateFilter === 'tomorrow') matchDate = j.scheduledDate === tomorrowStr;
+    else if (dateFilter === 'week') matchDate = j.scheduledDate >= todayStr && j.scheduledDate <= weekEndStr;
+    else if (dateFilter === 'custom') matchDate = j.scheduledDate === customDate;
+
+    return matchSearch && matchStatus && matchDate;
   });
 
   const handleCreateJob = (e: React.FormEvent) => {
@@ -451,30 +465,80 @@ export const JobsListPage: React.FC = () => {
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="card" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-          {['all', 'scheduled', 'in_progress', 'completed', 'cancelled'].map((st) => (
-            <button
-              key={st}
-              className={`btn ${statusFilter === st ? 'btn-primary' : 'btn-secondary'}`}
-              style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
-              onClick={() => setStatusFilter(st)}
-            >
-              {st.replace(/_/g, ' ').toUpperCase()}
-            </button>
-          ))}
+      <div className="card" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+          {/* Status filters */}
+          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+            {['all', 'scheduled', 'in_progress', 'completed', 'cancelled'].map((st) => (
+              <button
+                key={st}
+                className={`btn ${statusFilter === st ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
+                onClick={() => setStatusFilter(st)}
+              >
+                {st.replace(/_/g, ' ').toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          {/* Search */}
+          <div style={{ position: 'relative', width: '260px' }}>
+            <Search size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <input
+              type="text"
+              placeholder="Search job, customer, technician…"
+              className="form-input"
+              style={{ paddingLeft: '2.2rem', height: '34px', fontSize: '0.8rem' }}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
         </div>
 
-        <div style={{ position: 'relative', width: '280px' }}>
-          <Search size={15} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-          <input
-            type="text"
-            placeholder="Search job ID, customer, technician..."
-            className="form-input"
-            style={{ paddingLeft: '2.2rem', height: '34px', fontSize: '0.8rem' }}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
+        {/* Date quick filters */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>Date:</span>
+          <div style={{ display: 'flex', gap: '0.25rem', backgroundColor: 'var(--bg-surface-alt)', padding: '3px', borderRadius: 'var(--radius-md)' }}>
+            {([
+              { id: 'today', label: 'Today' },
+              { id: 'tomorrow', label: 'Tomorrow' },
+              { id: 'week', label: 'This Week' },
+              { id: 'all', label: 'All' },
+              { id: 'custom', label: 'Pick Date' },
+            ] as const).map((f) => (
+              <button
+                key={f.id}
+                className="btn"
+                onClick={() => setDateFilter(f.id)}
+                style={{
+                  padding: '0.25rem 0.65rem', fontSize: '0.75rem', border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  backgroundColor: dateFilter === f.id ? 'var(--bg-surface)' : 'transparent',
+                  color: dateFilter === f.id ? 'var(--ikpm-navy-900)' : 'var(--text-muted)',
+                  fontWeight: dateFilter === f.id ? 700 : 400,
+                  boxShadow: dateFilter === f.id ? 'var(--shadow-sm)' : 'none',
+                  cursor: 'pointer',
+                  transition: 'all 0.12s',
+                }}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          {dateFilter === 'custom' && (
+            <input
+              type="date"
+              className="form-input"
+              style={{ height: '32px', width: '150px', fontSize: '0.8rem' }}
+              value={customDate}
+              onChange={(e) => setCustomDate(e.target.value)}
+            />
+          )}
+          {dateFilter !== 'all' && (
+            <span style={{ fontSize: '0.75rem', color: 'var(--ikpm-emerald-700)', fontWeight: 600 }}>
+              {filteredJobs.length} job{filteredJobs.length !== 1 ? 's' : ''}
+            </span>
+          )}
         </div>
       </div>
 

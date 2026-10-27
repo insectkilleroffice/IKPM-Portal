@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   CalendarDays,
@@ -32,15 +32,35 @@ export const DispatchCalendarPage: React.FC = () => {
   const jobs = dataService.getJobs();
   const contracts = dataService.getContracts();
 
+  const todayStr = new Date().toISOString().split('T')[0];
+  const weekEnd = new Date(Date.now() + 6 * 86400000).toISOString().split('T')[0];
+
   const [activeTab, setActiveTab] = useState<'calendar' | 'schedules'>('calendar');
   const [selectedTechnician, setSelectedTechnician] = useState<string>('all');
-  const [selectedContractId, setSelectedContractId] = useState<string>(contracts[0]?.id || '');
+  const [selectedContractId, setSelectedContractId] = useState<string>('');
   const [scheduleModalContract, setScheduleModalContract] = useState<Contract | null>(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [dateFilter, setDateFilter] = useState<'today' | 'week' | 'month' | 'all' | 'custom'>('week');
+  const [dateFrom, setDateFrom] = useState(todayStr);
+  const [dateTo, setDateTo] = useState(weekEnd);
+
+  // Auto-select first contract once Firestore data arrives
+  useEffect(() => {
+    if (!selectedContractId && contracts.length > 0) {
+      setSelectedContractId(contracts[0].id);
+    }
+  }, [contracts, selectedContractId]);
 
   const filteredJobs = jobs.filter((j) => {
     const matchTech = selectedTechnician === 'all' || j.leadPcoName.includes(selectedTechnician);
-    return matchTech;
+
+    let matchDate = true;
+    if (dateFilter === 'today') matchDate = j.scheduledDate === todayStr;
+    else if (dateFilter === 'week') matchDate = j.scheduledDate >= todayStr && j.scheduledDate <= weekEnd;
+    else if (dateFilter === 'month') matchDate = j.scheduledDate.startsWith(todayStr.slice(0, 7));
+    else if (dateFilter === 'custom') matchDate = j.scheduledDate >= dateFrom && j.scheduledDate <= dateTo;
+
+    return matchTech && matchDate;
   });
 
   // Group jobs by date
@@ -190,12 +210,50 @@ export const DispatchCalendarPage: React.FC = () => {
               <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>PCO Dispatch Daily Grid</span>
             </div>
 
-            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              {/* Date quick filters */}
+              <div style={{ display: 'flex', gap: '0.25rem', backgroundColor: 'var(--bg-surface-alt)', padding: '3px', borderRadius: 'var(--radius-md)' }}>
+                {(['today', 'week', 'month', 'all', 'custom'] as const).map((f) => (
+                  <button
+                    key={f}
+                    className="btn"
+                    onClick={() => {
+                      setDateFilter(f);
+                      if (f === 'today') { setDateFrom(todayStr); setDateTo(todayStr); }
+                      else if (f === 'week') { setDateFrom(todayStr); setDateTo(weekEnd); }
+                      else if (f === 'month') {
+                        setDateFrom(todayStr.slice(0, 7) + '-01');
+                        setDateTo(new Date(new Date(todayStr.slice(0, 7) + '-01').getFullYear(), new Date(todayStr.slice(0, 7) + '-01').getMonth() + 1, 0).toISOString().split('T')[0]);
+                      }
+                    }}
+                    style={{
+                      padding: '0.25rem 0.6rem', fontSize: '0.75rem', border: 'none',
+                      borderRadius: 'var(--radius-sm)',
+                      backgroundColor: dateFilter === f ? 'var(--bg-surface)' : 'transparent',
+                      color: dateFilter === f ? 'var(--ikpm-navy-900)' : 'var(--text-muted)',
+                      fontWeight: dateFilter === f ? 700 : 400,
+                      boxShadow: dateFilter === f ? 'var(--shadow-sm)' : 'none',
+                    }}
+                  >
+                    {f === 'today' ? 'Today' : f === 'week' ? 'This Week' : f === 'month' ? 'This Month' : f === 'all' ? 'All' : 'Custom'}
+                  </button>
+                ))}
+              </div>
+
+              {/* Custom date range inputs */}
+              {dateFilter === 'custom' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem' }}>
+                  <input type="date" className="form-input" style={{ height: '34px', width: '140px', fontSize: '0.8rem' }} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+                  <span style={{ color: 'var(--text-muted)' }}>→</span>
+                  <input type="date" className="form-input" style={{ height: '34px', width: '140px', fontSize: '0.8rem' }} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+                </div>
+              )}
+
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem' }}>
-                <span>Filter PCO:</span>
+                <span>PCO:</span>
                 <select
                   className="form-select"
-                  style={{ width: '190px', height: '34px', fontSize: '0.8rem' }}
+                  style={{ width: '175px', height: '34px', fontSize: '0.8rem' }}
                   value={selectedTechnician}
                   onChange={(e) => setSelectedTechnician(e.target.value)}
                 >
@@ -211,6 +269,13 @@ export const DispatchCalendarPage: React.FC = () => {
           </div>
 
           {/* Daily Dispatch Grid */}
+          {Object.keys(jobsByDate).length === 0 && (
+            <div className="card" style={{ padding: '2.5rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+              <CalendarDays size={36} style={{ margin: '0 auto 0.75rem', opacity: 0.4 }} />
+              <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>No visits found for this period</div>
+              <p style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>Try a different date range or click &ldquo;All&rdquo; to see everything.</p>
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.25rem' }}>
             {Object.keys(jobsByDate).map((date) => {
               const dateJobs = jobsByDate[date];

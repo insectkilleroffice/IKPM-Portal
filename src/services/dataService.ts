@@ -399,8 +399,9 @@ class DataService {
     if (key === 'jobs') {
       const qs: Query[] = [];
       if (can('jobs')) qs.push(...(all ? [col] : ownAndTeam()));
-      // Field app: jobs assigned to this person
-      if (can('pco') && !(can('jobs') && all)) qs.push(query(col, where('assignedTechnicianIds', 'array-contains', se.uid)));
+      // Field app: jobs assigned to this person. CRM roles (CRO) are never field workers and skip
+      // this query — their pco access is only for meeting reports, not service jobs.
+      if (can('pco') && !can('crm') && !(can('jobs') && all)) qs.push(query(col, where('assignedTechnicianIds', 'array-contains', se.uid)));
       return qs;
     }
 
@@ -417,8 +418,12 @@ class DataService {
 
     if (key === 'leads') {
       const qs: Query[] = can('crm') ? (all ? [col] : ownAndTeam()) : [];
-      // Inspectors see the leads they were assigned to inspect
-      if (can('inspections') && !(can('crm') && all)) qs.push(query(col, where('inspectorIds', 'array-contains', se.uid)));
+      // Operations (pco + company scope) see all leads so they can manage meetings, assign teams and create contracts.
+      if (can('pco') && !can('crm')) qs.push(...(all ? [col] : ownAndTeam()));
+      // Inspectors not already covered by a full-collection query see their own assigned leads.
+      if (can('inspections') && !(can('crm') && all) && !(can('pco') && all)) {
+        qs.push(query(col, where('inspectorIds', 'array-contains', se.uid)));
+      }
       return qs;
     }
 
@@ -428,6 +433,15 @@ class DataService {
     if (key === 'outreachLogs') {
       if (!(can('crm') || can('proposals') || can('documents'))) return [];
       return all ? [col] : ownAndTeam();
+    }
+
+    // Approvals: managers (edit) may list all; view-only roles (CRO, operations) may only read
+    // their own requests. A bare collection query fails the Firestore rule for non-editors.
+    if (key === 'approvals') {
+      const lvl = accessLevel(se.role, 'approvals');
+      if (lvl === 'none') return [];
+      if (lvl === 'edit') return all ? [col] : ownAndTeam();
+      return [query(col, where('ownerUid', '==', se.uid))];
     }
 
     const module = MODULE_FOR[key];

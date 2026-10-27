@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
   FileSignature,
@@ -19,11 +19,16 @@ import { dataService } from '../../services/dataService';
 import { formatPKR, formatDate } from '../../lib/formatters';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
+import { ScheduleGeneratorModal } from '../../features/schedule/ScheduleGeneratorModal';
+import type { Contract } from '../../types/operations';
+
+// Each sub-dashboard must call useDataStore() so it re-renders when Firestore data arrives.
 
 // ─── CRO Dashboard ────────────────────────────────────────────────────────────
 function CRODashboard() {
   const navigate = useNavigate();
   const { userProfile } = useAuth();
+  useDataStore();
   const leads = dataService.getLeads();
   const proposals = dataService.getProposals();
   const contracts = dataService.getContracts();
@@ -197,9 +202,14 @@ function CRODashboard() {
 function OpsManagerDashboard() {
   const navigate = useNavigate();
   const { userProfile } = useAuth();
+  useDataStore();
   const contracts = dataService.getContracts();
   const jobs = dataService.getJobs();
   const staff = dataService.getStaff();
+  const leads = dataService.getLeads();
+  const [scheduleModalContract, setScheduleModalContract] = useState<Contract | null>(null);
+  const [assigningLeadId, setAssigningLeadId] = useState<string | null>(null);
+  const [assignTlId, setAssignTlId] = useState('');
 
   const todayStr = new Date().toISOString().split('T')[0];
   const tomorrowStr = new Date(Date.now() + 86400000).toISOString().split('T')[0];
@@ -211,9 +221,30 @@ function OpsManagerDashboard() {
   const jobsToday = jobs.filter((j) => j.scheduledDate === todayStr && ['scheduled', 'in_progress'].includes(j.status));
   const reportsAwaitingQC = jobs.filter((j) => j.status === 'completed' && !j.supervisorVerification?.isVerified);
 
-  // Contracts that have no jobs generated yet (newly signed, ready for scheduling)
+  // Meetings scheduled by CRO that have no team leader assigned yet
+  const meetingsNeedingTL = leads.filter(
+    (l) => l.stage === 'meeting_scheduled' && !l.assignedTeamLeaderId
+  );
+
+  const teamLeaders = dataService.getStaff(['team_leader']);
+
+  const handleAssignTL = (leadId: string) => {
+    const tl = teamLeaders.find((t) => t.uid === assignTlId);
+    if (!tl) return;
+    const lead = leads.find((l) => l.id === leadId);
+    if (!lead) return;
+    dataService.saveLead(
+      { ...lead, assignedTeamLeaderId: tl.uid, assignedTeamLeaderName: tl.displayName, updatedAt: new Date().toISOString() },
+      userProfile?.email
+    );
+    setAssigningLeadId(null);
+    setAssignTlId('');
+  };
+
+  // Contracts with no jobs generated yet — use totalJobsScheduled (set by createScheduledJobs)
+  // as the primary signal, with a live job scan as a fallback.
   const contractsReadyToSchedule = activeContracts.filter(
-    (c) => !jobs.some((j) => j.contractId === c.id)
+    (c) => (c.totalJobsScheduled || 0) === 0 && !jobs.some((j) => j.contractId === c.id && j.status !== 'cancelled')
   );
 
   const technicians = staff.filter((s) => ['technician', 'team_leader'].includes(s.role || ''));
@@ -238,6 +269,16 @@ function OpsManagerDashboard() {
       <div className="kpi-grid" style={{ marginBottom: '1.5rem' }}>
         <div className="kpi-card" style={{ cursor: 'default' }}>
           <div>
+            <div className="kpi-title">Meetings to Assign</div>
+            <div className="kpi-value" style={{ color: meetingsNeedingTL.length > 0 ? '#D97706' : undefined }}>{meetingsNeedingTL.length}</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>no team leader yet</div>
+          </div>
+          <div className="kpi-icon" style={{ backgroundColor: '#FEF3C7', color: '#92400E' }}>
+            <CalendarDays size={22} />
+          </div>
+        </div>
+        <div className="kpi-card" style={{ cursor: 'default' }}>
+          <div>
             <div className="kpi-title">Active Contracts</div>
             <div className="kpi-value">{activeContracts.length}</div>
           </div>
@@ -254,15 +295,6 @@ function OpsManagerDashboard() {
             <Truck size={22} />
           </div>
         </div>
-        <div className="kpi-card" onClick={() => navigate('/operations/calendar')} style={{ cursor: 'pointer' }}>
-          <div>
-            <div className="kpi-title">Jobs Today</div>
-            <div className="kpi-value">{jobsToday.length}</div>
-          </div>
-          <div className="kpi-icon" style={{ backgroundColor: '#EDE9FE', color: '#7C3AED' }}>
-            <CalendarDays size={22} />
-          </div>
-        </div>
         <div className="kpi-card">
           <div>
             <div className="kpi-title">Reports Pending QC</div>
@@ -275,6 +307,80 @@ function OpsManagerDashboard() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem' }}>
+
+        {/* Meetings from CRO — need a team leader assigned */}
+        <div className="card" style={{ padding: '1rem', borderLeft: `4px solid ${meetingsNeedingTL.length > 0 ? '#F59E0B' : 'var(--border-subtle)'}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <CalendarDays size={18} color={meetingsNeedingTL.length > 0 ? '#D97706' : 'var(--text-muted)'} />
+              <strong style={{ fontSize: '0.9rem', color: 'var(--ikpm-navy-900)' }}>
+                Meetings — Assign Team Leader ({meetingsNeedingTL.length})
+              </strong>
+            </div>
+          </div>
+          {meetingsNeedingTL.length === 0 ? (
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>All scheduled meetings have a team leader assigned.</p>
+          ) : (
+            meetingsNeedingTL.slice(0, 5).map((lead) => (
+              <div key={lead.id} style={{ padding: '0.6rem 0.75rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-sm)', border: '1px solid #FCD34D', marginBottom: '0.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong style={{ fontSize: '0.82rem' }}>{lead.title}</strong>
+                  <span style={{ fontSize: '0.68rem', color: '#92400E' }}>
+                    {lead.inspection?.scheduledDate ? formatDate(lead.inspection.scheduledDate) : 'Date TBD'}
+                  </span>
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  {lead.contactName} · {lead.city || '—'}
+                </div>
+
+                {assigningLeadId === lead.id ? (
+                  <div style={{ display: 'flex', gap: '0.4rem', marginTop: '6px', alignItems: 'center' }}>
+                    <select
+                      className="form-select"
+                      style={{ flex: 1, height: '30px', fontSize: '0.75rem' }}
+                      value={assignTlId}
+                      onChange={(e) => setAssignTlId(e.target.value)}
+                    >
+                      <option value="">Select team leader…</option>
+                      {teamLeaders.map((tl) => (
+                        <option key={tl.uid} value={tl.uid}>{tl.displayName}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn btn-primary"
+                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
+                      disabled={!assignTlId}
+                      onClick={() => handleAssignTL(lead.id)}
+                    >
+                      Assign
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '0.2rem 0.4rem', fontSize: '0.72rem' }}
+                      onClick={() => { setAssigningLeadId(null); setAssignTlId(''); }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="btn btn-primary"
+                    style={{ padding: '0.2rem 0.6rem', fontSize: '0.7rem', marginTop: '6px' }}
+                    onClick={() => { setAssigningLeadId(lead.id); setAssignTlId(''); }}
+                  >
+                    Assign Team Leader
+                  </button>
+                )}
+              </div>
+            ))
+          )}
+          {meetingsNeedingTL.length > 5 && (
+            <div style={{ fontSize: '0.72rem', color: 'var(--ikpm-emerald-600)', textAlign: 'center', marginTop: '0.25rem', cursor: 'pointer' }}
+              onClick={() => navigate('/meetings')}>
+              +{meetingsNeedingTL.length - 5} more — view all meetings
+            </div>
+          )}
+        </div>
 
         {/* Contracts Ready to Schedule — signed by CRO, no jobs yet */}
         <div className="card" style={{ padding: '1rem', borderLeft: '4px solid var(--ikpm-emerald-500)' }}>
@@ -302,7 +408,11 @@ function OpsManagerDashboard() {
                 <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--ikpm-emerald-600)', marginTop: '2px' }}>
                   {formatPKR(c.totalContractValue)} · {c.frequency}
                 </div>
-                <button className="btn btn-primary" style={{ padding: '0.2rem 0.6rem', fontSize: '0.7rem', marginTop: '6px' }}>
+                <button
+                  className="btn btn-primary"
+                  style={{ padding: '0.2rem 0.6rem', fontSize: '0.7rem', marginTop: '6px' }}
+                  onClick={(e) => { e.stopPropagation(); setScheduleModalContract(c); }}
+                >
                   Generate &amp; Assign Jobs
                 </button>
               </div>
@@ -411,6 +521,13 @@ function OpsManagerDashboard() {
           )}
         </div>
       </div>
+
+      {scheduleModalContract && (
+        <ScheduleGeneratorModal
+          contract={scheduleModalContract}
+          onClose={() => setScheduleModalContract(null)}
+        />
+      )}
     </div>
   );
 }
@@ -419,6 +536,7 @@ function OpsManagerDashboard() {
 function OperationPersonDashboard() {
   const navigate = useNavigate();
   const { userProfile } = useAuth();
+  useDataStore();
   const jobs = dataService.getJobs();
   const leads = dataService.getLeads();
 
@@ -595,6 +713,7 @@ function OperationPersonDashboard() {
 function TechnicianDashboard() {
   const navigate = useNavigate();
   const { userProfile } = useAuth();
+  useDataStore();
   const jobs = dataService.getJobs();
   const uid = userProfile?.uid || '';
 
@@ -703,6 +822,7 @@ function TechnicianDashboard() {
 function AdminDashboard() {
   const navigate = useNavigate();
   const { userProfile } = useAuth();
+  useDataStore();
 
   const leads = dataService.getLeads();
   const proposals = dataService.getProposals();
@@ -859,7 +979,6 @@ function AdminDashboard() {
 // ─── Main Export ───────────────────────────────────────────────────────────────
 export const DashboardPage: React.FC = () => {
   const { effectiveRole } = useAuth();
-  useDataStore();
 
   if (effectiveRole === 'sales') return <CRODashboard />;
   if (effectiveRole === 'team_leader') return <OpsManagerDashboard />;
