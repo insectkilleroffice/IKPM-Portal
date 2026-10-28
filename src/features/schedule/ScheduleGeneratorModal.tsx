@@ -85,7 +85,10 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
   const [skipSundays, setSkipSundays] = useState(true);
   const [followUpGapDays, setFollowUpGapDays] = useState(3);
   const [holidaysText, setHolidaysText] = useState(DEFAULT_HOLIDAYS.join(', '));
-  const [defaultPcoId, setDefaultPcoId] = useState<string>(technicians[0]?.uid || '');
+  // Pre-select from contract's assigned TL; fall back to first in list
+  const [defaultPcoId, setDefaultPcoId] = useState<string>(
+    () => technicians.find((t) => t.uid === contract.assignedTeamLeaderId)?.uid || technicians[0]?.uid || ''
+  );
   const [isExporting, setIsExporting] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
 
@@ -133,11 +136,9 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
       ...v,
       pcoId: defaultTech?.uid,
       pcoName: defaultTech?.displayName,
-      // Start with no services selected — staff assigns per visit
       services: servicePlanItems.length > 0 ? [] : undefined,
     }));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [contract, branchConfigs, skipSundays, holidaysText, followUpGapDays, defaultPcoId, isOneOff, serviceVpm, followUpVpm, servicePlanItems, technicians]);
 
   const [visits, setVisits] = useState<PlannedVisit[]>(initialVisits);
 
@@ -258,6 +259,23 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
 
   // Confirm schedule and create service jobs in Firestore
   const handleConfirmSchedule = () => {
+    // Guard: check for existing jobs on this contract
+    const existingJobs = store.getJobs().filter((j) => j.contractId === contract.id && j.status !== 'cancelled');
+    if (existingJobs.length > 0) {
+      const proceed = window.confirm(
+        `${existingJobs.length} visits already exist for this contract.\n\nCreating a new schedule will cancel all existing scheduled visits and replace them. Proceed?`
+      );
+      if (!proceed) return;
+      existingJobs
+        .filter((j) => j.status === 'scheduled')
+        .forEach((j) =>
+          store.saveJob(
+            { ...j, status: 'cancelled', cancellationReason: 'Schedule regenerated', updatedAt: new Date().toISOString() },
+            userProfile?.email
+          )
+        );
+    }
+
     if (conflicts.size > 0) {
       const confirmProceed = window.confirm(
         `There are ${conflicts.size} visits with technician scheduling conflicts (double-bookings). Do you wish to proceed anyway?`
@@ -268,9 +286,10 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
     try {
       setIsConfirming(true);
       const created = store.createScheduledJobs(contract, visits, userProfile?.email);
+      const tlName = contract.assignedTeamLeaderName || technicians.find((t) => t.uid === defaultPcoId)?.displayName;
       success(
         'Visit Schedule Dispatched',
-        `Successfully created ${created.length} service jobs (${created.filter((j) => j.visitKind === 'service').length} service, ${created.filter((j) => j.visitKind === 'follow_up').length} follow-up).`
+        `${created.length} service jobs created (${created.filter((j) => j.visitKind === 'service').length} service, ${created.filter((j) => j.visitKind === 'follow_up').length} follow-up)${tlName ? ` · Notified TL: ${tlName}` : ''}.`
       );
       onClose();
     } catch (err) {
@@ -287,7 +306,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
     <Modal
       isOpen
       onClose={onClose}
-      title="Generate Contract Visit Schedule"
+      title={store.getJobs().some((j) => j.contractId === contract.id && j.status !== 'cancelled') ? 'Edit Contract Visit Schedule' : 'Generate Contract Visit Schedule'}
       subtitle={`Contract: ${contract.id} • ${contract.customerName} • Term: ${formatDate(contract.startDate)} to ${formatDate(contract.endDate)}`}
       maxWidth="1100px"
     >

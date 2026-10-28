@@ -2,7 +2,7 @@
 // No extra Firestore collection — derived from leads and jobs in real time.
 
 import type { Lead } from '../types/crm';
-import type { ServiceJob } from '../types/operations';
+import type { ServiceJob, Contract } from '../types/operations';
 import type { Proposal } from '../types/proposal';
 import type { UserProfile } from '../types';
 import type { UserRole } from '../types';
@@ -33,7 +33,8 @@ export function computeNotifications(
   jobs: ServiceJob[],
   profile: UserProfile,
   effectiveRole: UserRole | null,
-  proposals: Proposal[] = []
+  proposals: Proposal[] = [],
+  contracts: Contract[] = []
 ): AppNotification[] {
   const role = baseRoleOf(effectiveRole);
   const uid = profile.uid;
@@ -41,31 +42,55 @@ export function computeNotifications(
 
   const isAdmin = role === 'super_admin' || role === 'admin';
 
-  // ── Operations Manager — assign teams only (no completed clutter) ─────────
+  // ── Operations Manager — all scheduled meetings + assign nudges ──────────
   if (role === 'operations') {
     leads.forEach((l) => {
       const i = l.inspection;
-      if (i && i.status === 'scheduled' && !i.assignedTeamLeaderId) {
-        out.push({
-          id: `op_assign_${l.id}`,
-          category: 'action_needed',
-          title: 'Meeting needs team assignment',
-          body: `${l.title} · ${i.scheduledDate}`,
-          link: `/crm?lead=${l.id}`,
-          entityId: l.id,
-          createdAt: i.scheduledDate || l.updatedAt,
-        });
+      if (i && i.status === 'scheduled') {
+        if (!i.assignedTeamLeaderId) {
+          out.push({
+            id: `op_assign_${l.id}`,
+            category: 'action_needed',
+            title: 'Meeting needs team assignment',
+            body: `${l.title} · ${i.scheduledDate}`,
+            link: `/crm?lead=${l.id}`,
+            entityId: l.id,
+            createdAt: i.scheduledDate || l.updatedAt,
+          });
+        } else {
+          out.push({
+            id: `op_meeting_${l.id}`,
+            category: 'assigned',
+            title: 'Meeting scheduled',
+            body: `${l.title} · ${i.scheduledDate}${i.assignedTeamLeaderName ? ` · TL: ${i.assignedTeamLeaderName}` : ''}`,
+            link: `/crm?lead=${l.id}`,
+            entityId: l.id,
+            createdAt: i.scheduledDate || l.updatedAt,
+          });
+        }
       }
-      if (l.siteInspection?.status === 'scheduled' && !l.siteInspection.teamLeaderId) {
-        out.push({
-          id: `op_si_assign_${l.id}`,
-          category: 'action_needed',
-          title: 'Site inspection needs team',
-          body: `${l.title} · ${l.siteInspection.scheduledDate}`,
-          link: `/inspections`,
-          entityId: l.id,
-          createdAt: l.siteInspection.scheduledDate || l.updatedAt,
-        });
+      if (l.siteInspection?.status === 'scheduled') {
+        if (!l.siteInspection.teamLeaderId) {
+          out.push({
+            id: `op_si_assign_${l.id}`,
+            category: 'action_needed',
+            title: 'Site inspection needs team',
+            body: `${l.title} · ${l.siteInspection.scheduledDate}`,
+            link: `/inspections`,
+            entityId: l.id,
+            createdAt: l.siteInspection.scheduledDate || l.updatedAt,
+          });
+        } else {
+          out.push({
+            id: `op_si_sched_${l.id}`,
+            category: 'assigned',
+            title: 'Site inspection scheduled',
+            body: `${l.title} · ${l.siteInspection.branchName || 'Main site'} · ${l.siteInspection.scheduledDate}${l.siteInspection.teamLeaderName ? ` · TL: ${l.siteInspection.teamLeaderName}` : ''}`,
+            link: `/inspections`,
+            entityId: l.id,
+            createdAt: l.siteInspection.scheduledDate || l.updatedAt,
+          });
+        }
       }
     });
   }
@@ -74,27 +99,51 @@ export function computeNotifications(
   if (isAdmin) {
     leads.forEach((l) => {
       const i = l.inspection;
-      if (i && i.status === 'scheduled' && !i.assignedTeamLeaderId) {
-        out.push({
-          id: `op_assign_${l.id}`,
-          category: 'action_needed',
-          title: 'Meeting needs team assignment',
-          body: `${l.title} · ${i.scheduledDate}`,
-          link: `/crm?lead=${l.id}`,
-          entityId: l.id,
-          createdAt: i.scheduledDate || l.updatedAt,
-        });
+      if (i && i.status === 'scheduled') {
+        if (!i.assignedTeamLeaderId) {
+          out.push({
+            id: `op_assign_${l.id}`,
+            category: 'action_needed',
+            title: 'Meeting needs team assignment',
+            body: `${l.title} · ${i.scheduledDate}`,
+            link: `/crm?lead=${l.id}`,
+            entityId: l.id,
+            createdAt: i.scheduledDate || l.updatedAt,
+          });
+        } else {
+          out.push({
+            id: `op_meeting_${l.id}`,
+            category: 'assigned',
+            title: 'Meeting scheduled',
+            body: `${l.title} · ${i.scheduledDate}${i.assignedTeamLeaderName ? ` · TL: ${i.assignedTeamLeaderName}` : ''}`,
+            link: `/crm?lead=${l.id}`,
+            entityId: l.id,
+            createdAt: i.scheduledDate || l.updatedAt,
+          });
+        }
       }
-      if (l.siteInspection?.status === 'scheduled' && !l.siteInspection.teamLeaderId) {
-        out.push({
-          id: `op_si_assign_${l.id}`,
-          category: 'action_needed',
-          title: 'Site inspection needs team',
-          body: `${l.title} · ${l.siteInspection.scheduledDate}`,
-          link: `/inspections`,
-          entityId: l.id,
-          createdAt: l.siteInspection.scheduledDate || l.updatedAt,
-        });
+      if (l.siteInspection?.status === 'scheduled') {
+        if (!l.siteInspection.teamLeaderId) {
+          out.push({
+            id: `op_si_assign_${l.id}`,
+            category: 'action_needed',
+            title: 'Site inspection needs team',
+            body: `${l.title} · ${l.siteInspection.scheduledDate}`,
+            link: `/inspections`,
+            entityId: l.id,
+            createdAt: l.siteInspection.scheduledDate || l.updatedAt,
+          });
+        } else {
+          out.push({
+            id: `op_si_sched_${l.id}`,
+            category: 'assigned',
+            title: 'Site inspection scheduled',
+            body: `${l.title} · ${l.siteInspection.branchName || 'Main site'} · ${l.siteInspection.scheduledDate}${l.siteInspection.teamLeaderName ? ` · TL: ${l.siteInspection.teamLeaderName}` : ''}`,
+            link: `/inspections`,
+            entityId: l.id,
+            createdAt: l.siteInspection.scheduledDate || l.updatedAt,
+          });
+        }
       }
       // Meeting report submitted — no proposal yet
       if (i?.status === 'completed' && !l.proposalId) {
@@ -154,10 +203,10 @@ export function computeNotifications(
     });
   }
 
-  // ── Team Leader — assigned meetings, inspections, and jobs ────────────────
+  // ── Team Leader / any role directly assigned to a meeting or site inspection ─
   if (isAdmin || role === 'team_leader') {
     leads
-      .filter((l) => l.inspection?.assignedTeamLeaderId === uid || l.siteInspection?.teamLeaderId === uid)
+      .filter((l) => l.inspection?.assignedTeamLeaderId === uid)
       .forEach((l) => {
         const i = l.inspection;
         if (i?.status === 'scheduled' && i.assignedTeamLeaderId === uid) {
@@ -171,33 +220,48 @@ export function computeNotifications(
             createdAt: i.scheduledDate || l.updatedAt,
           });
         }
-        if (l.siteInspection?.status === 'scheduled' && l.siteInspection.teamLeaderId === uid) {
-          out.push({
-            id: `tl_si_${l.id}`,
-            category: 'assigned',
-            title: 'Site inspection assigned to you',
-            body: `${l.title} · ${l.siteInspection.branchName || 'Main site'} · ${l.siteInspection.scheduledDate}`,
-            link: `/inspections`,
-            entityId: l.id,
-            createdAt: l.siteInspection.scheduledDate || l.updatedAt,
-          });
-        }
-      });
-
-    jobs
-      .filter((j) => (j.status === 'scheduled' || j.status === 'en_route') && j.assignedTeamLeaderId === uid)
-      .forEach((j) => {
-        out.push({
-          id: `tl_job_${j.id}`,
-          category: 'assigned',
-          title: 'Service job assigned to you',
-          body: `${j.customerName} · ${j.siteName} · ${j.scheduledDate}`,
-          link: `/operations/jobs?job=${j.id}`,
-          entityId: j.id,
-          createdAt: j.scheduledDate || '',
-        });
       });
   }
+
+  // Site inspection "assigned to you" fires for any role whose uid matches the TL slot
+  leads
+    .filter((l) => l.siteInspection?.status === 'scheduled' && l.siteInspection.teamLeaderId === uid)
+    .forEach((l) => {
+      out.push({
+        id: `tl_si_${l.id}`,
+        category: 'assigned',
+        title: 'Site inspection assigned to you',
+        body: `${l.title} · ${l.siteInspection!.branchName || 'Main site'} · ${l.siteInspection!.scheduledDate}`,
+        link: `/inspections`,
+        entityId: l.id,
+        createdAt: l.siteInspection!.scheduledDate || l.updatedAt,
+      });
+    });
+
+  // Service job / contract schedule "assigned to you as TL" fires for any role
+  // Group by contractId so an edited schedule shows ONE notification per contract, not N per job.
+  const tlJobs = jobs.filter((j) => (j.status === 'scheduled' || j.status === 'en_route') && j.assignedTeamLeaderId === uid);
+  const contractGroups = new Map<string, typeof tlJobs>();
+  tlJobs.forEach((j) => {
+    const key = j.contractId || j.id;
+    if (!contractGroups.has(key)) contractGroups.set(key, []);
+    contractGroups.get(key)!.push(j);
+  });
+  contractGroups.forEach((group, contractKey) => {
+    const first = group[0];
+    const isContract = !!first.contractId;
+    out.push({
+      id: `tl_job_${contractKey}`,
+      category: 'assigned',
+      title: isContract ? 'Visit schedule assigned to you' : 'Service job assigned to you',
+      body: isContract
+        ? `${first.customerName}${first.branchName ? ` · ${first.branchName}` : ''} · ${group.length} visits · next: ${group.map((j) => j.scheduledDate).sort()[0]}`
+        : `${first.customerName} · ${first.siteName} · ${first.scheduledDate}`,
+      link: `/operations/jobs`,
+      entityId: contractKey,
+      createdAt: group.map((j) => j.updatedAt).sort().reverse()[0] || first.scheduledDate || '',
+    });
+  });
 
   // ── Technician — assigned jobs ────────────────────────────────────────────
   if (role === 'technician') {
@@ -255,6 +319,37 @@ export function computeNotifications(
           link: `/proposals?view=${p.id}`,
           entityId: p.id,
           createdAt: p.approval.decisionAt || p.updatedAt,
+        });
+      }
+    });
+  }
+
+  // ── Contract notifications — Operations Manager + Admin ──────────────────
+  if (role === 'operations' || isAdmin) {
+    contracts.forEach((c) => {
+      if (c.status !== 'active') return;
+      // New active contract with no schedule generated yet
+      if (c.totalJobsScheduled === 0) {
+        out.push({
+          id: `op_contract_sched_${c.id}`,
+          category: 'action_needed',
+          title: 'New contract — generate visit schedule',
+          body: `${c.customerName}${c.branchName ? ` · ${c.branchName}` : ''} · ${c.id}`,
+          link: `/contracts`,
+          entityId: c.id,
+          createdAt: c.createdAt,
+        });
+      }
+      // Active contract with no team leader assigned
+      if (c.totalJobsScheduled > 0 && !c.assignedTeamLeaderId) {
+        out.push({
+          id: `op_contract_tl_${c.id}`,
+          category: 'action_needed',
+          title: 'Contract needs team leader',
+          body: `${c.customerName}${c.branchName ? ` · ${c.branchName}` : ''} · ${c.id}`,
+          link: `/contracts`,
+          entityId: c.id,
+          createdAt: c.createdAt,
         });
       }
     });

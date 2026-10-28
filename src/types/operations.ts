@@ -108,6 +108,9 @@ export interface ServiceJob extends FolderMeta {
   status: JobStatus;
   rescheduledReason?: string;
   cancellationReason?: string;
+  cancellationReasonCode?: 'client_denied_access' | 'team_unavailable' | 'chemical_unavailable' | 'client_request' | 'other';
+  /** Outcome recorded by the Team Leader when submitting the service report. */
+  visitOutcome?: 'completed' | 'partial' | 'client_blocked' | 'postponed';
   complaintId?: string;
   checklists: ServiceChecklistItem[];
   chemicalsUsed: ChemicalUsageRecord[];

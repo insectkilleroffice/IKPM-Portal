@@ -2504,6 +2504,16 @@ class DataService {
         const updatedContract = { ...contract, status: newStatus, updatedAt: now() };
         this.upsert(this.s.contracts, updatedContract);
         this.write('contracts', contract.id, updatedContract);
+        // Auto-cancel all scheduled jobs belonging to this contract
+        if (newStatus === 'cancelled') {
+          this.s.jobs
+            .filter((j) => j.contractId === contract.id && j.status === 'scheduled')
+            .forEach((j) => {
+              const cancelled = { ...j, status: 'cancelled' as const, cancellationReason: 'Contract cancelled', updatedAt: now() };
+              this.upsert(this.s.jobs, cancelled);
+              this.write('jobs', j.id, cancelled);
+            });
+        }
       }
     }
     return updated;

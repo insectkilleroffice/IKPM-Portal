@@ -59,7 +59,8 @@ export const NotificationBell: React.FC = () => {
       store.getJobs(),
       userProfile,
       effectiveRole,
-      dataService.getProposals()
+      dataService.getProposals(),
+      dataService.getContracts()
     );
   }, [store, userProfile, effectiveRole]);
 

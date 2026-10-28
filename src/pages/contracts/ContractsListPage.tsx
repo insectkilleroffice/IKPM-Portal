@@ -601,27 +601,15 @@ export const ContractsListPage: React.FC = () => {
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                      {!hasJobs ? (
-                        <button
-                          className="btn btn-primary"
-                          style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
-                          title="Generate all scheduled visit jobs across contract term"
-                          onClick={() => handleGenerateSchedule(c)}
-                        >
-                          <Calendar size={12} />
-                          <span>Generate Schedule</span>
-                        </button>
-                      ) : (
-                        <button
-                          className="btn btn-outline-emerald"
-                          style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
-                          title="View all jobs for this contract in Operations"
-                          onClick={() => navigate('/operations/jobs')}
-                        >
-                          <Truck size={12} />
-                          <span>View Jobs ({c.totalJobsScheduled})</span>
-                        </button>
-                      )}
+                      <button
+                        className={hasJobs ? 'btn btn-secondary' : 'btn btn-primary'}
+                        style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
+                        title={hasJobs ? 'Edit or regenerate the visit schedule for this contract' : 'Generate all scheduled visit jobs across contract term'}
+                        onClick={() => handleGenerateSchedule(c)}
+                      >
+                        <Calendar size={12} />
+                        <span>{hasJobs ? 'Edit Schedule' : 'Generate Schedule'}</span>
+                      </button>
 
                       <button
                         className="btn btn-secondary"
@@ -962,7 +950,7 @@ export const ContractsListPage: React.FC = () => {
                 }}
               >
                 <Calendar size={14} />
-                <span>Generate Visit Schedule</span>
+                <span>{selectedContract.totalJobsScheduled > 0 ? 'Edit Visit Schedule' : 'Generate Visit Schedule'}</span>
               </button>
             </div>
           }

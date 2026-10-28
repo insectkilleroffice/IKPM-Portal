@@ -80,7 +80,7 @@ export function slotFor(b: Pick<ScheduleBranch, 'closingTime' | 'windowStart'>):
 /** Next working day on or after `date` (skips Sundays / holidays when configured). */
 export function workingDay(date: string, opts: Pick<PlanInput, 'skipSundays' | 'holidays'>): string {
   let d = date;
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < 21; i++) {
     const sunday = parse(d).getDay() === 0;
     if (!(opts.skipSundays && sunday) && !opts.holidays?.includes(d)) return d;
     d = addDays(d, 1);

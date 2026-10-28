@@ -300,6 +300,59 @@ export const CompanyDetailPage: React.FC = () => {
         )}
       </div>
 
+      {/* Onboarding Checklist Banner — shown until company has at least 1 branch AND 1 contract */}
+      {(branches.length === 0 || contracts.length === 0) && (
+        <div
+          style={{
+            marginBottom: '1rem',
+            padding: '0.85rem 1.25rem',
+            background: 'linear-gradient(90deg, #FFF7ED 0%, #FFFBEB 100%)',
+            border: '1px solid #FCD34D',
+            borderLeft: '4px solid #F59E0B',
+            borderRadius: 'var(--radius-md)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1rem',
+            flexWrap: 'wrap',
+          }}
+        >
+          <AlertCircle size={18} color="#B45309" style={{ flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: '0.875rem', color: '#92400E' }}>
+              Complete Company Setup
+            </div>
+            <div style={{ fontSize: '0.78rem', color: '#B45309', marginTop: '2px', display: 'flex', gap: '1.25rem', flexWrap: 'wrap' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ fontWeight: 700, fontSize: '1rem', lineHeight: 1 }}>{branches.length > 0 ? '✓' : '①'}</span>
+                Add a Branch
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ fontWeight: 700, fontSize: '1rem', lineHeight: 1 }}>{contracts.length > 0 ? '✓' : '②'}</span>
+                Create a Contract
+              </span>
+            </div>
+          </div>
+          {branches.length === 0 && (
+            <button
+              className="btn btn-sm"
+              style={{ background: '#F59E0B', color: '#fff', border: 'none', fontSize: '0.78rem', padding: '4px 12px', borderRadius: '6px', cursor: 'pointer', flexShrink: 0 }}
+              onClick={() => { setActiveTab('branches'); setShowAddBranchModal(true); }}
+            >
+              + Add Branch
+            </button>
+          )}
+          {branches.length > 0 && contracts.length === 0 && (
+            <button
+              className="btn btn-sm"
+              style={{ background: '#F59E0B', color: '#fff', border: 'none', fontSize: '0.78rem', padding: '4px 12px', borderRadius: '6px', cursor: 'pointer', flexShrink: 0 }}
+              onClick={() => navigate(`/proposals/new?customerId=${company.id}&customerType=company`)}
+            >
+              + New Proposal / Contract
+            </button>
+          )}
+        </div>
+      )}
+
       {/* 10 Clearly Separated Tabs (Highest Priority Requirement) */}
       <div className="tab-bar">
         <button
@@ -886,7 +939,11 @@ export const CompanyDetailPage: React.FC = () => {
               <select
                 className="form-select"
                 value={newBranch.city}
-                onChange={(e) => setNewBranch({ ...newBranch, city: e.target.value })}
+                onChange={(e) => {
+                  const city = e.target.value;
+                  const provinceByCity: Record<string, string> = { Karachi: 'Sindh', Lahore: 'Punjab', Faisalabad: 'Punjab', Multan: 'Punjab', Rawalpindi: 'Punjab', Islamabad: 'ICT' };
+                  setNewBranch({ ...newBranch, city, province: (provinceByCity[city] || newBranch.province) as any });
+                }}
               >
                 <option value="Karachi">Karachi</option>
                 <option value="Lahore">Lahore</option>

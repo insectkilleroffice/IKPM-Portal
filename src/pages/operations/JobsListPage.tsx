@@ -126,6 +126,9 @@ export const JobsListPage: React.FC = () => {
   // Service report submission modal
   const [showReportModal, setShowReportModal] = useState<ServiceJob | null>(null);
   const [reportMember, setReportMember] = useState('');
+  const [reportPcoId, setReportPcoId] = useState('');
+  const [reportRating, setReportRating] = useState<1 | 2 | 3 | 4 | 5>(5);
+  const [reportVisitOutcome, setReportVisitOutcome] = useState<'completed' | 'partial' | 'client_blocked' | 'postponed'>('completed');
   type ReportItem = { id: string; name: string; qty: number; unit: ChemicalUsageRecord['unit'] };
   const [reportItems, setReportItems] = useState<ReportItem[]>([{ id: 'item_1', name: '', qty: 1, unit: 'ml' }]);
   const [reportNotes, setReportNotes] = useState('');
@@ -137,6 +140,9 @@ export const JobsListPage: React.FC = () => {
   useEffect(() => {
     if (!showReportModal) return;
     setReportMember('');
+    setReportPcoId('');
+    setReportRating(5);
+    setReportVisitOutcome('completed');
     setReportItems(
       showReportModal.chemicalsUsed.length
         ? showReportModal.chemicalsUsed.map((c) => ({ id: c.id, name: c.chemicalName, qty: c.quantityUsed, unit: c.unit }))
@@ -421,22 +427,27 @@ export const JobsListPage: React.FC = () => {
         targetPest: showReportModal.targetPests[0] || 'cockroaches',
         applicationMethod: 'residual_spray' as const,
       }));
-    const memberNames = reportMember.trim() ? reportMember.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    const selectedPco = dataService.getStaff(['technician']).find((t) => t.uid === reportPcoId);
+    const memberNames = selectedPco
+      ? [selectedPco.displayName]
+      : reportMember.trim() ? reportMember.split(',').map((s) => s.trim()).filter(Boolean) : [];
     const now = new Date().toISOString();
     const newPhotos: import('../../types/operations').PhotoEvidence[] = [
       ...reportFindingPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Findings', type: 'infestation_focus' as const, imageUrl: p.url, capturedAt: now })),
       ...reportFinalPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Final report', type: 'after' as const, imageUrl: p.url, capturedAt: now })),
     ];
+    const jobStatus: import('../../types/operations').JobStatus = reportVisitOutcome === 'completed' ? 'completed' : 'in_progress';
     const updatedJob: ServiceJob = {
       ...showReportModal,
-      status: 'completed',
+      status: jobStatus,
+      visitOutcome: reportVisitOutcome,
       chemicalsUsed,
       photoEvidence: [...(showReportModal.photoEvidence || []), ...newPhotos],
       executionNotes: reportNotes.trim() || undefined,
-      assignedTechnicianIds: [showReportModal.leadPcoId],
+      assignedTechnicianIds: reportPcoId ? [showReportModal.leadPcoId, reportPcoId] : [showReportModal.leadPcoId],
       assignedTechnicianNames: [showReportModal.leadPcoName, ...memberNames],
       customerSignOff: reportClientName.trim()
-        ? { acknowledgedByName: reportClientName.trim(), feedbackRating: 5, signedAt: now }
+        ? { acknowledgedByName: reportClientName.trim(), feedbackRating: reportRating, signedAt: now }
         : showReportModal.customerSignOff,
       updatedAt: now,
     };
@@ -1121,15 +1132,34 @@ export const JobsListPage: React.FC = () => {
               <input className="form-input" value={showReportModal.leadPcoName} disabled />
             </div>
 
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">PCO name (who performed this service)</label>
-              <input
-                className="form-input"
-                value={reportMember}
-                onChange={(e) => setReportMember(e.target.value)}
-                placeholder="Enter the PCO who performed this visit — leave blank if Team Leader did it personally"
-              />
-              <div className="form-hint">Enter the PCO(s) who did the work. Separate multiple names with a comma.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">PCO who performed this visit</label>
+                <select
+                  className="form-select"
+                  value={reportPcoId}
+                  onChange={(e) => setReportPcoId(e.target.value)}
+                >
+                  <option value="">— Team Leader did it personally —</option>
+                  {dataService.getStaff(['technician']).map((t) => (
+                    <option key={t.uid} value={t.uid}>{t.displayName}</option>
+                  ))}
+                </select>
+                <div className="form-hint">Leave blank if the Team Leader went on site personally.</div>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Visit outcome</label>
+                <select
+                  className="form-select"
+                  value={reportVisitOutcome}
+                  onChange={(e) => setReportVisitOutcome(e.target.value as typeof reportVisitOutcome)}
+                >
+                  <option value="completed">Completed — full service done</option>
+                  <option value="partial">Partial — some areas done</option>
+                  <option value="client_blocked">Client blocked access</option>
+                  <option value="postponed">Postponed on site</option>
+                </select>
+              </div>
             </div>
 
             <div>
@@ -1287,14 +1317,38 @@ export const JobsListPage: React.FC = () => {
               )}
             </div>
 
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">Client representative name (optional sign-off)</label>
-              <input
-                className="form-input"
-                value={reportClientName}
-                onChange={(e) => setReportClientName(e.target.value)}
-                placeholder="Name of client contact who acknowledged the visit"
-              />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.75rem', alignItems: 'flex-end' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Client representative name (optional sign-off)</label>
+                <input
+                  className="form-input"
+                  value={reportClientName}
+                  onChange={(e) => setReportClientName(e.target.value)}
+                  placeholder="Name of client contact who acknowledged the visit"
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Satisfaction rating</label>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {([1, 2, 3, 4, 5] as const).map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setReportRating(star)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontSize: '1.4rem',
+                        lineHeight: 1,
+                        color: star <= reportRating ? '#F59E0B' : 'var(--border-subtle)',
+                        padding: '0 2px',
+                      }}
+                      aria-label={`${star} star`}
+                    >★</button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </Modal>

@@ -51,6 +51,7 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
   {
     title: 'Field operations',
     items: [
+      { to: '/contracts', label: 'Contracts', icon: FileSpreadsheet, module: 'contracts' },
       { to: '/operations/calendar', label: 'Dispatch Calendar', icon: CalendarDays, module: 'calendar' },
       { to: '/operations/jobs', label: 'Service Jobs', icon: Truck, module: ['jobs', 'pco'] },
     ],

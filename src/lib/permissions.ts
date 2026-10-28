@@ -132,7 +132,6 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     description: 'Sees all CRO meetings, assigns team leaders, creates contracts and dispatches service jobs.',
     modules: {
       ...all('edit', ['dashboard', 'customers', 'inspections', 'contracts', 'calendar', 'jobs', 'files', 'complaints']),
-      proposals: 'view',
       pco: 'view',
       documents: 'view',
       company_files: 'view',

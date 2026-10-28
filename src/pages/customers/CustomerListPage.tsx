@@ -44,6 +44,7 @@ export const CustomerListPage: React.FC = () => {
     city: 'Karachi',
     province: 'Sindh' as const,
     billingPreference: 'centralized' as const,
+    taxStatus: 'active_filer' as 'active_filer' | 'non_filer' | 'exempt',
     contactName: '',
     contactPhone: '',
     contactEmail: '',
@@ -65,6 +66,14 @@ export const CustomerListPage: React.FC = () => {
 
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
+  const allContracts = dataService.getContracts();
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const isCompanyLapsed = (companyId: string) => {
+    const companyContracts = allContracts.filter((c) => c.customerId === companyId);
+    if (!companyContracts.length) return false;
+    return companyContracts.every((c) => c.status === 'expired' || c.status === 'cancelled' || (c.status === 'active' && c.endDate < todayStr));
+  };
 
   const filteredCompanies = useMemo(() => {
     return companies.filter((c) => {
@@ -118,7 +127,7 @@ export const CustomerListPage: React.FC = () => {
       city: newCompany.city,
       province: newCompany.province,
       billingPreference: newCompany.billingPreference,
-      taxStatus: 'active_filer',
+      taxStatus: newCompany.taxStatus,
       totalBranchesCount: 0,
       totalActiveContracts: 0,
       totalBalance: 0,
@@ -305,7 +314,14 @@ export const CustomerListPage: React.FC = () => {
                 {filteredCompanies.map((co) => (
                   <tr key={co.id}>
                     <td>
-                      <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{co.legalCompanyName}</div>
+                      <div style={{ fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                        {co.legalCompanyName}
+                        {isCompanyLapsed(co.id) && (
+                          <span className="badge-status" style={{ background: '#FEF3C7', color: '#92400E', fontSize: '0.65rem', padding: '1px 6px', borderRadius: '10px', fontWeight: 700 }}>
+                            Lapsed
+                          </span>
+                        )}
+                      </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--ikpm-emerald-600)', fontFamily: 'monospace' }}>
                         {co.id}
                       </div>
@@ -318,6 +334,9 @@ export const CustomerListPage: React.FC = () => {
                     <td>
                       <div>NTN: {co.ntn ? formatNTN(co.ntn) : '—'}</div>
                       {co.strn && <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>STRN: {co.strn}</div>}
+                      {co.taxStatus === 'non_filer' && (
+                        <div style={{ fontSize: '0.65rem', color: '#DC2626', fontWeight: 700, marginTop: '2px' }}>⚠ Non-Filer (WHT 25%)</div>
+                      )}
                     </td>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -516,7 +535,11 @@ export const CustomerListPage: React.FC = () => {
               <select
                 className="form-select"
                 value={newCompany.city}
-                onChange={(e) => setNewCompany({ ...newCompany, city: e.target.value })}
+                onChange={(e) => {
+                  const city = e.target.value;
+                  const provinceByCity: Record<string, string> = { Karachi: 'Sindh', Lahore: 'Punjab', Faisalabad: 'Punjab', Multan: 'Punjab', Rawalpindi: 'Punjab', Islamabad: 'ICT' };
+                  setNewCompany({ ...newCompany, city, province: (provinceByCity[city] || newCompany.province) as any });
+                }}
               >
                 <option value="Karachi">Karachi</option>
                 <option value="Lahore">Lahore</option>
@@ -537,6 +560,19 @@ export const CustomerListPage: React.FC = () => {
                 <option value="centralized">Centralized (Consolidated to HQ)</option>
                 <option value="branch_wise">Branch-Wise (Invoiced Directly to Branches)</option>
               </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Tax Status <span className="required">*</span></label>
+              <select
+                className="form-select"
+                value={newCompany.taxStatus}
+                onChange={(e) => setNewCompany({ ...newCompany, taxStatus: e.target.value as typeof newCompany.taxStatus })}
+              >
+                <option value="active_filer">Active Filer (WHT 12.5%)</option>
+                <option value="non_filer">Non-Filer (WHT 25%)</option>
+                <option value="exempt">Tax Exempt</option>
+              </select>
+              <div className="form-hint">Affects withholding tax rate on invoices — verify against FBR Active Taxpayers List.</div>
             </div>
           </div>
 
@@ -697,7 +733,11 @@ export const CustomerListPage: React.FC = () => {
               <select
                 className="form-select"
                 value={newIndividual.city}
-                onChange={(e) => setNewIndividual({ ...newIndividual, city: e.target.value })}
+                onChange={(e) => {
+                  const city = e.target.value;
+                  const provinceByCity: Record<string, string> = { Karachi: 'Sindh', Lahore: 'Punjab', Faisalabad: 'Punjab', Multan: 'Punjab', Rawalpindi: 'Punjab', Islamabad: 'ICT' };
+                  setNewIndividual({ ...newIndividual, city, province: (provinceByCity[city] || newIndividual.province) as any });
+                }}
               >
                 <option value="Karachi">Karachi</option>
                 <option value="Lahore">Lahore</option>

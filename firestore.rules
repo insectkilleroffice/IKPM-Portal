@@ -312,7 +312,16 @@
         allow read: if readMod('contracts')
           || (canView('pco') && resource.data.get('assignedTeamLeaderId', '') == request.auth.uid);
         allow create: if createMod('contracts');
-        allow update: if updateMod('contracts') || (canEdit('contracts') && filingOnly());
+        allow update: if updateMod('contracts')
+          || (canEdit('contracts') && filingOnly())
+          // Schedule generator: operations / anyone with contracts+jobs edit may update job counters
+          // and TL/ops-manager assignment fields without needing company-wide data scope.
+          || (canEdit('contracts') && canEdit('jobs') && keepsOwner() && folderOwnerKept()
+              && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['totalJobsScheduled', 'totalJobsCompleted',
+                           'assignedTeamLeaderId', 'assignedTeamLeaderName',
+                           'assignedOperationsManagerId', 'assignedOperationsManagerName',
+                           'isRenewalInitiated', 'renewalAlertDate', 'updatedAt']));
         allow delete: if isSuperAdmin();
       }
 
