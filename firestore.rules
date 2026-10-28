@@ -273,20 +273,30 @@
       }
 
       match /leads/{id} {
-        // crm readers, inspectors on the lead, and pco viewers (operations) may read leads.
+        // crm readers, inspectors on the lead, pco viewers (operations), and site inspection team may read leads.
         allow read: if readMod('crm')
           || (canView('inspections') && assignedInspector())
-          || (canView('pco') && inScope(resource.data));
+          || (canView('pco') && inScope(resource.data))
+          || (canView('inspections')
+              && (request.auth.uid == resource.data.get('siteInspection', {}).get('teamLeaderId', '')
+                  || request.auth.uid in resource.data.get('siteInspection', {}).get('assignedTechIds', [])));
         allow create: if createMod('crm');
         // Assigned inspectors may record findings, but not reassign the lead or change its contacts.
-        // Operation coordinators (pco: view + inspections: edit) may update meeting/team-assignment fields only.
+        // Operation coordinators (pco: view + inspections: edit) may update meeting/team-assignment and site-inspection fields.
+        // Site inspection team members may record site inspection findings only.
         allow update: if updateMod('crm')
           || (canEdit('inspections') && assignedInspector()
               && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
                 ['ownerUid', 'teamId', 'inspectorIds', 'contacts', 'companyName', 'title', 'customerType', 'existingCustomerId']))
           || (canView('pco') && canEdit('inspections') && inScope(resource.data)
               && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['inspection', 'inspectorIds', 'assignedTeamLeaderId', 'assignedTeamLeaderName', 'stage', 'activities', 'updatedAt']));
+                 .hasOnly(['inspection', 'inspectorIds', 'assignedTeamLeaderId', 'assignedTeamLeaderName',
+                           'stage', 'activities', 'updatedAt', 'siteInspection']))
+          || (canEdit('inspections')
+              && (request.auth.uid == resource.data.get('siteInspection', {}).get('teamLeaderId', '')
+                  || request.auth.uid in resource.data.get('siteInspection', {}).get('assignedTechIds', []))
+              && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['siteInspection', 'activities', 'updatedAt', 'stage']));
         allow delete: if isSuperAdmin();
       }
 

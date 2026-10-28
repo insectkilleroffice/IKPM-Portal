@@ -1,14 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ClipboardCheck, Search, MapPin, Phone, MessageCircle, CalendarClock, Download } from 'lucide-react';
+import { ClipboardCheck, Search, MapPin, Phone, MessageCircle, CalendarClock, Download, UserCog } from 'lucide-react';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { EmptyState } from '../../components/common/EmptyState';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
-import { SiteInspectionFindingsModal, PEST_OPTIONS } from '../../features/leads/LeadActionModals';
-import { canAccessModule, canEditModule } from '../../lib/permissions';
+import { SiteInspectionFindingsModal, ScheduleSiteInspectionModal, PEST_OPTIONS } from '../../features/leads/LeadActionModals';
+import { canAccessModule, canEditModule, baseRoleOf } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { primaryContact } from '../../lib/leadWorkflow';
 import { toWhatsAppNumber } from '../../services/outreachService';
@@ -46,19 +46,25 @@ function inlineAsSiteInspection(l: Lead): SiteInspection | null {
   };
 }
 
-type Tab = 'upcoming' | 'today' | 'completed';
+type Tab = 'unassigned' | 'upcoming' | 'today' | 'completed';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
 /** Separate technical pest site inspections scheduled from the Leads pipeline. */
 export const InspectionsPage: React.FC = () => {
   const { userProfile, effectiveRole } = useAuth();
-  const [tab, setTab] = useState<Tab>('upcoming');
-  const [mine, setMine] = useState(!canAccessModule(effectiveRole, 'crm'));
+  const defaultTab = (): Tab => {
+    const r = baseRoleOf(effectiveRole);
+    return (r === 'operations' || r === 'super_admin' || r === 'admin') ? 'unassigned' : 'upcoming';
+  };
+  const [tab, setTab] = useState<Tab>(defaultTab);
+  const [mine, setMine] = useState(!canAccessModule(effectiveRole, 'crm') && baseRoleOf(effectiveRole) !== 'operations');
   const [query, setQuery] = useState('');
   const [findingsLead, setFindingsLead] = useState<Lead | null>(null);
+  const [assignLead, setAssignLead] = useState<Lead | null>(null);
   const pdfAction = usePdfAction();
   const canRecord = canEditModule(effectiveRole, 'inspections') || canEditModule(effectiveRole, 'pco');
+  const canAssign = ['operations', 'super_admin', 'admin', 'team_leader'].includes(baseRoleOf(effectiveRole) ?? '');
   const canOpenLeads = canAccessModule(effectiveRole, 'crm');
   const store = useDataStore();
 
@@ -66,6 +72,14 @@ export const InspectionsPage: React.FC = () => {
     l.siteInspection && l.siteInspection.status !== 'cancelled'
       ? l.siteInspection
       : inlineAsSiteInspection(l);
+
+  const isInlineLead = (l: Lead) => !l.siteInspection || l.siteInspection.status === 'cancelled';
+
+  const needsAssignment = (l: Lead) => {
+    if (isInlineLead(l)) return false;
+    const si = getInspView(l);
+    return si?.status === 'scheduled' && !si.teamLeaderId;
+  };
 
   const all = store.getLeads().filter((l) => getInspView(l) !== null);
 
@@ -81,8 +95,9 @@ export const InspectionsPage: React.FC = () => {
   }, [all, mine, query, userProfile?.uid]);
 
   const byTab = {
-    today: filtered.filter((l) => { const si = getInspView(l)!; return si.status === 'scheduled' && si.scheduledDate <= today(); }),
-    upcoming: filtered.filter((l) => getInspView(l)!.status === 'scheduled'),
+    unassigned: filtered.filter((l) => needsAssignment(l)),
+    today: filtered.filter((l) => { const si = getInspView(l)!; return si.status === 'scheduled' && !needsAssignment(l) && si.scheduledDate <= today(); }),
+    upcoming: filtered.filter((l) => getInspView(l)!.status === 'scheduled' && !needsAssignment(l)),
     completed: filtered.filter((l) => getInspView(l)!.status === 'completed'),
   };
   const rows = [...byTab[tab]].sort((a, b) => {
@@ -103,8 +118,14 @@ export const InspectionsPage: React.FC = () => {
       </div>
 
       <div className="tab-bar" role="tablist">
+        <button className={`tab-btn ${tab === 'unassigned' ? 'active' : ''}`} onClick={() => setTab('unassigned')}>
+          <UserCog size={16} /> Unassigned
+          {byTab.unassigned.length > 0
+            ? <span className="tab-count" style={{ background: 'var(--ikpm-amber-500, #f59e0b)', color: '#fff' }}>{byTab.unassigned.length}</span>
+            : <span className="tab-count">{byTab.unassigned.length}</span>}
+        </button>
         <button className={`tab-btn ${tab === 'today' ? 'active' : ''}`} onClick={() => setTab('today')}>
-          <CalendarClock size={16} /> Today & overdue <span className="tab-count">{byTab.today.length}</span>
+          <CalendarClock size={16} /> Today &amp; overdue <span className="tab-count">{byTab.today.length}</span>
         </button>
         <button className={`tab-btn ${tab === 'upcoming' ? 'active' : ''}`} onClick={() => setTab('upcoming')}>
           Scheduled <span className="tab-count">{byTab.upcoming.length}</span>
@@ -119,16 +140,26 @@ export const InspectionsPage: React.FC = () => {
           <Search size={16} color="var(--text-muted)" />
           <input placeholder="Search company, city, branch…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
-        {canOpenLeads && (
+        {(canOpenLeads || canAccessModule(effectiveRole, 'pco')) && (
           <button type="button" className={`chip ${mine ? 'chip-on' : ''}`} onClick={() => setMine((v) => !v)}>Assigned to me</button>
         )}
       </div>
 
       {rows.length === 0 ? (
         <EmptyState
-          icon={ClipboardCheck}
-          title={tab === 'completed' ? 'No completed inspections' : 'No site inspections scheduled'}
-          description={canOpenLeads ? 'Schedule site inspections from the Leads pipeline after the client meeting.' : 'Site inspections assigned to you will appear here.'}
+          icon={tab === 'unassigned' ? UserCog : ClipboardCheck}
+          title={
+            tab === 'unassigned' ? 'No unassigned inspections' :
+            tab === 'completed' ? 'No completed inspections' :
+            'No site inspections scheduled'
+          }
+          description={
+            tab === 'unassigned'
+              ? 'All scheduled inspections have a team assigned.'
+              : canOpenLeads
+                ? 'Schedule site inspections from the Leads pipeline after the client meeting.'
+                : 'Site inspections assigned to you will appear here.'
+          }
         />
       ) : (
         <div className="table-container">
@@ -140,13 +171,14 @@ export const InspectionsPage: React.FC = () => {
                 <th>Contact</th>
                 <th>Team</th>
                 <th>{tab === 'completed' ? 'Findings' : 'Notes'}</th>
-                <th style={{ width: 170 }} />
+                <th style={{ width: 200 }} />
               </tr>
             </thead>
             <tbody>
               {rows.map((l) => {
                 const si = getInspView(l)!;
-                const isInline = !l.siteInspection || l.siteInspection.status === 'cancelled';
+                const isInline = isInlineLead(l);
+                const unassigned = needsAssignment(l);
                 const p = primaryContact(l);
                 const overdue = si.status === 'scheduled' && si.scheduledDate < today();
                 return (
@@ -154,7 +186,7 @@ export const InspectionsPage: React.FC = () => {
                     <td>
                       <div className="cell-title">{formatDate(si.status === 'completed' ? si.completedDate : si.scheduledDate)}</div>
                       <div className="cell-sub">
-                        {overdue ? <span className="badge-status badge-rose">Overdue</span> : null}
+                        {overdue && <span className="badge-status badge-rose">Overdue</span>}
                         {isInline && <span className="badge-status badge-blue" style={{ marginLeft: overdue ? 4 : 0 }}>Done during meeting</span>}
                       </div>
                     </td>
@@ -177,8 +209,14 @@ export const InspectionsPage: React.FC = () => {
                       ) : '—'}
                     </td>
                     <td className="cell-sub">
-                      {si.teamLeaderName && <div className="cell-title">{si.teamLeaderName}</div>}
-                      {si.assignedTechNames?.join(', ') || '—'}
+                      {unassigned ? (
+                        <span className="badge-status badge-amber" style={{ fontSize: '0.75rem', fontWeight: 600 }}>Unassigned</span>
+                      ) : (
+                        <>
+                          {si.teamLeaderName && <div className="cell-title">{si.teamLeaderName}</div>}
+                          {si.assignedTechNames?.join(', ') || '—'}
+                        </>
+                      )}
                     </td>
                     <td className="cell-sub" style={{ maxWidth: 320 }}>
                       {si.status === 'completed'
@@ -186,14 +224,27 @@ export const InspectionsPage: React.FC = () => {
                         : si.notes || '—'}
                     </td>
                     <td>
-                      <div className="cell-actions">
+                      <div className="cell-actions" style={{ flexWrap: 'wrap', gap: '0.35rem' }}>
                         {si.status === 'completed' && (
                           <button className="icon-btn" title="Download inspection report PDF" onClick={() => pdfAction.run(l.id, () => pdfGenerator.generateInspectionReportPDF(l))} disabled={pdfAction.busy === l.id}>
                             <Download size={15} />
                           </button>
                         )}
+                        {/* Assign team — for Operations Manager when no team assigned yet */}
+                        {canAssign && !isInline && si.status === 'scheduled' && unassigned && (
+                          <button className="btn btn-sm btn-primary" onClick={() => setAssignLead(l)}>
+                            <UserCog size={14} /> Assign team
+                          </button>
+                        )}
+                        {/* Reschedule / update team once assigned */}
+                        {canAssign && !isInline && si.status === 'scheduled' && !unassigned && (
+                          <button className="btn btn-sm btn-secondary" onClick={() => setAssignLead(l)}>
+                            <CalendarClock size={14} /> Reschedule
+                          </button>
+                        )}
+                        {/* Record / edit findings */}
                         {canRecord && !isInline && (
-                          <button className={`btn btn-sm ${si.status === 'completed' ? 'btn-secondary' : 'btn-primary'}`} onClick={() => setFindingsLead(l)}>
+                          <button className={`btn btn-sm ${si.status === 'completed' ? 'btn-secondary' : 'btn-primary'}`} onClick={() => setFindingsLead(l)} disabled={unassigned && si.status === 'scheduled'} title={unassigned && si.status === 'scheduled' ? 'Assign a team first' : undefined}>
                             <ClipboardCheck size={14} /> {si.status === 'completed' ? 'Edit findings' : 'Record findings'}
                           </button>
                         )}
@@ -208,6 +259,7 @@ export const InspectionsPage: React.FC = () => {
       )}
 
       <SiteInspectionFindingsModal lead={findingsLead} onClose={() => setFindingsLead(null)} onDone={() => setFindingsLead(null)} />
+      <ScheduleSiteInspectionModal lead={assignLead} onClose={() => setAssignLead(null)} onDone={() => setAssignLead(null)} />
     </div>
   );
 };

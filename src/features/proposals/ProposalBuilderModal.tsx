@@ -457,6 +457,10 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
             </div>
           </div>
 
+          <datalist id="site-frequencies">
+            {['Once per week','Twice per week','Twice per month','Once per month','Every service visit','Monthly','Quarterly','As required'].map((f) => <option key={f} value={f} />)}
+          </datalist>
+
           {/* ── Section 2: Site-by-site breakdown (multi-site, company only) ── */}
           {customerType === 'company' && (() => {
             const siteOptions = [
@@ -477,7 +481,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                       const usedIds = new Set(branchBreakdowns.map((x) => x.branchId));
                       const first = siteOptions.find((s) => !usedIds.has(s.id));
                       if (!first) return;
-                      setBranchBreakdowns((prev) => [...prev, { branchId: first.id, branchName: first.name, address: first.address, services: [{ service: 'general_fumigation' }], visitsPerMonth: 1, monthlyAmount: 0 }]);
+                      setBranchBreakdowns((prev) => [...prev, { branchId: first.id, branchName: first.name, address: first.address, services: [{ service: 'general_fumigation', frequency: 'Once per month' }], visitsPerMonth: 1, monthlyAmount: 0 }]);
                     }}>
                     <Plus size={13} /> Add site
                   </button>
@@ -528,15 +532,22 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
                           <label className="form-label" style={{ marginBottom: 0 }}>Services / treatments</label>
                           <button type="button" className="btn btn-sm btn-ghost"
-                            onClick={() => upd({ services: [...(b.services || []), { service: 'general_fumigation' }] })}>
+                            onClick={() => upd({ services: [...(b.services || []), { service: 'general_fumigation', frequency: 'Once per month' }] })}>
                             <Plus size={11} /> Add treatment
                           </button>
                         </div>
                         {(b.services || []).length === 0 && (
                           <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>No treatments added yet</div>
                         )}
+                        {(b.services || []).length > 0 && (
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.25rem' }}>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600, paddingLeft: 2 }}>Treatment</span>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Frequency</span>
+                            <span />
+                          </div>
+                        )}
                         {(b.services || []).map((sv, si) => (
-                          <div key={si} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.35rem' }}>
+                          <div key={si} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.35rem' }}>
                             <select className="form-select" value={sv.service}
                               onChange={(e) => {
                                 const updated = (b.services || []).map((s, i) => i === si ? { ...s, service: e.target.value } : s);
@@ -544,6 +555,16 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                               }}>
                               {SERVICE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                             </select>
+                            <input
+                              className="form-input"
+                              placeholder="Once per month"
+                              list="site-frequencies"
+                              value={sv.frequency ?? ''}
+                              onChange={(e) => {
+                                const updated = (b.services || []).map((s, i) => i === si ? { ...s, frequency: e.target.value } : s);
+                                upd({ services: updated });
+                              }}
+                            />
                             <button type="button" className="icon-btn"
                               onClick={() => upd({ services: (b.services || []).filter((_, i) => i !== si) })}>
                               <Trash2 size={13} color="var(--ikpm-rose-400)" />
@@ -599,7 +620,10 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                         {b.address && <div style={{ fontWeight: 400, fontSize: '0.72rem', color: 'var(--text-muted)' }}>{b.address}</div>}
                       </td>
                       <td style={{ padding: '0.4rem 0.7rem', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-                        {(b.services || []).map((sv) => SERVICE_OPTIONS.find((o) => o.value === sv.service)?.label || sv.service).join(', ') || '—'}
+                        {(b.services || []).map((sv) => {
+                          const label = SERVICE_OPTIONS.find((o) => o.value === sv.service)?.label || sv.service;
+                          return sv.frequency ? `${label} (${sv.frequency})` : label;
+                        }).join(', ') || '—'}
                       </td>
                       <td style={{ padding: '0.4rem 0.7rem', textAlign: 'center' }}>{b.visitsPerMonth}</td>
                       <td style={{ padding: '0.4rem 0.7rem', textAlign: 'right', fontWeight: 700 }}>{b.monthlyAmount > 0 ? b.monthlyAmount.toLocaleString() : '—'}</td>
@@ -766,7 +790,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                       const usedIds = new Set(branchBreakdowns.map((x) => x.branchId));
                       const first = siteOptions.find((s) => !usedIds.has(s.id));
                       if (!first) return;
-                      setBranchBreakdowns((prev) => [...prev, { branchId: first.id, branchName: first.name, address: first.address, services: [{ service: 'general_fumigation' }], visitsPerMonth: 1, monthlyAmount: 0 }]);
+                      setBranchBreakdowns((prev) => [...prev, { branchId: first.id, branchName: first.name, address: first.address, services: [{ service: 'general_fumigation', frequency: 'Once per month' }], visitsPerMonth: 1, monthlyAmount: 0 }]);
                     }}>
                     <Plus size={13} /> Add site
                   </button>
@@ -811,13 +835,20 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
                           <label className="form-label" style={{ marginBottom: 0 }}>Treatments at this site</label>
                           <button type="button" className="btn btn-sm btn-ghost"
-                            onClick={() => upd({ services: [...(b.services || []), { service: 'general_fumigation' }] })}>
+                            onClick={() => upd({ services: [...(b.services || []), { service: 'general_fumigation', frequency: 'Once per month' }] })}>
                             <Plus size={11} /> Add treatment
                           </button>
                         </div>
                         {(b.services || []).length === 0 && <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>No treatments added yet</div>}
+                        {(b.services || []).length > 0 && (
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.25rem' }}>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600, paddingLeft: 2 }}>Treatment</span>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Frequency</span>
+                            <span />
+                          </div>
+                        )}
                         {(b.services || []).map((sv, si) => (
-                          <div key={si} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.35rem' }}>
+                          <div key={si} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.35rem' }}>
                             <select className="form-select" value={sv.service}
                               onChange={(e) => {
                                 const updated = (b.services || []).map((s, i) => i === si ? { ...s, service: e.target.value } : s);
@@ -825,6 +856,16 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                               }}>
                               {SERVICE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                             </select>
+                            <input
+                              className="form-input"
+                              placeholder="Once per month"
+                              list="site-frequencies"
+                              value={sv.frequency ?? ''}
+                              onChange={(e) => {
+                                const updated = (b.services || []).map((s, i) => i === si ? { ...s, frequency: e.target.value } : s);
+                                upd({ services: updated });
+                              }}
+                            />
                             <button type="button" className="icon-btn"
                               onClick={() => upd({ services: (b.services || []).filter((_, i) => i !== si) })}>
                               <Trash2 size={13} color="var(--ikpm-rose-400)" />
@@ -860,7 +901,10 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                               {b.address && <div style={{ fontWeight: 400, fontSize: '0.72rem', color: 'var(--text-muted)' }}>{b.address}</div>}
                             </td>
                             <td style={{ padding: '0.4rem 0.7rem', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-                              {(b.services || []).map((sv) => SERVICE_OPTIONS.find((o) => o.value === sv.service)?.label || sv.service).join(', ') || '—'}
+                              {(b.services || []).map((sv) => {
+                                const label = SERVICE_OPTIONS.find((o) => o.value === sv.service)?.label || sv.service;
+                                return sv.frequency ? `${label} (${sv.frequency})` : label;
+                              }).join(', ') || '—'}
                             </td>
                             <td style={{ padding: '0.4rem 0.7rem', textAlign: 'right', fontWeight: 700 }}>{b.monthlyAmount > 0 ? b.monthlyAmount.toLocaleString() : '—'}</td>
                           </tr>

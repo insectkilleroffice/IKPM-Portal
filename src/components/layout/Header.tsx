@@ -24,6 +24,7 @@ import { useSync } from '../../contexts/SyncContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { normalizePakistaniPhone } from '../../lib/formatters';
 import { canAccessModule, canEditModule, roleColor, roleLabel, type ModuleKey } from '../../lib/permissions';
+import { NotificationBell } from './NotificationBell';
 
 interface SearchHit {
   key: string;
@@ -186,6 +187,8 @@ export const Header: React.FC<{ onMenu: () => void }> = ({ onMenu }) => {
             {simulatedRole ? <EyeOff size={19} /> : <Eye size={19} />}
           </button>
         )}
+
+        <NotificationBell />
 
         <div style={{ position: 'relative' }} ref={menuRef}>
           <div className="user-profile-badge" onClick={() => setShowUserMenu((v) => !v)} role="button" aria-expanded={showUserMenu}>

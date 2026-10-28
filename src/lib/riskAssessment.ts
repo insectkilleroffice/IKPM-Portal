@@ -3,29 +3,33 @@
 import type { InspectionAssessment, RiskFinding } from '../types/crm';
 
 /** Common proofing issues seen on surveys. Picking one fills the row; every field stays editable. */
-export const FINDING_SUGGESTIONS: { label: string; observation: string; risk: string; recommendation: string }[] = [
+export const FINDING_SUGGESTIONS: { label: string; observation: string; risk: string; severity: 'low' | 'moderate' | 'high' | 'severe'; recommendation: string }[] = [
   {
     label: 'Gap under door',
     observation: 'Gap under the door.',
     risk: 'Entry point for rodents, lizards and crawling insects.',
+    severity: 'low',
     recommendation: 'Fit a door sweep / rubber strip so the door closes without a gap.',
   },
   {
     label: 'Gap between tiles and wood',
     observation: 'Gap between the floor / wall tiles and the wooden fixture.',
     risk: 'Hiding and breeding place for cockroaches and ants.',
+    severity: 'moderate',
     recommendation: 'Seal the gap with silicone sealant.',
   },
   {
     label: 'Wire / pipe gaps',
     observation: 'Open gaps around wires and pipes passing through the wall.',
     risk: 'Entry route for rodents and insects between areas.',
+    severity: 'low',
     recommendation: 'Seal around wires and pipes with sealant or cement; use wire mesh for larger openings.',
   },
   {
     label: 'Drain openings',
     observation: 'Drain openings without covers.',
     risk: 'Entry and breeding point for cockroaches, drain flies and rodents.',
+    severity: 'moderate',
     recommendation: 'Fit fine-mesh drain covers and keep drains clean.',
   },
 ];

@@ -174,6 +174,7 @@ export interface RiskFinding {
   location?: string;
   observation: string;
   risk: string;
+  severity?: 'low' | 'moderate' | 'high' | 'severe';
   recommendation: string;
 }
 

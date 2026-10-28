@@ -898,7 +898,7 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
 // ---------------------------------------------------------------------------
 export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
   const store = useDataStore();
-  const { userProfile } = useAuth();
+  const { userProfile, effectiveRole } = useAuth();
   const { success, warning, error } = useNotification();
   const [date, setDate] = useState(addDays(1));
   const [branchChoice, setBranchChoice] = useState<string>('headquarter');
@@ -909,6 +909,7 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
   const [teamLeaderId, setTeamLeaderId] = useState('');
   const [notes, setNotes] = useState('');
 
+  const isCRO = baseRoleOf(effectiveRole) === 'sales';
   const staff = store.getStaff().filter((u) => ['team_leader', 'operations', 'sales'].includes(u.role));
 
   useEffect(() => {
@@ -954,8 +955,8 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
     if (!date) return warning('Date required', 'Select a date for the inspection.');
     const b = resolvedBranch();
     if (!b.name) return warning('Location required', 'Enter a branch name or select an existing site.');
-    const chosenTechs = staff.filter((u) => techIds.includes(u.uid));
-    const tl = staff.find((u) => u.uid === teamLeaderId);
+    const chosenTechs = isCRO ? [] : staff.filter((u) => techIds.includes(u.uid));
+    const tl = isCRO ? undefined : staff.find((u) => u.uid === teamLeaderId);
     let updated: Lead | undefined;
     try {
       updated = dataService.scheduleSiteInspection(
@@ -977,7 +978,13 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
       return error('Could not schedule inspection', err instanceof Error ? err.message : String(err));
     }
     if (updated) {
-      success('Site inspection scheduled', `${new Date(date).toLocaleDateString('en-GB')} at ${b.name}${chosenTechs.length ? ` · Tech: ${chosenTechs.map((u) => u.displayName).join(', ')}` : ''}`);
+      if (isCRO) {
+        success('Site inspection scheduled', `${new Date(date).toLocaleDateString('en-GB')} at ${b.name}. Operations Manager will assign the team.`);
+      } else if (tl) {
+        success('Site inspection scheduled & assigned', `${new Date(date).toLocaleDateString('en-GB')} at ${b.name} · ${tl.displayName}`);
+      } else {
+        success('Site inspection scheduled', `${new Date(date).toLocaleDateString('en-GB')} at ${b.name}. Pending team assignment.`);
+      }
       onDone?.(updated);
     }
     onClose();
@@ -987,13 +994,15 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
     <Modal
       isOpen
       onClose={onClose}
-      title={`Schedule site inspection: ${lead.title}`}
-      subtitle="Book a separate technical pest inspection visit"
+      title={`${lead.siteInspection?.status === 'scheduled' ? 'Reschedule' : 'Schedule'} site inspection: ${lead.title}`}
+      subtitle={isCRO ? 'Book the visit — Operations Manager will assign the team' : 'Schedule and assign the team for this inspection'}
       maxWidth="680px"
       footer={
         <>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save}>Schedule inspection</button>
+          <button className="btn btn-primary" onClick={save}>
+            {isCRO ? 'Schedule inspection' : teamLeaderId ? 'Schedule & assign' : 'Schedule (unassigned)'}
+          </button>
         </>
       }
     >
@@ -1049,49 +1058,55 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
         )}
       </div>
 
-      <div className="form-group">
-        <label className="form-label">Supervisor / Team Leader</label>
-        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-          <select
-            className="form-input"
-            value={teamLeaderId}
-            onChange={(e) => setTeamLeaderId(e.target.value)}
-            style={{ flex: 1, minWidth: '180px' }}
-          >
-            <option value="">— None / TBD —</option>
-            {staff.map((u) => (
-              <option key={u.uid} value={u.uid}>{u.displayName} ({u.role?.replace(/_/g, ' ')})</option>
-            ))}
-          </select>
-          {userProfile && staff.some((u) => u.uid === userProfile.uid) && teamLeaderId !== userProfile.uid && (
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              onClick={() => setTeamLeaderId(userProfile.uid)}
-            >
-              Assign myself
-            </button>
-          )}
-          {teamLeaderId === userProfile?.uid && (
-            <span style={{ fontSize: '0.78rem', color: 'var(--ikpm-emerald-700)', fontWeight: 600 }}>✓ Assigned to you</span>
-          )}
-        </div>
-      </div>
+      {!isCRO && (
+        <>
+          <div className="form-group">
+            <label className="form-label">Supervisor / Team Leader</label>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              <select
+                className="form-input"
+                value={teamLeaderId}
+                onChange={(e) => setTeamLeaderId(e.target.value)}
+                style={{ flex: 1, minWidth: '180px' }}
+              >
+                <option value="">— Unassigned —</option>
+                {staff.map((u) => (
+                  <option key={u.uid} value={u.uid}>{u.displayName} ({u.role?.replace(/_/g, ' ')})</option>
+                ))}
+              </select>
+              {userProfile && staff.some((u) => u.uid === userProfile.uid) && teamLeaderId !== userProfile.uid && (
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setTeamLeaderId(userProfile.uid)}>
+                  Assign myself
+                </button>
+              )}
+              {teamLeaderId === userProfile?.uid && (
+                <span style={{ fontSize: '0.78rem', color: 'var(--ikpm-emerald-700)', fontWeight: 600 }}>✓ Assigned to you</span>
+              )}
+            </div>
+          </div>
 
-      <div className="form-group">
-        <label className="form-label">Assign technician(s) going for the visit</label>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-          {staff.map((u) => {
-            const on = techIds.includes(u.uid);
-            return (
-              <button key={u.uid} type="button" className={`chip ${on ? 'chip-on' : ''}`} onClick={() => toggleTech(u.uid)}>
-                {on && <Check size={14} />} {u.displayName}
-              </button>
-            );
-          })}
+          <div className="form-group">
+            <label className="form-label">Assign technician(s) going for the visit</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+              {staff.map((u) => {
+                const on = techIds.includes(u.uid);
+                return (
+                  <button key={u.uid} type="button" className={`chip ${on ? 'chip-on' : ''}`} onClick={() => toggleTech(u.uid)}>
+                    {on && <Check size={14} />} {u.displayName}
+                  </button>
+                );
+              })}
+            </div>
+            {staff.length === 0 && <div className="cell-sub">No staff found. Add staff users to assign technicians.</div>}
+          </div>
+        </>
+      )}
+
+      {isCRO && (
+        <div className="form-hint" style={{ padding: '0.5rem 0.75rem', background: 'var(--ikpm-amber-50, #fffbeb)', border: '1px solid var(--ikpm-amber-200, #fde68a)', borderRadius: 6, marginBottom: '0.5rem' }}>
+          Operations Manager will assign a team leader after you schedule this inspection.
         </div>
-        {staff.length === 0 && <div className="cell-sub">No staff found. Add staff users to assign technicians.</div>}
-      </div>
+      )}
 
       <div className="form-group" style={{ marginBottom: 0 }}>
         <label className="form-label">Instructions / notes</label>
@@ -1237,39 +1252,45 @@ export const SiteInspectionFindingsModal: React.FC<{ lead: Lead | null; onClose:
       <div className="form-group">
         <label className="form-label">Risk findings</label>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          {rows.map((r, idx) => (
-            <div key={r.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr 1fr 1fr 88px auto', gap: '0.4rem', alignItems: 'start', padding: '0.5rem', border: '1px solid var(--border-subtle)', borderRadius: '0.4rem', background: 'var(--surface-card)' }}>
-              <span className="cell-sub" style={{ paddingTop: '0.5rem' }}>{idx + 1}</span>
-              <div>
-                <div className="cell-sub" style={{ marginBottom: '0.2rem' }}>Location</div>
-                <input className="form-input" style={{ fontSize: '0.82rem', padding: '0.3rem 0.5rem' }} value={r.location || ''} onChange={(e) => setRow(r.id, { location: e.target.value })} placeholder="Where?" />
-              </div>
-              <div>
-                <div className="cell-sub" style={{ marginBottom: '0.2rem' }}>Observation <span className="required">*</span></div>
-                <textarea className="form-textarea" style={{ fontSize: '0.82rem', padding: '0.3rem 0.5rem', minHeight: '2.5rem' }} rows={2} value={r.observation} onChange={(e) => setRow(r.id, { observation: e.target.value })} placeholder="What was seen" />
-              </div>
-              <div>
-                <div className="cell-sub" style={{ marginBottom: '0.2rem' }}>Risk</div>
-                <textarea className="form-textarea" style={{ fontSize: '0.82rem', padding: '0.3rem 0.5rem', minHeight: '2.5rem' }} rows={2} value={r.risk} onChange={(e) => setRow(r.id, { risk: e.target.value })} placeholder="Risk to client" />
-              </div>
-              <div>
-                <div className="cell-sub" style={{ marginBottom: '0.2rem' }}>Recommendation <span className="required">*</span></div>
-                <textarea className="form-textarea" style={{ fontSize: '0.82rem', padding: '0.3rem 0.5rem', minHeight: '2.5rem' }} rows={2} value={r.recommendation} onChange={(e) => setRow(r.id, { recommendation: e.target.value })} placeholder="Action to take" />
-              </div>
-              <div>
-                <div className="cell-sub" style={{ marginBottom: '0.2rem' }}>Photo</div>
+          {rows.map((r, i) => (
+            <div key={r.id} className="finding-row">
+              <div className="finding-photo">
                 <SinglePhotoField
+                  photo={r.photo}
+                  onChange={(photo) => setRow(r.id, { photo: photo ?? undefined })}
                   scope={{ ...scope, category: 'risk_assessment' as const }}
                   subPath={`${lead.id}/site-inspection`}
-                  photo={r.photo}
-                  onChange={(p) => setRow(r.id, { photo: p ?? undefined })}
                   fileNamePrefix={`risk_${r.id}`}
-                  caption="Risk assessment photo"
+                  caption={r.location || `Finding ${i + 1}`}
                   offlineCount={rows.filter((x) => x.photo?.imageUrl?.startsWith('data:')).length}
                   onNotify={notify}
                 />
               </div>
-              {rows.length > 1 && <button type="button" className="icon-btn" style={{ marginTop: '1.5rem' }} onClick={() => setRows((prev) => prev.filter((x) => x.id !== r.id))} title="Remove"><Trash2 size={14} /></button>}
+              <div className="finding-fields">
+                <div className="finding-head">
+                  <strong>{i + 1}.</strong>
+                  <input className="form-input" value={r.location ?? ''} onChange={(e) => setRow(r.id, { location: e.target.value })} placeholder="Location (e.g. Kitchen back door)" aria-label="Location" />
+                  <button type="button" className="icon-btn" onClick={() => setRows((prev) => (prev.length > 1 ? prev.filter((x) => x.id !== r.id) : [newFinding()]))} aria-label="Remove finding"><Trash2 size={15} /></button>
+                </div>
+                <div className="chip-row" style={{ margin: '0.35rem 0' }}>
+                  {FINDING_SUGGESTIONS.map((sug) => (
+                    <button key={sug.label} type="button" className="chip chip-sm" onClick={() => setRow(r.id, { observation: sug.observation, risk: sug.risk, recommendation: sug.recommendation, severity: sug.severity })}>
+                      {sug.label}
+                    </button>
+                  ))}
+                </div>
+                <textarea className="form-textarea" rows={2} value={r.observation} onChange={(e) => setRow(r.id, { observation: e.target.value })} placeholder="Observation" aria-label="Observation" />
+                <textarea className="form-textarea" rows={2} value={r.risk} onChange={(e) => setRow(r.id, { risk: e.target.value })} placeholder="Risk" aria-label="Risk" />
+                <div className="chip-row" style={{ margin: '0.2rem 0', alignItems: 'center' }}>
+                  <span className="cell-sub" style={{ marginRight: '0.3rem', flexShrink: 0 }}>Severity:</span>
+                  {(['low', 'moderate', 'high', 'severe'] as const).map((s) => (
+                    <button key={s} type="button" className={`chip chip-sm ${(r.severity ?? 'moderate') === s ? 'chip-on' : ''}`} onClick={() => setRow(r.id, { severity: s })}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+                <textarea className="form-textarea" rows={2} value={r.recommendation} onChange={(e) => setRow(r.id, { recommendation: e.target.value })} placeholder="Recommendation" aria-label="Recommendation" />
+              </div>
             </div>
           ))}
         </div>
@@ -1695,13 +1716,21 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
               </div>
               <div className="chip-row" style={{ margin: '0.35rem 0' }}>
                 {FINDING_SUGGESTIONS.map((sug) => (
-                  <button key={sug.label} type="button" className="chip chip-sm" onClick={() => setRow(r.id, { observation: sug.observation, risk: sug.risk, recommendation: sug.recommendation })}>
+                  <button key={sug.label} type="button" className="chip chip-sm" onClick={() => setRow(r.id, { observation: sug.observation, risk: sug.risk, recommendation: sug.recommendation, severity: sug.severity })}>
                     {sug.label}
                   </button>
                 ))}
               </div>
               <textarea className="form-textarea" rows={2} value={r.observation} onChange={(e) => setRow(r.id, { observation: e.target.value })} placeholder="Observation" aria-label="Observation" />
               <textarea className="form-textarea" rows={2} value={r.risk} onChange={(e) => setRow(r.id, { risk: e.target.value })} placeholder="Risk" aria-label="Risk" />
+              <div className="chip-row" style={{ margin: '0.2rem 0', alignItems: 'center' }}>
+                <span className="cell-sub" style={{ marginRight: '0.3rem', flexShrink: 0 }}>Severity:</span>
+                {(['low', 'moderate', 'high', 'severe'] as const).map((s) => (
+                  <button key={s} type="button" className={`chip chip-sm ${(r.severity ?? 'moderate') === s ? 'chip-on' : ''}`} onClick={() => setRow(r.id, { severity: s })}>
+                    {s}
+                  </button>
+                ))}
+              </div>
               <textarea className="form-textarea" rows={2} value={r.recommendation} onChange={(e) => setRow(r.id, { recommendation: e.target.value })} placeholder="Recommendation" aria-label="Recommendation" />
             </div>
           </div>
