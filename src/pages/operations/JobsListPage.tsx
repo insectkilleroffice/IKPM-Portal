@@ -1122,14 +1122,14 @@ export const JobsListPage: React.FC = () => {
             </div>
 
             <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">Team member(s) who conducted the visit</label>
+              <label className="form-label">PCO name (who performed this service)</label>
               <input
                 className="form-input"
                 value={reportMember}
                 onChange={(e) => setReportMember(e.target.value)}
-                placeholder="Name(s) of team member(s) who went on site — leave blank if Team Leader went themselves"
+                placeholder="Enter the PCO who performed this visit — leave blank if Team Leader did it personally"
               />
-              <div className="form-hint">Separate multiple names with a comma. Leave blank if the Team Leader conducted the visit personally.</div>
+              <div className="form-hint">Enter the PCO(s) who did the work. Separate multiple names with a comma.</div>
             </div>
 
             <div>

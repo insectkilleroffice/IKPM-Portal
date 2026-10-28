@@ -44,7 +44,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
   const { userProfile } = useAuth();
   const { success, error } = useNotification();
 
-  const technicians = store.getStaff(['team_leader', 'operations', 'technician']);
+  const technicians = store.getStaff(['team_leader']);
   // Exclude this contract's own jobs so regenerating a schedule doesn't flag self-conflicts
   const existingJobs = store.getJobs().filter((j) => j.contractId !== contract.id);
 
@@ -474,7 +474,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
 
           <div style={{ minWidth: '180px' }}>
             <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-              Default Technician (PCO)
+              Assign to Team Leader
             </label>
             <select
               className="form-select"
@@ -550,7 +550,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
                 <th>Date</th>
                 <th>Time Slot</th>
                 <th>Closing / Window</th>
-                <th>Assigned PCO</th>
+                <th>Assigned Team Leader</th>
                 <th>Status</th>
               </tr>
             </thead>
