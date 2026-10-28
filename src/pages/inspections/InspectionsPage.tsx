@@ -94,11 +94,13 @@ export const InspectionsPage: React.FC = () => {
     });
   }, [all, mine, query, userProfile?.uid]);
 
+  const hideCompleted = ['operations', 'team_leader'].includes(baseRoleOf(effectiveRole) ?? '');
+
   const byTab = {
     unassigned: filtered.filter((l) => needsAssignment(l)),
     today: filtered.filter((l) => { const si = getInspView(l)!; return si.status === 'scheduled' && !needsAssignment(l) && si.scheduledDate <= today(); }),
     upcoming: filtered.filter((l) => getInspView(l)!.status === 'scheduled' && !needsAssignment(l)),
-    completed: filtered.filter((l) => getInspView(l)!.status === 'completed'),
+    completed: hideCompleted ? [] : filtered.filter((l) => getInspView(l)!.status === 'completed'),
   };
   const rows = [...byTab[tab]].sort((a, b) => {
     const sa = getInspView(a)!, sb = getInspView(b)!;
@@ -130,9 +132,11 @@ export const InspectionsPage: React.FC = () => {
         <button className={`tab-btn ${tab === 'upcoming' ? 'active' : ''}`} onClick={() => setTab('upcoming')}>
           Scheduled <span className="tab-count">{byTab.upcoming.length}</span>
         </button>
-        <button className={`tab-btn ${tab === 'completed' ? 'active' : ''}`} onClick={() => setTab('completed')}>
-          <ClipboardCheck size={16} /> Completed <span className="tab-count">{byTab.completed.length}</span>
-        </button>
+        {!hideCompleted && (
+          <button className={`tab-btn ${tab === 'completed' ? 'active' : ''}`} onClick={() => setTab('completed')}>
+            <ClipboardCheck size={16} /> Completed <span className="tab-count">{byTab.completed.length}</span>
+          </button>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>

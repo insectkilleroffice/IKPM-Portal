@@ -503,8 +503,9 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
 // ---------------------------------------------------------------------------
 export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
   const store = useDataStore();
-  const { userProfile } = useAuth();
+  const { userProfile, effectiveRole } = useAuth();
   const { success, error } = useNotification();
+  const canSetTlDecision = ['sales', 'admin', 'super_admin'].includes(baseRoleOf(effectiveRole) ?? '');
   const [reportTitle, setReportTitle] = useState('');
   const [siteName, setSiteName] = useState('');
   const [observedBy, setObservedBy] = useState('');
@@ -523,7 +524,7 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
   const [inlinePestTypes, setInlinePestTypes] = useState<import('../../types/crm').PestType[]>([]);
   const [inlineSeverity, setInlineSeverity] = useState<'low' | 'moderate' | 'high' | 'severe'>('moderate');
   const [inlineAreaSqFt, setInlineAreaSqFt] = useState('');
-  const [inlineCriticalFindings, setInlineCriticalFindings] = useState('');
+  const [inlineFindings, setInlineFindings] = useState<RiskFinding[]>([newFinding()]);
   const [inlineRecommendedTreatment, setInlineRecommendedTreatment] = useState('');
   const [inlinePhotos, setInlinePhotos] = useState<SitePhoto[]>([]);
   // Negotiation/renewal meeting fields
@@ -549,7 +550,15 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
     setPreferredInspectionDate(i?.preferredInspectionDate || '');
     setScheduleAssigneeId(i?.assignedTeamLeaderId || '');
     setInlinePhotos(i?.photos ?? []);
-    if (i?.pestTypesFound?.length) { setInlinePestTypes(i.pestTypesFound); setInlineSeverity(i.infestationSeverity || 'moderate'); setInlineAreaSqFt(String(i.areaSqFt || '')); setInlineCriticalFindings(i.criticalFindings || ''); setInlineRecommendedTreatment(i.recommendedTreatment || ''); }
+    if (i?.pestTypesFound?.length) {
+      setInlinePestTypes(i.pestTypesFound);
+      setInlineSeverity(i.infestationSeverity || 'moderate');
+      setInlineAreaSqFt(String(i.areaSqFt || ''));
+      setInlineFindings(i.findings?.length ? i.findings : [newFinding()]);
+      setInlineRecommendedTreatment(i.recommendedTreatment || '');
+    } else {
+      setInlineFindings([newFinding()]);
+    }
     if (i?.meetingFollowUps?.length) {
       setFollowUps(i.meetingFollowUps);
     } else if (i?.clientRequest) {
@@ -618,15 +627,19 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
             : undefined,
           negotiationTermsNote: isNegoRenewal ? (negoTermsNote.trim() || undefined) : undefined,
           // Inline inspection fields (first_meeting only, when done_inline)
-          ...((!isNegoRenewal && inspectionHandling === 'done_inline') ? {
-            pestTypesFound: inlinePestTypes,
-            infestationSeverity: inlineSeverity,
-            areaSqFt: Number(inlineAreaSqFt) || 0,
-            criticalFindings: inlineCriticalFindings.trim(),
-            recommendedTreatment: inlineRecommendedTreatment.trim(),
-            photos: inlinePhotos,
-            photoEvidenceUrls: inlinePhotos.map((p) => p.imageUrl),
-          } : {}),
+          ...((!isNegoRenewal && inspectionHandling === 'done_inline') ? (() => {
+            const filledRows = inlineFindings.filter(findingFilled).map((r) => ({ ...r, observation: r.observation.trim(), risk: r.risk.trim(), recommendation: r.recommendation.trim(), location: r.location?.trim() || undefined }));
+            return {
+              pestTypesFound: inlinePestTypes,
+              infestationSeverity: inlineSeverity,
+              areaSqFt: Number(inlineAreaSqFt) || 0,
+              findings: filledRows,
+              criticalFindings: findingsSummary(filledRows),
+              recommendedTreatment: inlineRecommendedTreatment.trim() || recommendedTreatmentOf({ findings: filledRows }),
+              photos: inlinePhotos,
+              photoEvidenceUrls: inlinePhotos.map((p) => p.imageUrl),
+            };
+          })() : {}),
         },
         userProfile?.email,
         validBranches.length ? validBranches : undefined
@@ -739,54 +752,116 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
               })}
             </div>
 
-            {/* Inline inspection fields */}
-            {inspectionHandling === 'done_inline' && (
-              <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid #BFDBFE' }}>
-                <div className="form-label" style={{ color: '#1E40AF', fontWeight: 700, marginBottom: '0.5rem' }}>Inspection findings</div>
-                <div className="form-group">
-                  <label className="form-label">Pest types found</label>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
-                    {(['termites','cockroaches','bedbugs','rodents_rats','mosquitoes_flies','ants','stored_grain_pests','general_fumigation','snake_reptile','other'] as import('../../types/crm').PestType[]).map((p) => {
-                      const on = inlinePestTypes.includes(p);
-                      return <button key={p} type="button" className={`chip chip-sm ${on ? 'chip-on' : ''}`} onClick={() => setInlinePestTypes((prev) => on ? prev.filter((x) => x !== p) : [...prev, p])}>{on && <Check size={12} />} {p.replace(/_/g,' ')}</button>;
-                    })}
-                  </div>
-                </div>
-                <div className="form-grid-2">
+            {/* Inline inspection findings — same pattern as SiteInspectionFindingsModal */}
+            {inspectionHandling === 'done_inline' && (() => {
+              const scope = { ownerScope: 'client' as const, clientId: lead.existingCustomerId || lead.id, category: 'risk_assessment' as const };
+              const setInlineRow = (id: string, patch: Partial<RiskFinding>) => setInlineFindings((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+              const offlineCount = inlineFindings.filter((r) => r.photo?.imageUrl?.startsWith('data:')).length;
+              return (
+                <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid #BFDBFE' }}>
+                  <div className="form-label" style={{ color: '#1E40AF', fontWeight: 700, marginBottom: '0.75rem' }}>Inspection findings</div>
+
                   <div className="form-group">
-                    <label className="form-label">Severity</label>
-                    <div className="chip-row">
-                      {(['low','moderate','high','severe'] as const).map((s) => <button key={s} type="button" className={`chip ${inlineSeverity === s ? 'chip-on' : ''}`} onClick={() => setInlineSeverity(s)}>{s}</button>)}
+                    <label className="form-label">Pests found <span className="required">*</span></label>
+                    <div className="chip-row" style={{ marginBottom: 0 }}>
+                      {PEST_OPTIONS.map((p) => {
+                        const on = inlinePestTypes.includes(p.value);
+                        return (
+                          <button key={p.value} type="button" className={`chip ${on ? 'chip-on' : ''}`} onClick={() => setInlinePestTypes((prev) => on ? prev.filter((x) => x !== p.value) : [...prev, p.value])}>
+                            {on && <Check size={14} />} {p.label}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
+
+                  <div className="form-grid-2">
+                    <div className="form-group">
+                      <label className="form-label">Infestation level</label>
+                      <select className="form-select" value={inlineSeverity} onChange={(e) => setInlineSeverity(e.target.value as 'low' | 'moderate' | 'high' | 'severe')}>
+                        <option value="low">Low</option>
+                        <option value="moderate">Moderate</option>
+                        <option value="high">High</option>
+                        <option value="severe">Severe</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Area (sq ft)</label>
+                      <input type="number" className="form-input" value={inlineAreaSqFt} onChange={(e) => setInlineAreaSqFt(e.target.value)} placeholder="e.g. 2500" min="0" />
+                    </div>
+                  </div>
+
                   <div className="form-group">
-                    <label className="form-label">Area (sq ft)</label>
-                    <input type="number" className="form-input" value={inlineAreaSqFt} onChange={(e) => setInlineAreaSqFt(e.target.value)} placeholder="e.g. 2500" min="0" />
+                    <label className="form-label">Risk findings</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {inlineFindings.map((r, i) => (
+                        <div key={r.id} className="finding-row">
+                          <div className="finding-photo">
+                            <SinglePhotoField
+                              photo={r.photo}
+                              onChange={(photo) => setInlineRow(r.id, { photo: photo ?? undefined })}
+                              scope={scope}
+                              subPath={`${lead.id}/meeting-inspection`}
+                              fileNamePrefix={`${lead.id}_mi_${r.id}`}
+                              caption={r.location || `Finding ${i + 1}`}
+                              offlineCount={offlineCount}
+                              onNotify={(kind, title, msg) => kind === 'error' ? error(title, msg) : success(title, msg)}
+                            />
+                          </div>
+                          <div className="finding-fields">
+                            <div className="finding-head">
+                              <strong>{i + 1}.</strong>
+                              <input className="form-input" value={r.location ?? ''} onChange={(e) => setInlineRow(r.id, { location: e.target.value })} placeholder="Location (e.g. Kitchen back door)" />
+                              <button type="button" className="icon-btn" onClick={() => setInlineFindings((prev) => prev.length > 1 ? prev.filter((x) => x.id !== r.id) : [newFinding()])} title="Remove finding"><Trash2 size={15} /></button>
+                            </div>
+                            <div className="chip-row" style={{ margin: '0.35rem 0' }}>
+                              {FINDING_SUGGESTIONS.map((sug) => (
+                                <button key={sug.label} type="button" className="chip chip-sm" onClick={() => setInlineRow(r.id, { observation: sug.observation, risk: sug.risk, recommendation: sug.recommendation, severity: sug.severity })}>
+                                  {sug.label}
+                                </button>
+                              ))}
+                            </div>
+                            <textarea className="form-textarea" rows={2} value={r.observation} onChange={(e) => setInlineRow(r.id, { observation: e.target.value })} placeholder="Observation" />
+                            <textarea className="form-textarea" rows={2} value={r.risk} onChange={(e) => setInlineRow(r.id, { risk: e.target.value })} placeholder="Risk" />
+                            <div className="chip-row" style={{ margin: '0.2rem 0', alignItems: 'center' }}>
+                              <span className="cell-sub" style={{ marginRight: '0.3rem', flexShrink: 0 }}>Severity:</span>
+                              {(['low', 'moderate', 'high', 'severe'] as const).map((s) => (
+                                <button key={s} type="button" className={`chip chip-sm ${(r.severity ?? 'moderate') === s ? 'chip-on' : ''}`} onClick={() => setInlineRow(r.id, { severity: s })}>
+                                  {s}
+                                </button>
+                              ))}
+                            </div>
+                            <textarea className="form-textarea" rows={2} value={r.recommendation} onChange={(e) => setInlineRow(r.id, { recommendation: e.target.value })} placeholder="Recommendation" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: '0.4rem' }} onClick={() => setInlineFindings((prev) => [...prev, newFinding()])}>
+                      <Plus size={14} /> Add finding
+                    </button>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Recommended treatment <span className="cell-sub" style={{ fontWeight: 400 }}>— leave empty to derive from findings</span></label>
+                    <textarea className="form-textarea" rows={2} value={inlineRecommendedTreatment} onChange={(e) => setInlineRecommendedTreatment(e.target.value)} placeholder="Leave empty to use the findings' recommendations" />
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">Site photos <span className="cell-sub" style={{ fontWeight: 400 }}>optional — general site evidence</span></label>
+                    <PhotoCapture<SitePhoto>
+                      scope={{ ownerScope: 'client', clientId: lead.existingCustomerId || lead.id, category: 'risk_assessment' }}
+                      subPath={`${lead.id}/meeting-inspection`}
+                      idPrefix={`${lead.id}_mi`}
+                      categories={INSPECTION_PHOTO_TYPES}
+                      photos={inlinePhotos}
+                      onChange={setInlinePhotos}
+                      onNotify={(kind, title, msg) => kind === 'error' ? error(title, msg) : success(title, msg)}
+                      emptyText="Finding photos are taken per row above. Add general site photos here."
+                    />
                   </div>
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Critical findings</label>
-                  <textarea className="form-textarea" rows={2} value={inlineCriticalFindings} onChange={(e) => setInlineCriticalFindings(e.target.value)} placeholder="Main pest issues found…" />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Recommended treatment</label>
-                  <textarea className="form-textarea" rows={2} value={inlineRecommendedTreatment} onChange={(e) => setInlineRecommendedTreatment(e.target.value)} placeholder="What treatment / service is recommended…" />
-                </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Site photos <span className="cell-sub" style={{ fontWeight: 400 }}>— attach photo evidence (optional)</span></label>
-                  <PhotoCapture<SitePhoto>
-                    scope={{ ownerScope: 'client', clientId: lead.existingCustomerId || lead.id, category: 'risk_assessment' }}
-                    subPath={`${lead.id}/meeting-inspection`}
-                    idPrefix={`${lead.id}_mi`}
-                    categories={INSPECTION_PHOTO_TYPES}
-                    photos={inlinePhotos}
-                    onChange={setInlinePhotos}
-                    onNotify={(kind, title, msg) => kind === 'error' ? error(title, msg) : success(title, msg)}
-                    emptyText="Take a photo or pick from gallery — pests, affected areas, evidence."
-                  />
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Schedule-later: date, assign to Ops, CRO notes */}
             {(inspectionHandling === 'tl_schedule' || inspectionHandling === 'separate_visit') && (
@@ -851,23 +926,25 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
               })}
             </div>
             <textarea className="form-textarea" rows={2} value={meetingReportNote} onChange={(e) => setMeetingReportNote(e.target.value)} placeholder="Meeting outcome note — anything else discussed, follow-up points…" />
-            {/* TL decision gate */}
-            <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--ikpm-emerald-200)' }}>
-              <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.4rem', display: 'block' }}>
-                Team Leader decision <span style={{ fontWeight: 400, fontSize: '0.8rem' }}>— required before a proposal can be created</span>
-              </label>
-              <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-                {([
-                  { value: 'send_proposal', label: '✓ Ready — send proposal', activeColor: 'var(--ikpm-emerald-600)', activeText: '#fff', activeBg: 'var(--ikpm-emerald-600)' },
-                  { value: 'waiting', label: '⏳ Hold — need inspection / more steps', activeColor: '#D97706', activeText: '#92400E', activeBg: '#FFFBEB' },
-                ] as const).map((opt) => (
-                  <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600, border: `1px solid ${tlStatus === opt.value ? opt.activeColor : 'var(--border-subtle)'}`, background: tlStatus === opt.value ? opt.activeBg : 'var(--surface-card)', color: tlStatus === opt.value ? opt.activeText : 'var(--text-primary)' }}>
-                    <input type="radio" name="tlStatusMR" style={{ display: 'none' }} checked={tlStatus === opt.value} onChange={() => setTlStatus(opt.value)} />
-                    {opt.label}
-                  </label>
-                ))}
+            {/* TL decision gate — CRO / admin only */}
+            {canSetTlDecision && (
+              <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--ikpm-emerald-200)' }}>
+                <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.4rem', display: 'block' }}>
+                  Decision <span style={{ fontWeight: 400, fontSize: '0.8rem' }}>— required before a proposal can be created</span>
+                </label>
+                <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                  {([
+                    { value: 'send_proposal', label: '✓ Ready — send proposal', activeColor: 'var(--ikpm-emerald-600)', activeText: '#fff', activeBg: 'var(--ikpm-emerald-600)' },
+                    { value: 'waiting', label: '⏳ Hold — need inspection / more steps', activeColor: '#D97706', activeText: '#92400E', activeBg: '#FFFBEB' },
+                  ] as const).map((opt) => (
+                    <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600, border: `1px solid ${tlStatus === opt.value ? opt.activeColor : 'var(--border-subtle)'}`, background: tlStatus === opt.value ? opt.activeBg : 'var(--surface-card)', color: tlStatus === opt.value ? opt.activeText : 'var(--text-primary)' }}>
+                      <input type="radio" name="tlStatusMR" style={{ display: 'none' }} checked={tlStatus === opt.value} onChange={() => setTlStatus(opt.value)} />
+                      {opt.label}
+                    </label>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Branches / sites */}
@@ -1351,8 +1428,9 @@ export const PEST_OPTIONS: { value: PestType; label: string }[] = [
 
 export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
   const store = useDataStore();
-  const { userProfile } = useAuth();
+  const { userProfile, effectiveRole } = useAuth();
   const { success, warning, error } = useNotification();
+  const canSetTlDecision = ['sales', 'admin', 'super_admin'].includes(baseRoleOf(effectiveRole) ?? '');
   const [didInspection, setDidInspection] = useState(false);
   const [pests, setPests] = useState<PestType[]>([]);
   const [photos, setPhotos] = useState<SitePhoto[]>([]);
@@ -1631,34 +1709,36 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
           onChange={(e) => setMeetingReportNote(e.target.value)}
           placeholder="Meeting outcome note — anything else discussed, verbal agreements, follow-up points…"
         />
-        {/* TL decision gate — controls when proposal button unlocks */}
-        <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--ikpm-emerald-200)' }}>
-          <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.4rem', display: 'block' }}>
-            Team Leader decision <span style={{ fontWeight: 400, fontSize: '0.8rem' }}>— required before a proposal can be created</span>
-          </label>
-          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-            <label style={{
-              display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer',
-              padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600,
-              border: `1px solid ${tlStatus === 'send_proposal' ? 'var(--ikpm-emerald-600)' : 'var(--border-subtle)'}`,
-              background: tlStatus === 'send_proposal' ? 'var(--ikpm-emerald-600)' : 'var(--surface-card)',
-              color: tlStatus === 'send_proposal' ? '#fff' : 'var(--text-primary)',
-            }}>
-              <input type="radio" name="tlStatus" style={{ display: 'none' }} checked={tlStatus === 'send_proposal'} onChange={() => setTlStatus('send_proposal')} />
-              ✓ Ready — send proposal
+        {/* Decision gate — CRO / admin only */}
+        {canSetTlDecision && (
+          <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--ikpm-emerald-200)' }}>
+            <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.4rem', display: 'block' }}>
+              Decision <span style={{ fontWeight: 400, fontSize: '0.8rem' }}>— required before a proposal can be created</span>
             </label>
-            <label style={{
-              display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer',
-              padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600,
-              border: `1px solid ${tlStatus === 'waiting' ? '#D97706' : 'var(--border-subtle)'}`,
-              background: tlStatus === 'waiting' ? '#FFFBEB' : 'var(--surface-card)',
-              color: tlStatus === 'waiting' ? '#92400E' : 'var(--text-primary)',
-            }}>
-              <input type="radio" name="tlStatus" style={{ display: 'none' }} checked={tlStatus === 'waiting'} onChange={() => setTlStatus('waiting')} />
-              ⏳ Hold — need inspection / more steps
-            </label>
+            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+              <label style={{
+                display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer',
+                padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600,
+                border: `1px solid ${tlStatus === 'send_proposal' ? 'var(--ikpm-emerald-600)' : 'var(--border-subtle)'}`,
+                background: tlStatus === 'send_proposal' ? 'var(--ikpm-emerald-600)' : 'var(--surface-card)',
+                color: tlStatus === 'send_proposal' ? '#fff' : 'var(--text-primary)',
+              }}>
+                <input type="radio" name="tlStatus" style={{ display: 'none' }} checked={tlStatus === 'send_proposal'} onChange={() => setTlStatus('send_proposal')} />
+                ✓ Ready — send proposal
+              </label>
+              <label style={{
+                display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer',
+                padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600,
+                border: `1px solid ${tlStatus === 'waiting' ? '#D97706' : 'var(--border-subtle)'}`,
+                background: tlStatus === 'waiting' ? '#FFFBEB' : 'var(--surface-card)',
+                color: tlStatus === 'waiting' ? '#92400E' : 'var(--text-primary)',
+              }}>
+                <input type="radio" name="tlStatus" style={{ display: 'none' }} checked={tlStatus === 'waiting'} onChange={() => setTlStatus('waiting')} />
+                ⏳ Hold — need inspection / more steps
+              </label>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {didInspection && <>

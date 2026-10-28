@@ -76,10 +76,10 @@ export interface ProposalRevision {
 }
 
 export interface ApprovalRequest {
-  ruleId: 'AP-01' | 'AP-02' | 'AP-03' | 'AP-04' | 'AP-05' | 'AP-06';
+  ruleId: 'AP-01' | 'AP-02' | 'AP-03' | 'AP-04' | 'AP-05' | 'AP-06' | 'AP-ADMIN';
   ruleDescription: string;
-  requiredRole: 'sales_manager' | 'ceo' | 'accounts_manager';
-  status: 'pending' | 'approved' | 'rejected';
+  requiredRole: 'sales_manager' | 'ceo' | 'accounts_manager' | 'admin';
+  status: 'pending' | 'approved' | 'rejected' | 'changes_requested';
   requestedAt: string;
   requestedBy: string;
   requestedByName: string;

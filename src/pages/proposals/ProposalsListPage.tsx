@@ -49,12 +49,16 @@ export const ProposalsListPage: React.FC = () => {
   useDataStore();
 
   const [searchQuery, setSearchQuery] = useState('');
-  // Operations only sees accepted proposals — lock their default filter and hide the filter bar
-  const [statusFilter, setStatusFilter] = useState(searchParams.get('filter') || (isOperations ? 'accepted' : 'all'));
+  // Operations → accepted only; admin/super_admin → pending_approval by default so review queue is front-and-centre
+  const isAdminRole = ['admin', 'super_admin'].includes(baseRole);
+  const [statusFilter, setStatusFilter] = useState(
+    searchParams.get('filter') || (isOperations ? 'accepted' : isAdminRole ? 'pending_approval' : 'all')
+  );
   // undefined = follow the ?view= deep link (it may load after the first render); null = closed
   const [selectedId, setSelectedId] = useState<string | null | undefined>(undefined);
   const [showBuilder, setShowBuilder] = useState(searchParams.get('action') === 'new_proposal');
   const [showRejectDialog, setShowRejectDialog] = useState(false);
+  const [showChangesDialog, setShowChangesDialog] = useState(false);
   const [sendTarget, setSendTarget] = useState<Proposal | null>(null);
   const [reviseTarget, setReviseTarget] = useState<Proposal | null>(null);
   const [assignTarget, setAssignTarget] = useState<Proposal | null>(null);
@@ -76,7 +80,10 @@ export const ProposalsListPage: React.FC = () => {
     pests: searchParams.get('pests')?.split(',').filter(Boolean),
   };
 
-  const canSend = (p: Proposal) => ['approved', 'draft', 'sent_to_client', 'negotiation'].includes(p.status);
+  // After admin requests changes, CRO can edit and send directly — no re-approval needed
+  const canSend = (p: Proposal) =>
+    ['approved', 'sent_to_client', 'negotiation'].includes(p.status) ||
+    (p.status === 'draft' && p.approval?.status === 'changes_requested');
 
   const recipientFor = (p: Proposal) => {
     if (p.attentionTo?.name && p.customerType === 'company') {
@@ -104,6 +111,41 @@ export const ProposalsListPage: React.FC = () => {
     } catch (err) {
       error('Could not update proposal', err instanceof Error ? err.message : String(err));
     }
+  };
+
+  const submitForApproval = (p: Proposal) => {
+    if (!userProfile) return;
+    save(
+      {
+        ...p,
+        status: 'pending_approval',
+        approval: {
+          ruleId: 'AP-ADMIN',
+          ruleDescription: 'All proposals require admin approval before sending to client.',
+          requiredRole: 'admin',
+          status: 'pending',
+          requestedAt: new Date().toISOString(),
+          requestedBy: userProfile.email || '',
+          requestedByName: userProfile.displayName || '',
+        },
+      },
+      () => success('Submitted for approval', `${p.id} has been sent to admin for review.`)
+    );
+  };
+
+  const requestChanges = (comments: string) => {
+    if (!selected) return;
+    if (!canApproveProposals()) return;
+    save(
+      {
+        ...selected,
+        status: 'draft',
+        approval: selected.approval
+          ? { ...selected.approval, status: 'changes_requested', comments, decisionAt: new Date().toISOString(), decisionBy: userProfile?.email, decisionByName: userProfile?.displayName }
+          : undefined,
+      },
+      () => { warning('Changes requested', `${selected.id} sent back to ${selected.preparedByName} for revisions.`); setShowChangesDialog(false); }
+    );
   };
 
   const reviseProposal = (p: Proposal) => setReviseTarget(p);
@@ -214,6 +256,8 @@ export const ProposalsListPage: React.FC = () => {
       else warning('Not saved', 'File storage is not configured or you are offline.');
     });
 
+  const pendingApprovalCount = proposals.filter((p) => p.status === 'pending_approval').length;
+
   const filtered = proposals.filter((p) => {
     if (isOperations && p.status !== 'accepted') return false;
     const q = searchQuery.toLowerCase();
@@ -241,6 +285,11 @@ export const ProposalsListPage: React.FC = () => {
             {STATUS_FILTERS.map((sf) => (
               <button key={sf.value} type="button" className={`chip ${statusFilter === sf.value ? 'chip-on' : ''}`} onClick={() => setStatusFilter(sf.value)}>
                 {sf.label}
+                {sf.value === 'pending_approval' && pendingApprovalCount > 0 && (
+                  <span style={{ marginLeft: 5, background: 'var(--ikpm-amber-500, #f59e0b)', color: '#fff', borderRadius: 999, fontSize: '0.65rem', fontWeight: 700, padding: '1px 5px' }}>
+                    {pendingApprovalCount}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -296,6 +345,11 @@ export const ProposalsListPage: React.FC = () => {
                 <td><StatusBadge status={p.status} /></td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    {p.status === 'draft' && baseRole === 'sales' && !p.approval && (
+                      <button className="btn btn-sm btn-primary" onClick={() => submitForApproval(p)}>
+                        <Send size={12} /> <span>Submit</span>
+                      </button>
+                    )}
                     {p.status === 'accepted' && (() => {
                       const linked = contracts.find((c) => c.proposalId === p.id && c.status !== 'cancelled');
                       if (!linked) {
@@ -360,6 +414,8 @@ export const ProposalsListPage: React.FC = () => {
           onFilePdf={() => filePdf(selected)}
           onApprove={() => decide('approved')}
           onReject={() => setShowRejectDialog(true)}
+          onRequestChanges={canApproveProposals() && selected.status === 'pending_approval' ? () => setShowChangesDialog(true) : undefined}
+          onSubmitForApproval={baseRole === 'sales' && selected.status === 'draft' && !selected.approval ? () => { submitForApproval(selected); setSelectedId(null); } : undefined}
           onAccept={() => {
             if (selected.leadId) {
               const alreadyWon = proposals.find((p) => p.id !== selected.id && p.leadId === selected.leadId && p.status === 'accepted');
@@ -399,6 +455,16 @@ export const ProposalsListPage: React.FC = () => {
         message="Give the reason for rejecting this proposal."
         requireReason
         confirmLabel="Reject"
+      />
+
+      <ConfirmDialog
+        isOpen={showChangesDialog}
+        onClose={() => setShowChangesDialog(false)}
+        onConfirm={(comments) => requestChanges(comments)}
+        title="Request changes"
+        message="Describe what changes the CRO needs to make before this proposal can be approved."
+        requireReason
+        confirmLabel="Send back for changes"
       />
 
       {acceptTarget && (

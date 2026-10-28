@@ -18,6 +18,10 @@ interface Props {
   onFilePdf: () => void;
   onApprove: () => void;
   onReject: () => void;
+  /** Admin requests changes — sends proposal back to CRO as draft with feedback. */
+  onRequestChanges?: () => void;
+  /** CRO submits a draft proposal for admin approval. */
+  onSubmitForApproval?: () => void;
   onAccept: () => void;
   onDecline: () => void;
   onSend?: () => void;
@@ -25,7 +29,7 @@ interface Props {
 }
 
 /** Proposal details with approval, client decision, contract / job hand-off and sharing. */
-export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, canAccept, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onAccept, onDecline, onSend, onAssign }) => {
+export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, canAccept, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onRequestChanges, onSubmitForApproval, onAccept, onDecline, onSend, onAssign }) => {
   const navigate = useNavigate();
   const isPlan = Boolean(p.servicePlan?.length);
   const pricing = isPlan
@@ -53,8 +57,14 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
             {p.status === 'pending_approval' && canApprove && (
               <>
                 <button className="btn btn-danger" onClick={onReject}>Reject</button>
+                {onRequestChanges && (
+                  <button className="btn btn-secondary" onClick={onRequestChanges}>Request changes</button>
+                )}
                 <button className="btn btn-primary" onClick={onApprove}><CheckCircle2 size={15} /> <span>Approve</span></button>
               </>
+            )}
+            {onSubmitForApproval && p.status === 'draft' && (
+              <button className="btn btn-primary" onClick={onSubmitForApproval}><Send size={15} /> <span>Submit for approval</span></button>
             )}
             {canAccept && ['approved', 'sent_to_client', 'negotiation'].includes(p.status) && (
               <>
@@ -102,10 +112,17 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
             {p.acceptanceNote && <div style={{ fontSize: '0.82rem', color: 'var(--ikpm-emerald-700)' }}><strong>Note:</strong> {p.acceptanceNote}</div>}
           </div>
         )}
-        {p.approval && (
+        {p.approval && p.approval.status !== 'changes_requested' && (
           <div className={p.approval.status === 'approved' ? 'info-hint' : 'error-hint'}>
             <strong>Approval:</strong> {p.approval.status} ({p.approval.ruleId}). {p.approval.ruleDescription}
             {p.approval.rejectionReason && <div><strong>Reason:</strong> {p.approval.rejectionReason}</div>}
+          </div>
+        )}
+        {p.status === 'draft' && p.approval?.status === 'changes_requested' && (
+          <div style={{ padding: '0.6rem 0.85rem', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '0.4rem', color: '#92400E', fontSize: '0.83rem' }}>
+            <strong>Changes requested{p.approval.decisionByName ? ` by ${p.approval.decisionByName}` : ''}</strong>
+            {p.approval.comments && <div style={{ marginTop: '0.3rem' }}>{p.approval.comments}</div>}
+            <div style={{ marginTop: '0.4rem', fontSize: '0.78rem', color: '#78350F' }}>Edit the proposal then send to client directly — no re-approval needed.</div>
           </div>
         )}
 

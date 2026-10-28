@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Bell, BellOff, CheckCheck, ClipboardCheck, UserCheck, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
+import { dataService } from '../../services/dataService';
 import {
   computeNotifications,
   getReadIds,
@@ -57,7 +58,8 @@ export const NotificationBell: React.FC = () => {
       store.getLeads(),
       store.getJobs(),
       userProfile,
-      effectiveRole
+      effectiveRole,
+      dataService.getProposals()
     );
   }, [store, userProfile, effectiveRole]);
 
