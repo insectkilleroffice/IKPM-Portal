@@ -44,19 +44,32 @@
         return r == 'admin'
           ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
             'contracts':'edit','files':'edit','documents':'edit','company_files':'edit','calendar':'edit',
-            'jobs':'edit','pco':'edit','complaints':'edit','invoices':'view','settings':'view','approvals':'view'}
+            'jobs':'edit','pco':'edit','complaints':'edit','challans':'edit','attendance':'view',
+            'hr':'view','payroll':'view','search':'edit','invoices':'view','settings':'view','approvals':'view'}
           : r == 'sales'
           ? {'dashboard':'edit','customers':'edit','crm':'edit','proposals':'edit','contracts':'edit',
             'pco':'edit','files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
-          : r == 'operations'
+          : (r == 'operations' || r == 'operations_manager')
           ? {'dashboard':'edit','customers':'edit','inspections':'edit','contracts':'edit','calendar':'edit',
-            'jobs':'edit','pco':'view','files':'edit','complaints':'edit',
-            'proposals':'view','documents':'view','company_files':'view'}
-          : r == 'team_leader'
+            'jobs':'edit','pco':'view','files':'edit','complaints':'edit','challans':'edit','attendance':'edit',
+            'search':'edit','proposals':'view','documents':'view','company_files':'view'}
+          : (r == 'team_leader' || r == 'operations_coordinator')
           ? {'dashboard':'edit','inspections':'edit','jobs':'edit','pco':'view','files':'edit','complaints':'edit',
-            'customers':'view','contracts':'view','calendar':'view','company_files':'view'}
+            'challans':'edit','attendance':'edit','search':'edit','customers':'view','contracts':'view','calendar':'view','company_files':'view'}
           : r == 'technician'
-          ? {'dashboard':'view','jobs':'view','pco':'edit'}
+          ? {'dashboard':'view','jobs':'view','pco':'edit','attendance':'view'}
+          : r == 'finance'
+          ? {'dashboard':'view','invoices':'edit','tax':'view','payroll':'edit',
+            'challans':'view','search':'edit','documents':'view','contracts':'view','customers':'view','complaints':'view'}
+          : r == 'auditor'
+          ? {'dashboard':'view','audit_logs':'view','complaints':'view'}
+          : r == 'hr'
+          ? {'dashboard':'view','hr':'edit','attendance':'view','payroll':'view',
+            'team':'view','documents':'view','search':'view'}
+          : r == 'management'
+          ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
+            'contracts':'edit','files':'edit','documents':'edit','company_files':'edit','calendar':'edit',
+            'jobs':'edit','pco':'edit','complaints':'edit','settings':'view','approvals':'edit'}
           : {};
       }
 
@@ -365,19 +378,21 @@
       // ---------- Finance ----------
       match /invoices/{id} {
         allow read: if canView('invoices');
-        allow create: if canEdit('invoices');
-        // Posted invoices are immutable except for a credit-note reversal
-        allow update: if canEdit('invoices') && folderOwnerKept() && (
+        allow create: if canEdit('invoices') || role() == 'admin';
+        // Posted invoices are immutable except for a credit-note reversal or recording payment settlement
+        allow update: if (canEdit('invoices') || role() == 'admin') && folderOwnerKept() && (
           resource.data.get('isPosted', false) != true
             || (request.resource.data.status == 'void_reversed'
                 && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerScope', 'clientId', 'folderPath', 'fileCategory']))
+            || (request.resource.data.status in ['paid', 'partially_paid', 'posted', 'issued', 'sent']
+                && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerScope', 'clientId', 'folderPath', 'fileCategory', 'lineItems', 'subtotal', 'grossPayable', 'taxTotal', 'invoiceNumber', 'customerId']))
         );
         allow delete: if false;
       }
 
       match /payments/{id} {
         allow read: if canView('invoices');
-        allow create: if canEdit('invoices');
+        allow create: if canEdit('invoices') || role() == 'admin';
         // Receipts never change, apart from being filed into their client's folder
         allow update: if canEdit('invoices') && filingOnly();
         allow delete: if false;
@@ -485,6 +500,75 @@
         allow get: if true;
         allow list: if false;
         allow create, update: if active();
+        allow delete: if isSuperAdmin();
+      }
+
+
+      // ---------- Challans (Item 39, 40) ----------
+      match /challans/{id} {
+        allow read: if canView('challans') || canView('jobs') || canView('invoices');
+        allow create: if canEdit('challans') || canEdit('jobs');
+        allow update: if canEdit('challans') || canEdit('jobs');
+        allow delete: if false; // Challans are permanent, never deleted
+      }
+
+      // ---------- HR & Employee records (Item 42) ----------
+      // Public to staff: basic directory info (name, role, status, phone, photo)
+      match /employees/{id} {
+        allow read: if active();
+        allow create, update: if canEdit('hr') || isSuperAdmin();
+        allow delete: if false; // Status is set to inactive, never hard deleted
+      }
+
+      // Sensitive HR data (CNIC, bank account, address, witnesses): HR and Super Admin ONLY
+      match /employee_private/{id} {
+        allow read: if canEdit('hr') || isSuperAdmin();
+        allow create, update: if canEdit('hr') || isSuperAdmin();
+        allow delete: if false;
+      }
+
+      // Salary structure & pay data: Finance, HR and Super Admin
+      match /employee_pay/{id} {
+        allow read: if canView('payroll') || canEdit('payroll') || canEdit('hr') || isSuperAdmin();
+        allow create, update: if canEdit('payroll') || canEdit('hr') || isSuperAdmin();
+        allow delete: if false;
+      }
+
+      // 30-day payroll cycles & lines (Item 44)
+      match /salary_cycles/{id} {
+        allow read: if canView('payroll') || canEdit('payroll') || canEdit('hr') || isSuperAdmin();
+        allow create, update: if canEdit('payroll') || isSuperAdmin();
+        allow delete: if isSuperAdmin();
+      }
+
+      // Payroll collection alias
+      match /payroll/{id} {
+        allow read: if canView('payroll') || canEdit('payroll') || canEdit('hr') || isSuperAdmin() || active();
+        allow create, update: if canEdit('payroll') || canEdit('hr') || isSuperAdmin();
+        allow delete: if isSuperAdmin();
+      }
+
+      // HR collection alias
+      match /hr/{id} {
+        allow read: if active();
+        allow create, update: if canEdit('hr') || isSuperAdmin();
+        allow delete: if false;
+      }
+
+      // Daily attendance (Item 43)
+      match /attendance/{id} {
+        // Coordinator / operations edits, HR views, technician sees own
+        allow read: if canView('attendance') || canView('hr') || canView('payroll')
+          || (role() == 'technician' && resource.data.get('employeeId', '') == me().get('employeeId', ''));
+        allow create, update: if canEdit('attendance') || canEdit('jobs') || isSuperAdmin();
+        allow delete: if isSuperAdmin();
+      }
+
+      // Transactional safe ID counters (Item 47)
+      match /id_counters/{key} {
+        allow read: if active();
+        allow create: if active();
+        allow update: if active() && request.resource.data.seq == resource.data.seq + 1;
         allow delete: if isSuperAdmin();
       }
 

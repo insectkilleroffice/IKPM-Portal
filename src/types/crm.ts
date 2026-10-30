@@ -52,7 +52,7 @@ export type StuckAtReason =
   | 'other';
 
 /** Result of the latest contact attempt. */
-export type ContactOutcome = 'no_response' | 'callback' | 'interested' | 'engaged' | 'not_interested' | 'wrong_contact';
+export type ContactOutcome = 'no_response' | 'callback' | 'interested' | 'engaged' | 'not_interested' | 'wrong_contact' | 'already_has_vendor';
 
 export type ActivityChannel = 'call' | 'whatsapp' | 'email' | 'meeting' | 'visit' | 'note' | 'documents';
 

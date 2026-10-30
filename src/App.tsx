@@ -34,6 +34,11 @@ const MeetingsPage = lazy(() => import('./pages/meetings/MeetingsPage').then((m)
 const ComplaintsPage = lazy(() => import('./pages/complaints/ComplaintsPage').then((m) => ({ default: m.ComplaintsPage })));
 const ApprovalsPage = lazy(() => import('./pages/approvals/ApprovalsPage').then((m) => ({ default: m.ApprovalsPage })));
 const DocumentLibraryPage = lazy(() => import('./features/documents/DocumentLibraryPage').then((m) => ({ default: m.DocumentLibraryPage })));
+const ChallansPage = lazy(() => import('./pages/operations/ChallansPage').then((m) => ({ default: m.ChallansPage })));
+const EmployeesPage = lazy(() => import('./pages/hr/EmployeesPage').then((m) => ({ default: m.EmployeesPage })));
+const AttendancePage = lazy(() => import('./pages/operations/AttendancePage').then((m) => ({ default: m.AttendancePage })));
+const PayrollPage = lazy(() => import('./pages/hr/PayrollPage').then((m) => ({ default: m.PayrollPage })));
+const SearchPage = lazy(() => import('./pages/search/SearchPage').then((m) => ({ default: m.SearchPage })));
 
 function App() {
   return (
@@ -71,12 +76,21 @@ function App() {
 
                 {/* Field operations */}
                 <Route path="/operations/jobs" element={guard(['jobs', 'pco'], <JobsListPage />)} />
+                <Route path="/operations/challans" element={guard(['challans', 'jobs', 'invoices'], <ChallansPage />)} />
+                <Route path="/operations/attendance" element={guard('attendance', <AttendancePage />)} />
                 <Route path="/operations/calendar" element={guard('calendar', <DispatchCalendarPage />)} />
                 <Route path="/complaints" element={guard('complaints', <ComplaintsPage />)} />
                 <Route path="/approvals" element={guard('approvals', <ApprovalsPage />)} />
 
                 {/* Finance & invoicing */}
                 <Route path="/finance/invoices" element={guard('invoices', <InvoicesListPage />)} />
+                <Route path="/hr/payroll" element={guard('payroll', <PayrollPage />)} />
+
+                {/* HR */}
+                <Route path="/hr/employees" element={guard('hr', <EmployeesPage />)} />
+
+                {/* Search */}
+                <Route path="/search" element={guard('search', <SearchPage />)} />
 
                 {/* Document Library */}
                 <Route path="/documents" element={guard('documents', <DocumentLibraryPage />)} />

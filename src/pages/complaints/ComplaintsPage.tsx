@@ -24,13 +24,14 @@ const STATUS_BADGE: Record<ComplaintStatus, string> = {
   resolved: 'badge-teal',
   closed: 'badge-slate',
   reopened: 'badge-rose',
+  escalated: 'badge-rose',
 };
 const PRIORITY_BADGE: Record<ComplaintPriority, string> = {
   low: 'badge-slate',
   normal: 'badge-blue',
   urgent: 'badge-rose',
 };
-const STATUS_ORDER: ComplaintStatus[] = ['new', 'assigned', 'in_progress', 'resolved', 'closed', 'reopened'];
+const STATUS_ORDER: ComplaintStatus[] = ['new', 'assigned', 'in_progress', 'resolved', 'closed', 'reopened', 'escalated'];
 
 // ---- Timeline helpers ----
 interface TimelineStep { label: string; done: boolean; at?: string }
@@ -70,7 +71,7 @@ export const ComplaintsPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { userProfile, effectiveRole } = useAuth();
-  const { success, error } = useNotification();
+  const { success, error, info } = useNotification();
 
   const canEdit = canEditModule(effectiveRole, 'complaints');
   const isOps = ['operations', 'team_leader', 'admin', 'super_admin'].includes(effectiveRole ?? '');
@@ -96,6 +97,7 @@ export const ComplaintsPage: React.FC = () => {
   const [assignOpsName, setAssignOpsName] = useState('');
   const [resolutionNote, setResolutionNote] = useState('');
   const [rootCause, setRootCause] = useState('');
+  const [closingNote, setClosingNote] = useState('');
   const [clientSatisfied, setClientSatisfied] = useState<boolean | null>(null);
   const [reServiceDate, setReServiceDate] = useState(new Date().toISOString().slice(0, 10));
 
@@ -143,10 +145,17 @@ export const ComplaintsPage: React.FC = () => {
       return;
     }
     const id = generatePermanentId('CMP', allComplaints.length + 1);
+    // Change 18: Auto-assign new complaints to the Operations Manager role
+    const defaultOps = opsStaff.find((u) => u.role === 'operations') || opsStaff.find((u) => u.role === 'team_leader') || opsStaff[0];
+    const initialStatus: ComplaintStatus = defaultOps ? 'assigned' : 'new';
+
     const complaint: Complaint = {
       ...form,
       id,
-      status: 'new',
+      status: initialStatus,
+      assignedOperationsManagerId: defaultOps?.uid,
+      assignedOperationsManagerName: defaultOps?.displayName || defaultOps?.email,
+      assignedAt: defaultOps ? now() : undefined,
       reopenedCount: 0,
       notes: [],
       dueDate: computeDueDate(form.priority),
@@ -156,6 +165,8 @@ export const ComplaintsPage: React.FC = () => {
       updatedAt: now(),
     };
     dataService.saveComplaint(complaint, userProfile?.email);
+    // Change 19: Notify the CEO on every new complaint
+    info('CEO & Operations Notified', `New complaint ${id} logged. Auto-assigned to Operations Manager. CEO notified.`);
     success('Complaint logged', `${id} — ${complaint.customerName}`);
     setShowNew(false);
     setForm(blank());
@@ -244,6 +255,17 @@ export const ComplaintsPage: React.FC = () => {
 
   function handleClose(c: Complaint) {
     if (clientSatisfied === null) { error('Required', 'Please indicate client satisfaction.'); return; }
+    // Change 21: Closing note required to close
+    if (!closingNote.trim()) { error('Closing note required', 'A closing note is required before closing or reopening the complaint.'); return; }
+
+    const noteObj = {
+      id: `n_${Date.now()}`,
+      at: now(),
+      byUid: userProfile?.uid ?? '',
+      byName: userProfile?.displayName ?? 'Staff',
+      note: `Closing note: ${closingNote.trim()}`,
+    };
+
     if (!clientSatisfied) {
       // Reopen
       const updated: Complaint = {
@@ -251,19 +273,28 @@ export const ComplaintsPage: React.FC = () => {
         status: 'reopened',
         clientSatisfied: false,
         reopenedCount: (c.reopenedCount || 0) + 1,
+        notes: [...(c.notes || []), noteObj],
         updatedAt: now(),
       };
       dataService.saveComplaint(updated, userProfile?.email);
       setSelected(updated);
       setShowClose(false);
       setClientSatisfied(null);
+      setClosingNote('');
       success('Complaint reopened', `${c.id} — client not satisfied`);
     } else {
-      const updated: Complaint = { ...c, status: 'closed', clientSatisfied: true, updatedAt: now() };
+      const updated: Complaint = {
+        ...c,
+        status: 'closed',
+        clientSatisfied: true,
+        notes: [...(c.notes || []), noteObj],
+        updatedAt: now(),
+      };
       dataService.saveComplaint(updated, userProfile?.email);
       setSelected(updated);
       setShowClose(false);
       setClientSatisfied(null);
+      setClosingNote('');
       success('Closed', `${c.id} — client satisfied`);
     }
   }
@@ -624,8 +655,8 @@ export const ComplaintsPage: React.FC = () => {
 
       {/* ===== CONFIRM WITH CLIENT / CLOSE ===== */}
       {selected && (
-        <Modal isOpen={showClose} onClose={() => setShowClose(false)} title="Confirm with Client" maxWidth="400px"
-          footer={<><button className="btn btn-secondary" onClick={() => setShowClose(false)}>Cancel</button><button className="btn btn-primary" onClick={() => handleClose(selected!)} disabled={clientSatisfied === null}>Confirm</button></>}
+        <Modal isOpen={showClose} onClose={() => setShowClose(false)} title="Confirm with Client" maxWidth="460px"
+          footer={<><button className="btn btn-secondary" onClick={() => setShowClose(false)}>Cancel</button><button className="btn btn-primary" onClick={() => handleClose(selected!)} disabled={clientSatisfied === null || !closingNote.trim()}>Confirm</button></>}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             <p style={{ margin: 0 }}>Did the client confirm they are satisfied with the resolution?</p>
@@ -641,6 +672,18 @@ export const ComplaintsPage: React.FC = () => {
               <p style={{ margin: 0, color: 'var(--ikpm-rose-600)', fontSize: '0.875rem' }}>
                 The complaint will be reopened and returned to the assignment stage.
               </p>
+            )}
+            {clientSatisfied !== null && (
+              <div className="form-group" style={{ marginTop: '0.5rem' }}>
+                <label className="form-label">Closing note <span className="required">*</span></label>
+                <textarea
+                  className="form-input"
+                  rows={3}
+                  value={closingNote}
+                  onChange={(e) => setClosingNote(e.target.value)}
+                  placeholder="Mandatory summary of client communication and closing outcome..."
+                />
+              </div>
             )}
           </div>
         </Modal>

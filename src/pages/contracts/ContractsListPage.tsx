@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   FileSignature,
@@ -149,6 +149,19 @@ export const ContractsListPage: React.FC = () => {
   }, [linkedId]);
 
   const contracts = dataService.getContracts();
+  const allJobs = dataService.getJobs();
+  const allInvoices = dataService.getInvoices();
+
+  /** Returns live completed-job count for a contract from actual service_jobs data. */
+  const liveJobStats = (contractId: string) => {
+    const contractJobs = allJobs.filter((j) => j.contractId === contractId && j.status !== 'cancelled');
+    const completed = contractJobs.filter((j) => j.status === 'completed').length;
+    const total = contractJobs.length;
+    const allDone = total > 0 && completed === total;
+    const contractInvoices = allInvoices.filter((inv) => inv.contractId === contractId);
+    const allPaid = contractInvoices.length > 0 && contractInvoices.every((inv) => inv.status === 'paid' || inv.balanceDue <= 0);
+    return { completed, total, allDone, allPaid };
+  };
   const allComplaints = dataService.getComplaints();
   const today = new Date().toISOString().split('T')[0];
 
@@ -545,7 +558,8 @@ export const ContractsListPage: React.FC = () => {
           <tbody>
             {filtered.map((c) => {
               const _nextAct = getContractNextAction(c);
-              const hasJobs = (c.totalJobsScheduled || 0) > 0;
+              const stats = liveJobStats(c.id);
+              const hasJobs = stats.total > 0 || (c.totalJobsScheduled || 0) > 0;
               const openComplaintCount = allComplaints.filter((cmp) => cmp.contractId === c.id && !['closed'].includes(cmp.status)).length;
 
               return (
@@ -580,11 +594,21 @@ export const ContractsListPage: React.FC = () => {
                   {canSeeFinancials && <td style={{ fontWeight: 700 }}>{formatPKR(c.totalContractValue)}</td>}
                   <td>
                     <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>
-                      {c.totalJobsCompleted || 0} / {c.totalJobsScheduled || 0} completed
+                      {stats.completed > 0 ? stats.completed : (c.totalJobsCompleted || 0)} / {stats.total > 0 ? stats.total : (c.totalJobsScheduled || 0)} visits completed
                     </div>
                     {!hasJobs && (
                       <div style={{ fontSize: '0.7rem', color: 'var(--ikpm-amber-600)', fontWeight: 600 }}>
                         Visits not generated yet
+                      </div>
+                    )}
+                    {stats.allDone && stats.allPaid && (
+                      <div style={{ marginTop: '4px' }}>
+                        <span className="badge-status badge-emerald" style={{ fontSize: '0.7rem' }}>✓ Completed & Paid</span>
+                      </div>
+                    )}
+                    {stats.allDone && !stats.allPaid && (
+                      <div style={{ marginTop: '4px' }}>
+                        <span className="badge-status badge-amber" style={{ fontSize: '0.7rem' }}>✓ Completed — Invoice Pending</span>
                       </div>
                     )}
                   </td>

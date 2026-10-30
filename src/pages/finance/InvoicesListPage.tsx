@@ -45,6 +45,7 @@ export const InvoicesListPage: React.FC = () => {
     searchParams.get('action') === 'new_invoice' || Boolean(searchParams.get('fromJob'))
   );
   const [sendReminderInvoice, setSendReminderInvoice] = useState<Invoice | null>(null);
+  const [isSubmittingPayment, setIsSubmittingPayment] = useState(false);
 
   // Payment Form State
   const [paymentForm, setPaymentForm] = useState({
@@ -61,6 +62,15 @@ export const InvoicesListPage: React.FC = () => {
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const invoices = dataService.getInvoices();
+
+  // Handle ?invoice=ID from search hits (Change 40 & 45)
+  useEffect(() => {
+    const invParam = searchParams.get('invoice');
+    if (invParam) {
+      const found = invoices.find((i) => i.id === invParam || i.invoiceNumber === invParam);
+      if (found) setSelectedInvoice(found);
+    }
+  }, [searchParams, invoices.length]);
 
   // If fromJob is provided, verify and pre-fill
   const fromJobId = searchParams.get('fromJob');
@@ -158,6 +168,15 @@ export const InvoicesListPage: React.FC = () => {
   });
 
   const handleOpenPayment = (inv: Invoice) => {
+    const existing = dataService.getPayments().find((p) => p.invoiceId === inv.id);
+    if (existing) {
+      warning('Receipt Already Recorded', `A payment receipt (${existing.receiptNumber}) has already been recorded for invoice ${inv.invoiceNumber}. Only 1 receipt can be recorded per invoice.`);
+      return;
+    }
+    if (inv.status === 'paid' || inv.balanceDue <= 0) {
+      warning('Invoice Already Settled', `Invoice ${inv.invoiceNumber} is already fully paid and settled.`);
+      return;
+    }
     setSelectedInvoice(inv);
     setPaymentForm({
       amountReceived: inv.balanceDue,
@@ -281,66 +300,81 @@ export const InvoicesListPage: React.FC = () => {
     setShowNewInvoiceModal(false);
   };
 
-  const handleRecordPayment = (e: React.FormEvent) => {
+  const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedInvoice) return;
+    if (!selectedInvoice || isSubmittingPayment) return;
 
-    const receiptId = generatePermanentId('REC', Date.now() % 9000);
-    const receipt: PaymentReceipt = {
-      id: receiptId,
-      receiptNumber: `REC-${Date.now().toString().slice(-4)}`,
-      invoiceId: selectedInvoice.id,
-      invoiceNumber: selectedInvoice.invoiceNumber,
-      customerId: selectedInvoice.customerId,
-      customerName: selectedInvoice.customerName,
-      branchId: selectedInvoice.branchId,
-      paymentDate: new Date().toISOString().split('T')[0],
-      paymentMode: paymentForm.paymentMode,
-      bankReferenceNo: paymentForm.bankReferenceNo,
-      bankName: paymentForm.bankName,
-      cashAmountReceived: Number(paymentForm.amountReceived),
-      customerWhtDeducted: {
-        isApplicable: paymentForm.hasWhtDeduction,
-        ratePercent: paymentForm.hasWhtDeduction ? Number(paymentForm.whtRatePercent) : 0,
-        amountDeducted: paymentForm.hasWhtDeduction ? Number(paymentForm.whtAmount) : 0,
-        certificateNumber: paymentForm.whtCertificateNumber,
-        sectionCode: 'Section 153(1)(b) - Services',
-      },
-      totalCreditApplied:
-        Number(paymentForm.amountReceived) + (paymentForm.hasWhtDeduction ? Number(paymentForm.whtAmount) : 0),
-      recordedBy: userProfile?.email || 'admin',
-      recordedByName: userProfile?.displayName || 'Admin',
-      createdAt: new Date().toISOString(),
-    };
-
-    dataService.recordPayment(receipt, userProfile?.email);
-
-    // Step 15: Auto-file payment receipt PDF into client's Payments folder
-    try {
-      const owner: DocumentOwner = selectedInvoice.branchId
-        ? { kind: 'branch', id: selectedInvoice.branchId }
-        : selectedInvoice.customerType === 'company'
-        ? { kind: 'company', id: selectedInvoice.customerId }
-        : { kind: 'client', id: selectedInvoice.customerId };
-      pdfGenerator.receiptPDFBlob(receipt).then((blob) => {
-        fileGenerated(blob, {
-          owner,
-          category: 'payment_receipt',
-          title: `Payment Receipt - ${receipt.receiptNumber}`,
-          fileName: pdfGenerator.receiptFileName(receipt),
-          subPath: receipt.id,
-          user: { email: userProfile?.email, displayName: userProfile?.displayName },
-        }).catch((err) => console.warn('Receipt auto-file error:', err));
-      }).catch((err) => console.warn('Receipt blob error:', err));
-    } catch (err) {
-      console.warn('Auto-filing receipt background error:', err);
+    const existingReceipt = dataService.getPayments().find((p) => p.invoiceId === selectedInvoice.id);
+    if (existingReceipt) {
+      warning('Receipt Already Recorded', `A receipt (${existingReceipt.receiptNumber}) has already been recorded for this invoice. Only 1 receipt can be recorded per invoice.`);
+      setShowPaymentModal(false);
+      return;
     }
 
-    success(
-      'Payment Recorded & Receipt Filed',
-      `Cash: ${formatPKR(receipt.cashAmountReceived)} | Customer WHT: ${formatPKR(receipt.customerWhtDeducted.amountDeducted)}. Receipt auto-filed in Payments.`
-    );
-    setShowPaymentModal(false);
+    try {
+      setIsSubmittingPayment(true);
+      const receiptId = generatePermanentId('REC', (Date.now() + Math.floor(Math.random() * 1000)) % 90000);
+      const receiptNum = `REC-${Date.now().toString().slice(-4)}`;
+      const receipt: PaymentReceipt = {
+        id: receiptId,
+        receiptNumber: receiptNum,
+        invoiceId: selectedInvoice.id,
+        invoiceNumber: selectedInvoice.invoiceNumber,
+        customerId: selectedInvoice.customerId,
+        customerName: selectedInvoice.customerName,
+        branchId: selectedInvoice.branchId,
+        paymentDate: new Date().toISOString().split('T')[0],
+        paymentMode: paymentForm.paymentMode,
+        bankReferenceNo: paymentForm.bankReferenceNo,
+        bankName: paymentForm.bankName,
+        cashAmountReceived: Number(paymentForm.amountReceived),
+        customerWhtDeducted: {
+          isApplicable: paymentForm.hasWhtDeduction,
+          ratePercent: paymentForm.hasWhtDeduction ? Number(paymentForm.whtRatePercent) : 0,
+          amountDeducted: paymentForm.hasWhtDeduction ? Number(paymentForm.whtAmount) : 0,
+          certificateNumber: paymentForm.whtCertificateNumber,
+          sectionCode: 'Section 153(1)(b) - Services',
+        },
+        totalCreditApplied:
+          Number(paymentForm.amountReceived) + (paymentForm.hasWhtDeduction ? Number(paymentForm.whtAmount) : 0),
+        recordedBy: userProfile?.email || 'admin',
+        recordedByName: userProfile?.displayName || 'Admin',
+        createdAt: new Date().toISOString(),
+      };
+
+      dataService.recordPayment(receipt, userProfile?.email);
+
+      // Step 15: Auto-file payment receipt PDF into client's Payments folder
+      try {
+        const owner: DocumentOwner = selectedInvoice.branchId
+          ? { kind: 'branch', id: selectedInvoice.branchId }
+          : selectedInvoice.customerType === 'company'
+          ? { kind: 'company', id: selectedInvoice.customerId }
+          : { kind: 'client', id: selectedInvoice.customerId };
+        pdfGenerator.receiptPDFBlob(receipt).then((blob) => {
+          fileGenerated(blob, {
+            owner,
+            category: 'payment_receipt',
+            title: `Payment Receipt - ${receipt.receiptNumber}`,
+            fileName: pdfGenerator.receiptFileName(receipt),
+            subPath: receipt.id,
+            user: { email: userProfile?.email, displayName: userProfile?.displayName },
+          }).catch((err) => console.warn('Receipt auto-file error:', err));
+        }).catch((err) => console.warn('Receipt blob error:', err));
+      } catch (err) {
+        console.warn('Auto-filing receipt background error:', err);
+      }
+
+      success(
+        'Payment Recorded & Receipt Filed',
+        `Cash: ${formatPKR(receipt.cashAmountReceived)} | Customer WHT: ${formatPKR(receipt.customerWhtDeducted.amountDeducted)}. Receipt auto-filed in Payments.`
+      );
+      setShowPaymentModal(false);
+    } catch (err: any) {
+      warning('Payment Recording Failed', err?.message || 'Could not record payment.');
+    } finally {
+      setIsSubmittingPayment(false);
+    }
   };
 
   const handleVoidInvoice = (reason: string) => {
@@ -488,20 +522,33 @@ export const InvoicesListPage: React.FC = () => {
                   <td><StatusBadge status={inv.status} /></td>
                   <td>
                     <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                      {inv.balanceDue > 0 && inv.status !== 'void_reversed' ? (
-                        <button
-                          className="btn btn-primary"
-                          style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
-                          onClick={() => handleOpenPayment(inv)}
-                        >
-                          <DollarSign size={12} />
-                          <span>Record Receipt</span>
-                        </button>
-                      ) : (
-                        <span style={{ fontSize: '0.75rem', color: 'var(--ikpm-emerald-600)', fontWeight: 600 }}>
-                          Settled ✓
-                        </span>
-                      )}
+                      {(() => {
+                        const existingReceipt = dataService.getPayments().find((p) => p.invoiceId === inv.id);
+                        if (existingReceipt) {
+                          return (
+                            <span style={{ fontSize: '0.75rem', color: 'var(--ikpm-emerald-600)', fontWeight: 600 }} title={`Receipt ${existingReceipt.receiptNumber} recorded`}>
+                              Settled ✓
+                            </span>
+                          );
+                        }
+                        if (inv.balanceDue > 0 && inv.status !== 'void_reversed') {
+                          return (
+                            <button
+                              className="btn btn-primary"
+                              style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+                              onClick={() => handleOpenPayment(inv)}
+                            >
+                              <DollarSign size={12} />
+                              <span>Record Receipt</span>
+                            </button>
+                          );
+                        }
+                        return (
+                          <span style={{ fontSize: '0.75rem', color: 'var(--ikpm-emerald-600)', fontWeight: 600 }}>
+                            Settled ✓
+                          </span>
+                        );
+                      })()}
 
                       {isOverdue && (
                         <button
@@ -793,11 +840,11 @@ export const InvoicesListPage: React.FC = () => {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
-              <button type="button" className="btn btn-secondary" onClick={() => setShowPaymentModal(false)}>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowPaymentModal(false)} disabled={isSubmittingPayment}>
                 Cancel
               </button>
-              <button type="submit" className="btn btn-primary">
-                Record Payment & Issue Receipt
+              <button type="submit" className="btn btn-primary" disabled={isSubmittingPayment}>
+                {isSubmittingPayment ? 'Recording...' : 'Record Payment & Issue Receipt'}
               </button>
             </div>
           </form>
@@ -821,12 +868,30 @@ export const InvoicesListPage: React.FC = () => {
                 </button>
               )}
 
-              <div style={{ display: 'flex', gap: '0.5rem', marginLeft: 'auto' }}>
+              <div style={{ display: 'flex', gap: '0.5rem', marginLeft: 'auto', alignItems: 'center' }}>
+                {selectedInvoice.isApproved === false && effectiveRole === 'super_admin' && (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => {
+                      const approved = {
+                        ...selectedInvoice,
+                        isApproved: true,
+                        approvedBy: userProfile?.displayName || 'CEO',
+                        approvedAt: new Date().toISOString(),
+                      };
+                      dataService.saveInvoice(approved, userProfile?.email);
+                      setSelectedInvoice(approved);
+                      success('Invoice Approved by CEO', `Invoice ${selectedInvoice.invoiceNumber} is now certified for printing and dispatch.`);
+                    }}
+                  >
+                    <span>Approve Invoice (CEO)</span>
+                  </button>
+                )}
                 <button className="btn btn-secondary" onClick={() => downloadInvoice(selectedInvoice)}>
                   <DownloadIcon size={14} />
                   <span>Download PDF</span>
                 </button>
-                {selectedInvoice.balanceDue > 0 && selectedInvoice.status !== 'void_reversed' && (
+                {selectedInvoice.balanceDue > 0 && selectedInvoice.status !== 'void_reversed' && !dataService.getPayments().some((p) => p.invoiceId === selectedInvoice.id) && (
                   <button className="btn btn-primary" onClick={() => handleOpenPayment(selectedInvoice)}>
                     <DollarSign size={14} />
                     <span>Record Receipt</span>
@@ -842,6 +907,27 @@ export const InvoicesListPage: React.FC = () => {
                 <strong>Reversed Invoice:</strong> This record was voided by authorized credit note. Reason: {selectedInvoice.creditNoteReason}
               </div>
             )}
+
+            {/* Linked Challan Info (Change 40) */}
+            {(() => {
+              const linkedJobRecord = selectedInvoice.jobId ? dataService.getJobById(selectedInvoice.jobId) : undefined;
+              if (!linkedJobRecord?.challanNumber) return null;
+              return (
+                <div style={{ padding: '0.75rem', backgroundColor: 'var(--ikpm-blue-50)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Verified Service Challan (Change 40):</span>
+                      <div style={{ fontWeight: 700, color: 'var(--ikpm-navy-900)' }}>#{linkedJobRecord.challanNumber}</div>
+                    </div>
+                    {linkedJobRecord.challanFileUrl && (
+                      <a href={linkedJobRecord.challanFileUrl} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary">
+                        View Signed Challan
+                      </a>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
               <div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Plus,
@@ -21,6 +21,8 @@ import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { Modal } from '../../components/common/Modal';
 import { formatDate, generatePermanentId } from '../../lib/formatters';
+import { SinglePhotoField } from '../../features/field/SinglePhotoField';
+import type { Challan } from '../../types/operations';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -136,6 +138,25 @@ export const JobsListPage: React.FC = () => {
   type ReportPhoto = { id: string; url: string; caption: string };
   const [reportFindingPhotos, setReportFindingPhotos] = useState<ReportPhoto[]>([]);
   const [reportFinalPhotos, setReportFinalPhotos] = useState<ReportPhoto[]>([]);
+  const [reportChallanNumber, setReportChallanNumber] = useState('');
+  const [reportChallanFileUrl, setReportChallanFileUrl] = useState('');
+  const [reportChallanDate, setReportChallanDate] = useState(todayStr);
+
+  // Edit schedule / time slot modal state
+  const [showEditScheduleJob, setShowEditScheduleJob] = useState<ServiceJob | null>(null);
+  const [scheduleForm, setScheduleForm] = useState({
+    date: todayStr,
+    timeSlot: 'morning' as import('../../types/operations').ServiceJob['timeSlot'],
+    windowStart: '09:00',
+    windowEnd: '13:00',
+    leadPcoId: '',
+  });
+
+  // Attach / Edit Challan modal state
+  const [showAttachChallanJob, setShowAttachChallanJob] = useState<ServiceJob | null>(null);
+  const [attachChallanNo, setAttachChallanNo] = useState('');
+  const [attachChallanFileUrl, setAttachChallanFileUrl] = useState('');
+  const [attachChallanDate, setAttachChallanDate] = useState(todayStr);
 
   useEffect(() => {
     if (!showReportModal) return;
@@ -152,11 +173,17 @@ export const JobsListPage: React.FC = () => {
     setReportClientName(showReportModal.customerSignOff?.acknowledgedByName || '');
     setReportFindingPhotos([]);
     setReportFinalPhotos([]);
+    setReportChallanNumber(showReportModal.challanNumber || '');
+    setReportChallanFileUrl(showReportModal.challanFileUrl || '');
+    setReportChallanDate(todayStr);
   }, [showReportModal?.id]);
   const [verifyForm, setVerifyForm] = useState({
     supervisorName: userProfile?.displayName || 'Muhammad Asif (QC Supervisor)',
     qcRating: 'excellent' as 'excellent' | 'satisfactory' | 'needs_revisit' | 'rejected',
     supervisorNotes: 'Dosage calibrations, safety protocols, and pest eradication coverage confirmed compliant with standard IPM operating specs.',
+    challanNumber: '',
+    challanFileUrl: '',
+    challanDate: todayStr,
   });
 
   const companies = dataService.getCompanies();
@@ -220,11 +247,17 @@ export const JobsListPage: React.FC = () => {
 
     const matchStatus = statusFilter === 'all' || j.status === statusFilter;
 
+    // Completed & cancelled jobs are historical — always show regardless of date filter
+    // so staff can find past records without clearing the date picker.
+    const isHistorical = j.status === 'completed' || j.status === 'cancelled';
     let matchDate = true;
-    if (dateFilter === 'today') matchDate = j.scheduledDate === todayStr;
-    else if (dateFilter === 'tomorrow') matchDate = j.scheduledDate === tomorrowStr;
-    else if (dateFilter === 'week') matchDate = j.scheduledDate >= todayStr && j.scheduledDate <= weekEndStr;
-    else if (dateFilter === 'custom') matchDate = j.scheduledDate === customDate;
+    if (!isHistorical) {
+      if (dateFilter === 'today') matchDate = j.scheduledDate === todayStr;
+      else if (dateFilter === 'tomorrow') matchDate = j.scheduledDate === tomorrowStr;
+      else if (dateFilter === 'week') matchDate = j.scheduledDate >= todayStr && j.scheduledDate <= weekEndStr;
+      else if (dateFilter === 'custom') matchDate = j.scheduledDate === customDate;
+  
+    }
 
     return matchSearch && matchStatus && matchDate;
   });
@@ -414,6 +447,7 @@ export const JobsListPage: React.FC = () => {
 
   const handleSubmitReport = () => {
     if (!showReportModal) return;
+
     const chemicalsUsed: ChemicalUsageRecord[] = reportItems
       .filter((i) => i.name.trim())
       .map((i) => ({
@@ -427,15 +461,25 @@ export const JobsListPage: React.FC = () => {
         targetPest: showReportModal.targetPests[0] || 'cockroaches',
         applicationMethod: 'residual_spray' as const,
       }));
-    const selectedPco = dataService.getStaff(['technician']).find((t) => t.uid === reportPcoId);
-    const memberNames = selectedPco
-      ? [selectedPco.displayName]
-      : reportMember.trim() ? reportMember.split(',').map((s) => s.trim()).filter(Boolean) : [];
+
+    const pcoEmployees = dataService.getEmployees?.().filter((e) => e.role === 'pco') || [];
+    const selectedPcoEmp = pcoEmployees.find((e) => e.id === reportPcoId);
+    const selectedPcoStaff = dataService.getStaff(['technician']).find((t) => t.uid === reportPcoId);
+    const memberName = selectedPcoEmp ? selectedPcoEmp.name : selectedPcoStaff ? selectedPcoStaff.displayName : reportMember.trim();
+    const memberNames = memberName ? [memberName] : [];
+
     const now = new Date().toISOString();
     const newPhotos: import('../../types/operations').PhotoEvidence[] = [
-      ...reportFindingPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Findings', type: 'infestation_focus' as const, imageUrl: p.url, capturedAt: now })),
-      ...reportFinalPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Final report', type: 'after' as const, imageUrl: p.url, capturedAt: now })),
+      ...reportFindingPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Findings', type: 'infestation_focus' as const, imageUrl: p.url, capturedAt: now, uploadedBy: userProfile?.displayName })),
+      ...reportFinalPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Final report', type: 'after' as const, imageUrl: p.url, capturedAt: now, uploadedBy: userProfile?.displayName })),
     ];
+
+    // Change 14: Late submission calculation
+    const schedDate = new Date(showReportModal.scheduledDate).getTime();
+    const subDate = new Date(now).getTime();
+    const diffDays = Math.floor((subDate - schedDate) / (1000 * 60 * 60 * 24));
+    const isLate = diffDays > 1;
+
     const jobStatus: import('../../types/operations').JobStatus = reportVisitOutcome === 'completed' ? 'completed' : 'in_progress';
     const updatedJob: ServiceJob = {
       ...showReportModal,
@@ -446,13 +490,68 @@ export const JobsListPage: React.FC = () => {
       executionNotes: reportNotes.trim() || undefined,
       assignedTechnicianIds: reportPcoId ? [showReportModal.leadPcoId, reportPcoId] : [showReportModal.leadPcoId],
       assignedTechnicianNames: [showReportModal.leadPcoName, ...memberNames],
+      leadPcoEmployeeId: selectedPcoEmp?.id,
+      performedByPcoIds: selectedPcoEmp ? [selectedPcoEmp.id] : reportPcoId ? [reportPcoId] : [],
+      submittedByUid: userProfile?.uid,
+      submittedByName: userProfile?.displayName || 'Operations Coordinator',
+      submittedAt: now,
+      lateSubmission: isLate,
+      lateDays: isLate ? diffDays : undefined,
+      lateReason: isLate ? 'Submitted after service date' : undefined,
       customerSignOff: reportClientName.trim()
         ? { acknowledgedByName: reportClientName.trim(), feedbackRating: reportRating, signedAt: now }
         : showReportModal.customerSignOff,
       updatedAt: now,
     };
+    if (reportChallanNumber.trim()) {
+      const cNo = reportChallanNumber.trim();
+      updatedJob.challanNumber = cNo;
+      updatedJob.challanFileUrl = reportChallanFileUrl || undefined;
+
+      const challanRecord: import('../../types/operations').Challan = {
+        id: `CHL-${updatedJob.id}`,
+        challanNumber: cNo,
+        challanKey: cNo.toLowerCase().replace(/[^a-z0-9]/g, ''),
+        jobId: updatedJob.id,
+        contractId: updatedJob.contractId,
+        customerId: updatedJob.customerId,
+        customerName: updatedJob.customerName,
+        clientType: updatedJob.customerType,
+        branchId: updatedJob.branchId,
+        challanDate: reportChallanDate || now.slice(0, 10),
+        fileUrl: reportChallanFileUrl || '',
+        fileName: `Challan_${cNo}_${updatedJob.customerName}.pdf`,
+        uploadedBy: userProfile?.email || 'admin',
+        uploadedByName: userProfile?.displayName || 'Operations Staff',
+        uploadedAt: now,
+        status: 'active',
+      };
+      dataService.saveChallan(challanRecord, userProfile?.email);
+
+      if (reportChallanFileUrl) {
+        dataService.saveDocument({
+          id: `DOC-CHL-${updatedJob.id}`,
+          title: `Signed Delivery Challan #${cNo} - ${updatedJob.customerName}`,
+          category: 'other',
+          fileCategory: 'certificate',
+          owner: { kind: 'client', id: updatedJob.customerId },
+          source: 'uploaded',
+          file: {
+            url: reportChallanFileUrl,
+            fileName: `Challan_${cNo}.png`,
+            fileSize: 1024,
+            fileType: 'image/png',
+            storage: 'local',
+          },
+          uploadedBy: userProfile?.email || 'admin',
+          uploadedByName: userProfile?.displayName || 'Operations Staff',
+          uploadedAt: now,
+        }, userProfile?.email);
+      }
+    }
+
     dataService.saveJob(updatedJob, userProfile?.email);
-    success('Service report submitted', `${showReportModal.id} marked completed. Ready for supervisor QC.`);
+    success('Service report submitted', `${showReportModal.id} submitted for supervisor QC.`);
     if (selectedJob?.id === updatedJob.id) setSelectedJob(updatedJob);
     setShowReportModal(null);
   };
@@ -1058,6 +1157,22 @@ export const JobsListPage: React.FC = () => {
               </div>
             )}
 
+            {selectedJob.challanNumber && (
+              <div style={{ padding: '0.75rem', backgroundColor: 'var(--ikpm-blue-50)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Client Signed Challan (Change 39):</span>
+                    <div style={{ fontWeight: 700, color: 'var(--ikpm-navy-900)' }}>#{selectedJob.challanNumber}</div>
+                  </div>
+                  {selectedJob.challanFileUrl && (
+                    <a href={selectedJob.challanFileUrl} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary">
+                      View Signed Challan
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Checklist */}
             <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem' }}>
               <h4 style={{ fontSize: '0.875rem', fontWeight: 700, marginBottom: '0.5rem' }}>Field Checklist Items</h4>
@@ -1349,6 +1464,291 @@ export const JobsListPage: React.FC = () => {
                   ))}
                 </div>
               </div>
+            </div>
+
+            {/* Delivery & Service Challan Section (Change 39) */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem', background: '#F8FAFC', padding: '0.75rem', borderRadius: 6 }}>
+              <h4 style={{ fontSize: '0.85rem', fontWeight: 700, margin: '0 0 0.5rem 0', color: '#0F5132' }}>
+                Delivery & Service Challan (Physical Signed Copy)
+              </h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.5rem' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Physical Challan #</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={reportChallanNumber}
+                    onChange={(e) => setReportChallanNumber(e.target.value)}
+                    placeholder="e.g. CHL-2026-0042"
+                  />
+                  <div className="form-hint">Physical signed delivery/service challan number</div>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">Challan Date</label>
+                  <input
+                    type="date"
+                    className="form-input"
+                    value={reportChallanDate}
+                    onChange={(e) => setReportChallanDate(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Upload Signed Challan Picture / Document</label>
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  className="form-input"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        setReportChallanFileUrl(reader.result as string);
+                        success('Challan Attached', file.name + ' uploaded.');
+                      };
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                />
+                {reportChallanFileUrl && (
+                  <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#0F5132', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <span>✓ Challan picture ready to save into client Challans folder</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {/* Modal: Edit Schedule & Time Slot */}
+      {showEditScheduleJob && (
+        <Modal
+          isOpen
+          onClose={() => setShowEditScheduleJob(null)}
+          title={`Edit Schedule & Time Slot: ${showEditScheduleJob.id}`}
+          subtitle={`${showEditScheduleJob.customerName} · ${showEditScheduleJob.siteName}`}
+          maxWidth="560px"
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setShowEditScheduleJob(null)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  const updated: ServiceJob = {
+                    ...showEditScheduleJob,
+                    scheduledDate: scheduleForm.date,
+                    timeSlot: scheduleForm.timeSlot,
+                    windowStart: scheduleForm.windowStart,
+                    windowEnd: scheduleForm.windowEnd,
+                    scheduledTime: scheduleForm.windowStart ? `${scheduleForm.windowStart} - ${scheduleForm.windowEnd}` : undefined,
+                    leadPcoId: scheduleForm.leadPcoId || showEditScheduleJob.leadPcoId,
+                    leadPcoName: technicians.find((t) => t.uid === scheduleForm.leadPcoId)?.displayName || showEditScheduleJob.leadPcoName,
+                    updatedAt: new Date().toISOString(),
+                  };
+                  dataService.saveJob(updated, userProfile?.email);
+                  success('Schedule Updated', `Job ${updated.id} rescheduled to ${updated.scheduledDate} (${updated.timeSlot}).`);
+                  if (selectedJob?.id === updated.id) setSelectedJob(updated);
+                  setShowEditScheduleJob(null);
+                }}
+              >
+                Save Schedule
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div className="form-group">
+              <label className="form-label">Service Date *</label>
+              <input
+                type="date"
+                className="form-input"
+                value={scheduleForm.date}
+                onChange={(e) => setScheduleForm({ ...scheduleForm, date: e.target.value })}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Time Slot Shift *</label>
+              <select
+                className="form-select"
+                value={scheduleForm.timeSlot}
+                onChange={(e) => {
+                  const ts = e.target.value as import('../../types/operations').ServiceJob['timeSlot'];
+                  const defaults: Record<string, [string, string]> = {
+                    morning: ['09:00', '13:00'],
+                    afternoon: ['13:00', '17:00'],
+                    evening: ['17:00', '21:00'],
+                    night_shift: ['21:00', '02:00'],
+                  };
+                  const [ws, we] = defaults[ts] || ['09:00', '13:00'];
+                  setScheduleForm({ ...scheduleForm, timeSlot: ts, windowStart: ws, windowEnd: we });
+                }}
+              >
+                <option value="morning">Morning Shift (09:00 - 13:00)</option>
+                <option value="afternoon">Afternoon Shift (13:00 - 17:00)</option>
+                <option value="evening">Evening Shift (17:00 - 21:00)</option>
+                <option value="night_shift">Night Shift (21:00 - 02:00)</option>
+              </select>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+              <div className="form-group">
+                <label className="form-label">Custom Start Time</label>
+                <input
+                  type="time"
+                  className="form-input"
+                  value={scheduleForm.windowStart}
+                  onChange={(e) => setScheduleForm({ ...scheduleForm, windowStart: e.target.value })}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Custom End Time</label>
+                <input
+                  type="time"
+                  className="form-input"
+                  value={scheduleForm.windowEnd}
+                  onChange={(e) => setScheduleForm({ ...scheduleForm, windowEnd: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Assigned Team Leader / PCO</label>
+              <select
+                className="form-select"
+                value={scheduleForm.leadPcoId}
+                onChange={(e) => setScheduleForm({ ...scheduleForm, leadPcoId: e.target.value })}
+              >
+                <option value="">-- Keep Current Assignee --</option>
+                {technicians.map((t) => (
+                  <option key={t.uid} value={t.uid}>{t.displayName}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: Attach / Edit Challan */}
+      {showAttachChallanJob && (
+        <Modal
+          isOpen
+          onClose={() => setShowAttachChallanJob(null)}
+          title={`Attach / Update Delivery Challan: ${showAttachChallanJob.id}`}
+          subtitle={`${showAttachChallanJob.customerName} · ${showAttachChallanJob.siteName}`}
+          maxWidth="560px"
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setShowAttachChallanJob(null)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  if (!attachChallanNo.trim()) {
+                    warning('Challan Number Required', 'Please enter the physical challan number.');
+                    return;
+                  }
+                  const now = new Date().toISOString();
+                  const cNo = attachChallanNo.trim();
+                  const updated: ServiceJob = {
+                    ...showAttachChallanJob,
+                    challanNumber: cNo,
+                    challanFileUrl: attachChallanFileUrl || showAttachChallanJob.challanFileUrl,
+                    updatedAt: now,
+                  };
+
+                  const challanRecord: import('../../types/operations').Challan = {
+                    id: `CHL-${updated.id}`,
+                    challanNumber: cNo,
+                    challanKey: cNo.toLowerCase().replace(/[^a-z0-9]/g, ''),
+                    jobId: updated.id,
+                    contractId: updated.contractId,
+                    customerId: updated.customerId,
+                    customerName: updated.customerName,
+                    clientType: updated.customerType,
+                    branchId: updated.branchId,
+                    challanDate: attachChallanDate || now.slice(0, 10),
+                    fileUrl: attachChallanFileUrl || showAttachChallanJob.challanFileUrl || '',
+                    fileName: `Challan_${cNo}_${updated.customerName}.pdf`,
+                    uploadedBy: userProfile?.email || 'admin',
+                    uploadedByName: userProfile?.displayName || 'Operations Staff',
+                    uploadedAt: now,
+                    status: 'active',
+                  };
+                  dataService.saveChallan(challanRecord, userProfile?.email);
+
+                  if (attachChallanFileUrl) {
+                    dataService.saveDocument({
+                      id: `DOC-CHL-${updated.id}`,
+                      title: `Signed Delivery Challan #${cNo} - ${updated.customerName}`,
+                      category: 'other',
+                      fileCategory: 'certificate',
+                      owner: { kind: 'client', id: updated.customerId },
+                      source: 'uploaded',
+                      file: {
+                        url: attachChallanFileUrl,
+                        fileName: `Challan_${cNo}.png`,
+                        fileSize: 1024,
+                        fileType: 'image/png',
+                        storage: 'local',
+                      },
+                      uploadedBy: userProfile?.email || 'admin',
+                      uploadedByName: userProfile?.displayName || 'Operations Staff',
+                      uploadedAt: now,
+                    }, userProfile?.email);
+                  }
+
+                  dataService.saveJob(updated, userProfile?.email);
+                  success('Challan Saved', `Challan #${cNo} linked and filed into client Challans folder.`);
+                  if (selectedJob?.id === updated.id) setSelectedJob(updated);
+                  setShowAttachChallanJob(null);
+                }}
+              >
+                Save Challan
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div className="form-group">
+              <label className="form-label">Physical Challan Number *</label>
+              <input
+                type="text"
+                className="form-input"
+                value={attachChallanNo}
+                onChange={(e) => setAttachChallanNo(e.target.value)}
+                placeholder="e.g. CHL-2026-0042"
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Challan Date</label>
+              <input
+                type="date"
+                className="form-input"
+                value={attachChallanDate}
+                onChange={(e) => setAttachChallanDate(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Challan Picture / Document Scan</label>
+              <input
+                type="file"
+                accept="image/*,application/pdf"
+                className="form-input"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      setAttachChallanFileUrl(reader.result as string);
+                      success('Challan Loaded', file.name + ' ready to save.');
+                    };
+                    reader.readAsDataURL(file);
+                  }
+                }}
+              />
+              {attachChallanFileUrl && (
+                <div style={{ marginTop: '0.5rem' }}>
+                  <img src={attachChallanFileUrl} alt="Challan preview" style={{ maxHeight: '180px', borderRadius: 4, border: '1px solid var(--border-subtle)' }} />
+                </div>
+              )}
             </div>
           </div>
         </Modal>

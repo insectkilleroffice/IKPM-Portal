@@ -13,15 +13,14 @@ import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { Modal } from '../../components/common/Modal';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
-import { formatPKR, formatDate, generatePermanentId } from '../../lib/formatters';
-import { frequencyForVisits } from '../../lib/proposalPlan';
+import { formatPKR, formatDate } from '../../lib/formatters';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { baseRoleOf } from '../../lib/permissions';
 import type { Proposal } from '../../types/proposal';
-import type { Contract, ServiceFrequency } from '../../types/operations';
+import type { Contract } from '../../types/operations';
 
 const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -61,12 +60,8 @@ export const ProposalsListPage: React.FC = () => {
   const [showChangesDialog, setShowChangesDialog] = useState(false);
   const [sendTarget, setSendTarget] = useState<Proposal | null>(null);
   const [reviseTarget, setReviseTarget] = useState<Proposal | null>(null);
-  const [assignTarget, setAssignTarget] = useState<Proposal | null>(null);
-  const [assignLeaderId, setAssignLeaderId] = useState('');
-  const [assignStartDate, setAssignStartDate] = useState(new Date().toISOString().split('T')[0]);
 
   const proposals = dataService.getProposals();
-  const teamLeaders = dataService.getStaff(['team_leader']);
   const contracts = dataService.getContracts();
   const activeId = selectedId === undefined ? searchParams.get('view') : selectedId;
   const selected = activeId ? dataService.getProposalById(activeId) ?? null : null;
@@ -153,85 +148,6 @@ export const ProposalsListPage: React.FC = () => {
   const markSent = (p: Proposal) => {
     if (p.status === 'sent_to_client' || p.status === 'negotiation') return;
     save({ ...p, status: 'sent_to_client', sentDate: new Date().toISOString() });
-  };
-
-  const handleAssignAndSchedule = () => {
-    if (!assignTarget || !assignLeaderId || !assignStartDate) return;
-    const p = assignTarget;
-    const teamLeaderUser = dataService.getStaff().find((u) => u.uid === assignLeaderId);
-    if (!teamLeaderUser) return;
-
-    const propConflict = contracts.find((c) => c.proposalId === p.id && c.status !== 'cancelled');
-    if (propConflict) {
-      error('Contract already exists', `${propConflict.id} was already created from this proposal.`);
-      return;
-    }
-
-    const isoDay = (d: Date) => d.toISOString().split('T')[0];
-    const start = assignStartDate;
-    const tenureMs = (p.tenureMonths ?? 12) * 30.44 * 86400000;
-    const end = isoDay(new Date(new Date(start).getTime() + tenureMs));
-
-    let customerName = '';
-    let branchName: string | undefined;
-    if (p.customerType === 'company') {
-      const co = dataService.getCompanyById(p.customerId);
-      customerName = co?.legalCompanyName || p.customerName;
-      if (p.branchId) branchName = dataService.getBranchById(p.branchId)?.branchName;
-    } else {
-      customerName = dataService.getClientById(p.customerId)?.fullName || p.customerName;
-    }
-
-    const nextId = generatePermanentId('CT', contracts.length + 1);
-    const frequency = (p.serviceVisitsPerMonth ? frequencyForVisits(p.serviceVisitsPerMonth) : 'monthly') as ServiceFrequency;
-
-    const created: Contract = {
-      id: nextId,
-      contractType: 'amc_recurring',
-      proposalId: p.id,
-      customerType: p.customerType,
-      customerId: p.customerId,
-      customerName,
-      branchId: p.branchId || undefined,
-      branchName,
-      siteIds: ['SITE-01'],
-      startDate: start,
-      endDate: end,
-      frequency,
-      totalContractValue: p.totalAmount,
-      billingTerm: 'monthly_billing',
-      serviceScope: (p.scopeSections ?? []).map((s) => `${s.key}. ${s.title}`).join(' · ') || p.scopeOfWork,
-      warrantyPeriodMonths: p.warrantyPeriodMonths || 0,
-      totalJobsScheduled: 0,
-      totalJobsCompleted: 0,
-      assignedTeamLeaderId: teamLeaderUser.uid,
-      assignedTeamLeaderName: teamLeaderUser.displayName,
-      status: 'active',
-      renewalAlertDate: isoDay(new Date(new Date(end).getTime() - 60 * 24 * 60 * 60 * 1000)),
-      servicePlan: p.servicePlan,
-      serviceVisitsPerMonth: p.serviceVisitsPerMonth,
-      followUpVisitsPerMonth: p.followUpVisitsPerMonth,
-      monthlyRate: p.monthlyRate,
-      taxMode: p.taxMode,
-      taxPercent: p.taxPercent,
-      tenureMonths: p.tenureMonths,
-      paymentTermsDays: p.paymentTermsDays,
-      terms: p.terms,
-      exclusions: p.exclusions,
-      deviceOwnership: p.deviceOwnership,
-      chemicals: p.chemicals,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    try {
-      dataService.saveContract(created, userProfile?.email);
-      success('Contract Created', `${nextId} assigned to ${teamLeaderUser.displayName}. Service starts ${assignStartDate}.`);
-      setAssignTarget(null);
-      setAssignLeaderId('');
-    } catch (err) {
-      error('Failed to create contract', err instanceof Error ? err.message : String(err));
-    }
   };
 
   const decide = (status: 'approved' | 'rejected', reason?: string) => {

@@ -1,11 +1,11 @@
 // Files a generated PDF / Excel into a client folder (src/lib/folders.ts decides the path from
-// the owner and fileCategory). Falls back to a download when file storage is off or offline.
+// the owner and fileCategory). Works both with Cloudinary cloud storage and offline/local fallback.
 
 import { dataService } from '../../services/dataService';
 import { uploadFile } from '../../lib/cloudinary';
 import { integrations } from '../../config/env';
 import { downloadBlob } from '../../lib/opsPdf';
-import type { DocumentOwner, PortalDocument } from '../../types/document';
+import type { DocumentOwner, PortalDocument, StoredFile } from '../../types/document';
 import type { FileCategory, TemplateStamp } from '../../types/folders';
 
 export async function fileGenerated(
@@ -19,11 +19,37 @@ export async function fileGenerated(
     user: { email?: string; displayName?: string };
   } & TemplateStamp
 ): Promise<PortalDocument | null> {
-  if (!integrations.cloudinary || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    downloadBlob(blob, opts.fileName);
-    return null;
+  let stored: StoredFile = {
+    url: typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' ? URL.createObjectURL(blob) : '',
+    fileName: opts.fileName,
+    fileSize: blob.size,
+    fileType: blob.type || 'application/pdf',
+    storage: 'local',
+  };
+
+  const hasCloudinary = Boolean(integrations.cloudinary);
+  const isOnline = typeof navigator === 'undefined' || navigator.onLine;
+
+  if (hasCloudinary && isOnline) {
+    try {
+      stored = await uploadFile(blob, {
+        scope: dataService.uploadScopeFor(opts.owner, opts.category),
+        subPath: opts.subPath,
+        fileName: opts.fileName,
+      });
+    } catch (err) {
+      console.warn('Cloudinary upload fallback to local:', err);
+    }
+  } else {
+    if (typeof window !== 'undefined') {
+      try {
+        downloadBlob(blob, opts.fileName);
+      } catch {
+        // Ignore download error
+      }
+    }
   }
-  const stored = await uploadFile(blob, { scope: dataService.uploadScopeFor(opts.owner, opts.category), subPath: opts.subPath, fileName: opts.fileName });
+
   return dataService.saveDocument(
     {
       id: `DOC-${Date.now()}-${opts.category}`,

@@ -355,6 +355,44 @@ export function computeNotifications(
     });
   }
 
+  // ── Operations Coordinator & Operations Manager — Job QC & Challan Review ──
+  if (role === 'team_leader' || role === 'operations' || isAdmin) {
+    jobs.forEach((j) => {
+      // Report submitted but QC not verified yet
+      if (j.submittedAt && !j.supervisorVerification?.isVerified) {
+        const isSubmitter = j.submittedByUid === uid;
+        if (!isSubmitter || isAdmin) {
+          out.push({
+            id: `qc_needed_${j.id}`,
+            category: 'action_needed',
+            title: 'Job report submitted — QC & Challan review needed',
+            body: `${j.customerName} · Job ${j.id}${j.challanNumber ? ` · Challan #${j.challanNumber}` : ''}`,
+            link: `/operations/jobs?verify=${j.id}`,
+            entityId: j.id,
+            createdAt: j.submittedAt || j.updatedAt,
+          });
+        }
+      }
+    });
+  }
+
+  // ── Accounts / Finance — QC Verified Jobs ready for Statutory Tax Invoicing ──
+  if (role === 'finance' || isAdmin) {
+    jobs.forEach((j) => {
+      if (j.supervisorVerification?.isVerified) {
+        out.push({
+          id: `finance_invoice_ready_${j.id}`,
+          category: 'action_needed',
+          title: 'Job QC verified with Challan — ready for invoice',
+          body: `${j.customerName} · ${j.id}${j.challanNumber ? ` · Challan #${j.challanNumber}` : ''}`,
+          link: `/finance/invoices?action=new_invoice&fromJob=${j.id}`,
+          entityId: j.id,
+          createdAt: j.supervisorVerification.verifiedAt || j.updatedAt,
+        });
+      }
+    });
+  }
+
   return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 

@@ -8,7 +8,7 @@ const rules = readFileSync(resolve(__dirname, '../../firestore.rules'), 'utf-8')
 const block = (match: string) => {
   const start = rules.indexOf(`match /${match}/`);
   expect(start, `match /${match}/ exists`).toBeGreaterThan(-1);
-  const next = rules.indexOf('\n    match /', start + 1);
+  const next = rules.indexOf('match /', start + 1);
   return rules.slice(start, next < 0 ? undefined : next);
 };
 
@@ -134,5 +134,17 @@ describe('firestore.rules: complaints', () => {
 
   it('contracts are protected by updateMod (folder ownership preserved on update)', () => {
     expect(block('contracts')).toMatch(/updateMod\(/);
+  });
+
+  it('new module rules: coordinator cannot read employee_private; finance can read employee_pay; technician cannot read other attendance', () => {
+    const privBlock = block('employee_private');
+    expect(privBlock).toMatch(/canEdit\('hr'\) \|\| isSuperAdmin\(\)/);
+    expect(privBlock).not.toMatch(/operations/);
+
+    const payBlock = block('employee_pay');
+    expect(payBlock).toMatch(/canView\('payroll'\) \|\| canEdit\('payroll'\)/);
+
+    const attBlock = block('attendance');
+    expect(attBlock).toMatch(/role\(\) == 'technician' && resource\.data\.get\('employeeId', ''\) == me\(\)\.get\('employeeId', ''\)/);
   });
 });

@@ -47,9 +47,29 @@ export interface ServiceChecklistItem {
 export interface PhotoEvidence {
   id: string;
   caption: string;
-  type: 'before' | 'after' | 'infestation_focus' | 'bait_station';
+  type: 'before' | 'after' | 'infestation_focus' | 'bait_station' | 'challan' | 'signed_report';
   imageUrl: string;
   capturedAt: string;
+  uploadedBy?: string;
+}
+
+export interface Challan extends FolderMeta {
+  id: string;
+  challanNumber: string;
+  challanKey: string; // lowercase, spaces & dashes removed
+  jobId: string;
+  contractId?: string;
+  customerId: string;
+  customerName: string;
+  clientType: CustomerType;
+  branchId?: string;
+  challanDate: string; // YYYY-MM-DD
+  fileUrl: string;
+  fileName: string;
+  uploadedBy: string;
+  uploadedByName: string;
+  uploadedAt: string;
+  status: 'active' | 'superseded';
 }
 
 /** A photo taken on site (inspection, lead visit); `type` is one of the capturing screen's categories. */
@@ -118,6 +138,23 @@ export interface ServiceJob extends FolderMeta {
   customerSignOff?: CustomerSignOff;
   supervisorVerification?: SupervisorVerification;
   executionNotes?: string;
+  // Challan fields (Change 39)
+  challanNumber?: string;
+  challanId?: string;
+  challanFileUrl?: string;
+  // PCO Enrollment & Assignment fields (Change 48)
+  leadPcoEmployeeId?: string;
+  assignedPcoEmployeeIds?: string[];
+  // Coordinator submission on behalf of PCO (Change 49)
+  performedByPcoIds?: string[];
+  submittedByUid?: string;
+  submittedByName?: string;
+  submittedAt?: string;
+  checklistConfirmedBy?: string;
+  lateSubmission?: boolean;
+  lateDays?: number;
+  lateReason?: string;
+  filingPending?: boolean;
   isOfflineDraft?: boolean;
   syncedAt?: string;
   /** Contract schedule (Step 14): service visit or its follow-up; the pair share pairedJobId links. */

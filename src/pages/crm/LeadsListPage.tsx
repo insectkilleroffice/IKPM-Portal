@@ -115,6 +115,7 @@ export const LeadsListPage: React.FC = () => {
   const canEdit = canEditModule(effectiveRole, 'crm');
   const canEditPco = canEditModule(effectiveRole, 'pco');
   const canEditInspections = canEditModule(effectiveRole, 'inspections');
+  const isOpsRole = ['operations', 'team_leader', 'admin', 'super_admin'].includes(effectiveRole || '');
 
   const [tab, setTab] = useState<Tab>((searchParams.get('stage') as Tab) || 'all');
   const [query, setQuery] = useState('');
@@ -244,7 +245,7 @@ export const LeadsListPage: React.FC = () => {
       case 'record_findings': return setFindingsLead(lead);
       case 'record_meeting': return setMeetingReportLead(lead);
       case 'schedule_site_inspection': return setSiteScheduleLead(lead);
-      case 'record_site_inspection': return setSiteInspFindingsLead(lead);
+      case 'record_site_inspection': if (!isOpsRole) { warning('Operation only', 'Only Operations or Operation Coordinator can complete inspections.'); return; } return setSiteInspFindingsLead(lead);
       case 'create_proposal': return createProposal(lead);
       case 'skip_inspection': return lead.inspectionSkipped ? createProposal(lead) : setSkipLead(lead);
       case 'send_documents': return setSendLead(lead);

@@ -6,7 +6,7 @@
 
 import type { DataScope, UserRole } from '../types';
 
-export type SystemRole = 'super_admin' | 'admin' | 'sales' | 'team_leader' | 'operations' | 'technician';
+export type SystemRole = 'super_admin' | 'admin' | 'sales' | 'team_leader' | 'operations' | 'technician' | 'finance' | 'hr';
 
 export type ModuleKey =
   | 'dashboard'
@@ -28,7 +28,12 @@ export type ModuleKey =
   | 'team'
   | 'roles'
   | 'complaints'
-  | 'approvals';
+  | 'approvals'
+  | 'hr'
+  | 'attendance'
+  | 'payroll'
+  | 'challans'
+  | 'search';
 
 export type AccessLevel = 'none' | 'view' | 'edit';
 
@@ -66,6 +71,11 @@ export const MODULES: { key: ModuleKey; label: string; group: string; hint?: str
   { key: 'roles', label: 'Customize roles', group: 'Administration', hint: 'Change what each role can do' },
   { key: 'complaints', label: 'Complaints', group: 'Field operations', hint: 'CRO logs, Ops Manager resolves, re-service visits' },
   { key: 'approvals', label: 'Approvals queue', group: 'Administration', hint: 'Manager approves discounts, voids, cancellations and refunds. Others can view their own requests.' },
+  { key: 'hr', label: 'Employee management', group: 'Human resources', hint: 'Staff profiles, sensitive HR data, onboarding and probation' },
+  { key: 'attendance', label: 'Daily attendance', group: 'Field operations', hint: 'Coordinator marks daily PCO attendance' },
+  { key: 'payroll', label: '30-day payroll', group: 'Accounts', hint: 'Calculate salary, approve cycles, record payment and salary slips' },
+  { key: 'challans', label: 'Delivery & service challans', group: 'Field operations', hint: 'Signed challan records and register' },
+  { key: 'search', label: 'Global search', group: 'General', hint: 'Search across all records, documents and folders' },
 ];
 
 const all = (level: AccessLevel, keys: ModuleKey[]) => Object.fromEntries(keys.map((k) => [k, level])) as Partial<Record<ModuleKey, AccessLevel>>;
@@ -101,10 +111,14 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     color: '#0F766E',
     description: 'Daily back-office operations — edits all records and sends documents. Cannot manage roles, staff or invoices.',
     modules: {
-      ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'pco', 'complaints']),
+      ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'pco', 'complaints', 'challans']),
       invoices: 'view',
       settings: 'view',
       approvals: 'view',
+      search: 'edit',
+      attendance: 'view',
+      hr: 'view',
+      payroll: 'view',
     },
   },
   {
@@ -124,14 +138,16 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
   },
   {
     id: 'operations',
-    name: 'Operation Coordinator',
+    name: 'Operations Manager',
     basedOn: 'operations',
     isSystem: true,
     defaultScope: 'company',
     color: '#D97706',
     description: 'Sees all CRO meetings, assigns team leaders, creates contracts and dispatches service jobs.',
     modules: {
-      ...all('edit', ['dashboard', 'customers', 'inspections', 'contracts', 'calendar', 'jobs', 'files', 'complaints']),
+      ...all('edit', ['dashboard', 'customers', 'inspections', 'contracts', 'calendar', 'jobs', 'files', 'complaints', 'challans', 'attendance', 'search']),
+      crm: 'view',
+      proposals: 'view',
       pco: 'view',
       documents: 'view',
       company_files: 'view',
@@ -139,14 +155,14 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
   },
   {
     id: 'team_leader',
-    name: 'Team Leader',
+    name: 'Operations Coordinator',
     basedOn: 'team_leader',
     isSystem: true,
     defaultScope: 'company',
     color: '#9A3412',
-    description: 'Field team leader. Submits meeting reports and job reports. Leads PCO technicians on site.',
+    description: 'Field team leader. Submits meeting reports and job reports. Leads PCO technicians on site. Manages challans and daily attendance.',
     modules: {
-      ...all('edit', ['dashboard', 'inspections', 'jobs', 'files', 'complaints']),
+      ...all('edit', ['dashboard', 'inspections', 'jobs', 'files', 'complaints', 'challans', 'attendance', 'search']),
       customers: 'view',
       contracts: 'view',
       calendar: 'view',
@@ -162,9 +178,46 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     defaultScope: 'own',
     color: '#0891B2',
     description: 'Field technician. Sees and completes only their own assigned service jobs.',
-    modules: { dashboard: 'view', jobs: 'view', pco: 'edit' },
+    modules: { dashboard: 'view', jobs: 'view', pco: 'edit', attendance: 'view' },
   },
-];
+  {
+    id: 'finance',
+    name: 'Accounts / Finance',
+    basedOn: 'finance',
+    isSystem: true,
+    defaultScope: 'company',
+    color: '#0A5A3E',
+    description: 'Manages invoicing, tax, payroll cycles, salary payments, challan views, and search.',
+    modules: {
+      dashboard: 'view',
+      invoices: 'edit',
+      tax: 'view',
+      payroll: 'edit',
+      challans: 'view',
+      search: 'edit',
+      documents: 'view',
+      contracts: 'view',
+      customers: 'view',
+    },
+  },
+  {
+    id: 'hr',
+    name: 'HR',
+    basedOn: 'hr',
+    isSystem: true,
+    defaultScope: 'company',
+    color: '#B45309',
+    description: 'Enrolls employees, manages private data (CNIC/bank), attendance, and prepares payroll cycles.',
+    modules: {
+      dashboard: 'view',
+      hr: 'edit',
+      attendance: 'view',
+      payroll: 'view',
+      team: 'view',
+      documents: 'view',
+      search: 'view',
+    },
+  },];
 
 export const SYSTEM_ROLE_IDS = DEFAULT_ROLES.map((r) => r.id) as SystemRole[];
 
@@ -202,7 +255,8 @@ export const getRole = (id: UserRole | null | undefined) => (id ? registry.get(i
 export const accessLevel = (role: UserRole | null | undefined, module: ModuleKey): AccessLevel => {
   if (!role) return 'none';
   if (role === 'super_admin') return 'edit';
-  return registry.get(role)?.modules[module] ?? 'none';
+  const key = resolveRoleKey(role);
+  return (key ? registry.get(key)?.modules[module] : undefined) ?? 'none';
 };
 
 export const canAccessModule = (role: UserRole | null | undefined, module: ModuleKey) => accessLevel(role, module) !== 'none';
@@ -216,7 +270,10 @@ export const canEditCompanyFiles = (role: UserRole | null | undefined) => canEdi
 /** The super admin and anyone given company-wide data access see every record. */
 export const seesAllRecords = (role: UserRole, scope: DataScope) => role === 'super_admin' || scope === 'company';
 
-export const roleLabel = (id: UserRole | null | undefined) => (id ? registry.get(id)?.name || id.replace(/_/g, ' ') : '—');
+export const roleLabel = (id: UserRole | null | undefined) => {
+  const key = resolveRoleKey(id);
+  return key ? registry.get(key)?.name || id?.replace(/_/g, ' ') : '—';
+};
 
 export const roleDescription = (id: UserRole) => registry.get(id)?.description || '';
 
@@ -225,7 +282,17 @@ export const roleColor = (id: UserRole) => registry.get(id)?.color || '#475569';
 export const defaultScopeFor = (id: UserRole): DataScope => registry.get(id)?.defaultScope || 'own';
 
 /** System template a role follows, used by older feature checks that list system roles. */
-export const baseRoleOf = (id: UserRole | null | undefined): SystemRole | undefined => (id ? registry.get(id)?.basedOn : undefined);
+export const resolveRoleKey = (id: UserRole | null | undefined): UserRole | undefined => {
+  if (!id) return undefined;
+  if (id === 'operations_manager') return 'operations';
+  if (id === 'operations_coordinator') return 'team_leader';
+  return id;
+};
+
+export const baseRoleOf = (id: UserRole | null | undefined): SystemRole | undefined => {
+  const key = resolveRoleKey(id);
+  return key ? registry.get(key)?.basedOn : undefined;
+};
 
 export const SCOPE_LABELS: Partial<Record<DataScope, string>> = {
   own: 'Own records only',

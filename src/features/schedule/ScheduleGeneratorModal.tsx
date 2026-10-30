@@ -567,8 +567,8 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
                 <th>Kind</th>
                 <th>Services for this visit</th>
                 <th>Date</th>
-                <th>Time Slot</th>
-                <th>Closing / Window</th>
+                <th style={{ minWidth: 220 }}>Time Slot & Custom Timing</th>
+                <th>Branch Hours</th>
                 <th>Assigned Team Leader</th>
                 <th>Status</th>
               </tr>
@@ -631,25 +631,57 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
                         onChange={(e) => handleUpdateVisit(v.key, { date: e.target.value })}
                       />
                     </td>
-                    <td>
-                      <select
-                        className="form-select"
-                        style={{ height: '30px', fontSize: '0.78rem', width: '120px' }}
-                        value={v.timeSlot}
-                        onChange={(e) => handleUpdateVisit(v.key, { timeSlot: e.target.value as TimeSlot })}
-                      >
-                        <option value="morning">Morning</option>
-                        <option value="afternoon">Afternoon</option>
-                        <option value="evening">Evening</option>
-                        <option value="night_shift">Night Shift</option>
-                      </select>
+                    <td style={{ minWidth: '220px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <select
+                          className="form-select"
+                          style={{ height: '28px', fontSize: '0.75rem' }}
+                          value={v.timeSlot}
+                          onChange={(e) => {
+                            const ts = e.target.value as TimeSlot;
+                            const defaults: Record<TimeSlot, [string, string]> = {
+                              morning: ['09:00', '13:00'],
+                              afternoon: ['13:00', '17:00'],
+                              evening: ['17:00', '21:00'],
+                              night_shift: ['21:00', '02:00'],
+                            };
+                            const [ws, we] = defaults[ts] || ['', ''];
+                            handleUpdateVisit(v.key, {
+                              timeSlot: ts,
+                              windowStart: v.windowStart || ws,
+                              windowEnd: v.windowEnd || we,
+                            });
+                          }}
+                        >
+                          <option value="morning">Morning (09:00 - 13:00)</option>
+                          <option value="afternoon">Afternoon (13:00 - 17:00)</option>
+                          <option value="evening">Evening (17:00 - 21:00)</option>
+                          <option value="night_shift">Night Shift (21:00 - 02:00)</option>
+                        </select>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Custom:</span>
+                          <input
+                            type="time"
+                            className="form-input"
+                            style={{ height: '26px', fontSize: '0.75rem', padding: '1px 4px', width: '75px' }}
+                            value={v.windowStart || ''}
+                            onChange={(e) => handleUpdateVisit(v.key, { windowStart: e.target.value })}
+                            title="Custom Start Time"
+                          />
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>–</span>
+                          <input
+                            type="time"
+                            className="form-input"
+                            style={{ height: '26px', fontSize: '0.75rem', padding: '1px 4px', width: '75px' }}
+                            value={v.windowEnd || ''}
+                            onChange={(e) => handleUpdateVisit(v.key, { windowEnd: e.target.value })}
+                            title="Custom End Time"
+                          />
+                        </div>
+                      </div>
                     </td>
                     <td style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                      {v.windowStart && v.windowEnd
-                        ? `${v.windowStart} - ${v.windowEnd}`
-                        : v.closingTime
-                        ? `Closes ${v.closingTime}`
-                        : '—'}
+                      {v.closingTime ? `Closes ${v.closingTime}` : 'Open hours'}
                     </td>
                     <td>
                       <select

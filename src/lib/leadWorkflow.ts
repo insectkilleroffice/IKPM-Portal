@@ -39,6 +39,7 @@ export const PIPELINE: { stage: PipelineStage; label: string; short: string; hin
   { stage: 'engaged', label: 'Engaged', short: 'Engaged', hint: 'Client is interested — CRO aligns a Team Leader and schedules a meeting', color: '#7C3AED' },
   { stage: 'meeting_scheduled', label: 'Meeting scheduled', short: 'Meeting', hint: 'Team Leader confirmed for the client meeting', color: '#D97706' },
   { stage: 'meeting_done', label: 'Meeting done', short: 'Meeting done', hint: 'Team Leader submitted the meeting report — create proposal or schedule site inspection', color: '#B45309' },
+  { stage: 'profile_sent', label: 'Company profile sent', short: 'Profile sent', hint: 'Company profile sent to client', color: '#6366F1' },
   { stage: 'proposal_sent', label: 'Proposal sent', short: 'Proposal', hint: 'Proposal created and shared with the client', color: '#0E8A5F' },
   { stage: 'negotiation', label: 'Negotiation', short: 'Negotiation', hint: 'Price or terms bargaining in progress', color: '#EA580C' },
   { stage: 'won', label: 'Won', short: 'Won', hint: 'Converted to active customer — contract raised', color: '#0A6B4A' },
@@ -57,7 +58,7 @@ export const stageOf = (lead: Pick<Lead, 'stage'>): PipelineStage => {
     case 'proposal_drafted': return 'proposal_sent';
     case 'inspection_scheduled': return 'meeting_scheduled';
     case 'inspection_completed': return 'meeting_done';
-    case 'profile_sent': return 'proposal_sent';
+
     default: return lead.stage as PipelineStage;
   }
 };

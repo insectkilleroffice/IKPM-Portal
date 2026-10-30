@@ -4,6 +4,8 @@ import type { CustomerType } from './customer';
 import type { FolderMeta } from './folders';
 
 export type TaxJurisdiction =
+  | 'fbr_sales_tax'
+  | 'fbr_cash'
   | 'sindh_srb'
   | 'punjab_pra'
   | 'islamabad_ict'
@@ -67,6 +69,13 @@ export interface Invoice extends FolderMeta {
   isPosted: boolean;
   postedAt?: string;
   postedBy?: string;
+  isApproved?: boolean;
+  approvedBy?: string;
+  approvedAt?: string;
+  receivingPhotoUrl?: string;
+  receivedAt?: string;
+  receivedByName?: string;
+  isDelivered?: boolean;
   creditNoteId?: string;
   creditNoteReason?: string;
   notes?: string;
@@ -95,6 +104,7 @@ export interface PaymentReceipt extends FolderMeta {
   recordedByName: string;
   isReversed?: boolean;
   reversalReason?: string;
+  paymentEvidenceUrl?: string;
   createdAt: string;
 }
 

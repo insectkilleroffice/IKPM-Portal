@@ -12,7 +12,7 @@ import type { SitePhoto } from '../../types/operations';
 import { PhotoCapture } from '../field/PhotoCapture';
 import { SinglePhotoField } from '../field/SinglePhotoField';
 import { FINDING_SUGGESTIONS, findingFilled, findingsSummary, newFinding, recommendedTreatmentOf } from '../../lib/riskAssessment';
-import { fileInspectionReport } from './inspectionFiles';
+import { fileInspectionReport, fileMeetingReport } from './inspectionFiles';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -61,7 +61,7 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
   if (!lead) return null;
   const contacts = contactsOf(lead);
   const isCompany = lead.customerType === 'company';
-  const closing = outcome === 'not_interested' || outcome === 'wrong_contact';
+  const closing = outcome === 'not_interested' || outcome === 'wrong_contact' || outcome === 'already_has_vendor';
   const needsFollowUp = outcome === 'callback' || outcome === 'no_response' || outcome === 'interested';
 
   const setContact = (id: string, patch: Partial<LeadContact>) =>
@@ -1262,6 +1262,9 @@ export const SiteInspectionFindingsModal: React.FC<{ lead: Lead | null; onClose:
     if (updated) {
       success('Inspection findings saved', `${pests.length} pest type(s), ${findings.length} finding(s).`);
       onDone?.(updated);
+      fileInspectionReport(updated, { email: userProfile?.email, displayName: userProfile?.displayName })
+        .then((doc) => doc && success('Inspection Report Filed', 'Inspection report automatically filed in client folder.'))
+        .catch((err) => console.warn('Inspection report filing background error:', err));
     }
     onClose();
   };
@@ -1575,9 +1578,9 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
       const fuNames = followUps.filter((f) => f.type !== 'not_interested').map((f) => ({ company_profile: 'Company profile', proposal: 'Proposal', inspection: 'Inspection', other_documents: 'Documents', contract_ready: 'Ready to sign', not_interested: 'Not interested' }[f.type])).filter(Boolean).join(', ');
       success('Meeting report saved', fuNames ? `Client asked for: ${fuNames}.` : `${lead.title} findings recorded.`);
       onDone?.(updated);
-      fileInspectionReport(updated, { email: userProfile?.email, displayName: userProfile?.displayName })
-        .then((doc) => !doc && warning('Report not filed', 'File storage is not configured or you are offline. Download the report from the lead instead.'))
-        .catch((err) => warning('Report not filed', err instanceof Error ? err.message : String(err)));
+      fileMeetingReport(updated, { email: userProfile?.email, displayName: userProfile?.displayName })
+        .then((doc) => doc && success('Meeting Report Filed', 'Meeting report automatically filed in client folder.'))
+        .catch((err) => console.warn('Meeting report filing background error:', err));
     }
     onClose();
   };

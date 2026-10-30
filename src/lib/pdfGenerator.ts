@@ -48,6 +48,8 @@ const money = (n: number | undefined) =>
 const pkr = (n: number | undefined) => `PKR ${money(n)}`;
 
 const JURISDICTION: Record<TaxJurisdiction, string> = {
+  fbr_sales_tax: 'Federal Board of Revenue (FBR - Sales Tax)',
+  fbr_cash: 'Federal Board of Revenue (FBR - Cash / Retail)',
   sindh_srb: 'Sindh Revenue Board (SRB)',
   punjab_pra: 'Punjab Revenue Authority (PRA)',
   islamabad_ict: 'Islamabad Capital Territory (ICT)',
@@ -1161,24 +1163,24 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
 }
 
 /** Risk assessment report: picture evidence, observation, risk and recommendation per finding. */
-async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
+async function buildMeetingReport(lead: Lead): Promise<jsPDF> {
   const i = lead.inspection;
-  const findings = i?.findings ?? [];
   const client = lead.companyName || lead.title;
-  const title = findings.length ? 'Risk Assessment Report' : 'Site Inspection Report';
-  const { b, profile } = await builder(title, i?.id || lead.id, i?.status === 'completed' ? undefined : 'SCHEDULED', undefined, {
-    type: 'inspection_report', issued: i?.completedDate || i?.scheduledDate || lead.createdAt, client,
-    clientIsPerson: lead.customerType !== 'company', status: i?.status || 'scheduled',
+  const title = 'Client Meeting Report';
+  const meetingDate = i?.completedDate || i?.scheduledDate || lead.updatedAt;
+  const { b, profile } = await builder(title, i?.id || `MTG-${lead.id}`, undefined, undefined, {
+    type: 'inspection_report', issued: meetingDate, client,
+    clientIsPerson: lead.customerType !== 'company', status: i?.status || 'completed',
   });
   const primary = lead.contacts?.find((c) => c.isPrimary) ?? lead.contacts?.[0];
-  const preparedBy = i?.findingsBy || i?.inspectorNames?.join(', ') || i?.inspectorName || '—';
+  const conductedBy = i?.inspectorName || i?.assignedTeamLeaderName || 'Operations Staff';
   b.titleBand(
     [
-      { label: 'Report No.', value: i?.id || '—' },
-      { label: 'Date', value: formatDate(i?.completedDate || i?.scheduledDate) },
-      { label: 'Branch / site', value: i?.siteName || [lead.area, lead.city].filter(Boolean).join(', ') || '—' },
-      { label: 'Prepared by', value: preparedBy },
-      { label: 'Observed by', value: i?.observedBy || '—' },
+      { label: 'Meeting No.', value: i?.id || `MTG-${lead.id}` },
+      { label: 'Date', value: formatDate(meetingDate) },
+      { label: 'Meeting Type', value: i?.meetingType ? i.meetingType.toUpperCase() : 'CLIENT MEETING' },
+      { label: 'Conducted By', value: conductedBy },
+      { label: 'Client Rep', value: i?.observedBy || primary?.name || '—' },
     ],
     i?.reportTitle || `${title} - ${client}`
   );
@@ -1192,19 +1194,88 @@ async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
         lead.industry,
       ],
     },
-    { heading: 'Inspected site', name: i?.siteName || [lead.area, lead.city].filter(Boolean).join(', ') || lead.city, lines: [lead.propertyAddress, i?.teamName && `Team: ${i.teamName}`] }
+    { heading: 'Meeting Location', name: i?.siteName || lead.propertyAddress || [lead.area, lead.city].filter(Boolean).join(', ') || 'Client Facility', lines: [lead.propertyAddress] }
   );
-  if (i) {
-    b.keyValues([
-      ['Pests identified', i.pestTypesFound.map((p) => statusLabel(p)).join(', ')],
-      ['Infestation level', statusLabel(i.infestationSeverity)],
-      ['Area inspected', i.areaSqFt ? `${i.areaSqFt.toLocaleString()} sq ft` : undefined],
-      ['Status', statusLabel(i.status)],
-    ]);
+
+  const decisionLabel = i?.tlStatus === 'send_proposal' ? 'Send Proposal (Approved)' : 'Completed';
+  b.keyValues([
+    ['Meeting Outcome', decisionLabel],
+    ['Pests Discussed', (i?.pestTypesFound?.length ? i.pestTypesFound : lead.pestIssues ?? []).map((p) => statusLabel(p)).join(', ') || 'General Pest Control'],
+    ['Treatment Scope', i?.recommendedTreatment || 'General treatment'],
+    ['Follow-up Actions', i?.meetingFollowUps?.length ? i.meetingFollowUps.join(', ') : 'Prepare formal commercial proposal'],
+  ]);
+
+  if (i?.teamLeaderNotes || i?.meetingReportNote) {
+    b.section('Meeting Discussion & Findings');
+    b.paragraph([i.meetingReportNote, i.teamLeaderNotes].filter(Boolean).join('\n\n'));
   }
 
+  if (lead.branches?.length) {
+    b.section('Sites / Facility Locations Discussed');
+    b.table(['#', 'Branch / Site Name', 'Address'], lead.branches.map((br, idx) => [idx + 1, br.name, br.address || '—']));
+  }
+
+  b.noteBox('Next Step & Action Items', [
+    'CRO / Sales Department will prepare and issue the comprehensive commercial proposal.'
+  ], b.brandTint);
+
+  b.signatures([
+    { label: 'Report Prepared by', name: conductedBy },
+    { label: 'Client Acknowledgment', name: i?.observedBy || primary?.name || ' ' },
+  ]);
+
+  return b.finish();
+}
+
+async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
+  const i = lead.inspection;
+  const si = lead.siteInspection;
+  const findings = i?.findings ?? si?.findings ?? [];
+  const client = lead.companyName || lead.title;
+  const title = findings.length ? 'Risk Assessment Report' : 'Site Inspection Report';
+  const completedDate = i?.completedDate || si?.completedDate;
+  const scheduledDate = i?.scheduledDate || si?.scheduledDate;
+  const isDone = i?.status === 'completed' || si?.status === 'completed';
+  const { b, profile } = await builder(title, i?.id || si?.id || lead.id, isDone ? undefined : 'SCHEDULED', undefined, {
+    type: 'inspection_report', issued: completedDate || scheduledDate || lead.createdAt, client,
+    clientIsPerson: lead.customerType !== 'company', status: isDone ? 'completed' : 'scheduled',
+  });
+  const primary = lead.contacts?.find((c) => c.isPrimary) ?? lead.contacts?.[0];
+  const preparedBy = i?.findingsBy || i?.inspectorNames?.join(', ') || i?.inspectorName || si?.teamLeaderName || si?.assignedTechNames?.join(', ') || 'Staff';
+  b.titleBand(
+    [
+      { label: 'Report No.', value: i?.id || si?.id || '—' },
+      { label: 'Date', value: formatDate(completedDate || scheduledDate) },
+      { label: 'Branch / site', value: i?.siteName || si?.branchName || [lead.area, lead.city].filter(Boolean).join(', ') || '—' },
+      { label: 'Prepared by', value: preparedBy },
+      { label: 'Observed by', value: i?.observedBy || si?.observedBy || '—' },
+    ],
+    i?.reportTitle || si?.reportTitle || `${title} - ${client}`
+  );
+  b.parties(
+    {
+      heading: 'Client',
+      name: client,
+      lines: [
+        primary && `Attn: ${primary.name}${primary.designation ? ` (${primary.designation})` : ''}`,
+        [primary?.phone || lead.phone, primary?.email || lead.email].filter(Boolean).join('  ·  '),
+        lead.industry,
+      ],
+    },
+    { heading: 'Inspected site', name: i?.siteName || si?.branchName || [lead.area, lead.city].filter(Boolean).join(', ') || lead.city, lines: [lead.propertyAddress, i?.teamName && `Team: ${i.teamName}`].filter(Boolean) as string[] }
+  );
+
+  const activePests = i?.pestTypesFound ?? si?.pestTypesFound ?? [];
+  const activeSeverity = i?.infestationSeverity ?? si?.infestationSeverity ?? 'moderate';
+  const activeArea = i?.areaSqFt ?? si?.areaSqFt;
+  b.keyValues([
+    ['Pests identified', activePests.map((p) => statusLabel(p)).join(', ') || 'None reported'],
+    ['Infestation level', statusLabel(activeSeverity)],
+    ['Area inspected', activeArea ? `${activeArea.toLocaleString()} sq ft` : undefined],
+    ['Status', isDone ? 'Completed' : 'Scheduled'],
+  ]);
+
   if (findings.length) {
-    // Table: picture evidence | observation | risk | recommendation
     const images = await Promise.all(findings.map((f) => (f.photo ? loadImage(f.photo.imageUrl, 700) : Promise.resolve(null))));
     const PIC_W = 42;
     const PIC_H = 34;
@@ -1233,21 +1304,23 @@ async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
         },
       }
     );
-    if (i?.recommendedTreatment) {
+    const recTr = i?.recommendedTreatment || si?.recommendedTreatment;
+    if (recTr) {
       b.section('Recommended treatment');
-      b.paragraph(i.recommendedTreatment);
+      b.paragraph(recTr);
     }
-  } else if (i) {
-    // Older inspections: free-text findings
+  } else {
+    const crit = i?.criticalFindings || si?.criticalFindings;
     b.section('Findings');
-    b.paragraph(i.criticalFindings || 'Findings pending.');
-    if (i.recommendedTreatment) {
+    b.paragraph(crit || 'Findings pending.');
+    const recTr = i?.recommendedTreatment || si?.recommendedTreatment;
+    if (recTr) {
       b.section('Recommended treatment');
-      b.paragraph(i.recommendedTreatment);
+      b.paragraph(recTr);
     }
   }
 
-  const general = i?.photos?.length ? i.photos : findings.length ? [] : lead.sitePhotos ?? [];
+  const general = i?.photos?.length ? i.photos : (si?.photos?.length ? si.photos : (findings.length ? [] : lead.sitePhotos ?? []));
   const photos = await photoItems(general, (p) => p.caption || statusLabel(p.type));
   if (photos.length) {
     b.section('Site photos', 72);
@@ -1256,7 +1329,7 @@ async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
   b.noteBox('Next step', [`${profile.legalName} will share a detailed proposal with pricing based on these findings.`], b.brandTint);
   b.signatures([
     { label: 'Prepared by', name: preparedBy },
-    { label: 'Observed by', name: i?.observedBy || primary?.name || ' ', sub: i?.observedBy ? undefined : primary?.designation },
+    { label: 'Observed by', name: i?.observedBy || si?.observedBy || primary?.name || ' ', sub: (i?.observedBy || si?.observedBy) ? undefined : primary?.designation },
   ]);
   return b.finish();
 }
@@ -1391,7 +1464,19 @@ export const pdfGenerator = {
     return (await buildInspectionReport(lead)).output('blob');
   },
   inspectionReportFileName(lead: Lead) {
-    const kind = lead.inspection?.findings?.length ? 'Risk_Assessment' : 'Inspection';
-    return safe(`${prefix()}_${kind}_${lead.inspection?.id || lead.id}_${lead.companyName || lead.title}.pdf`);
+    const kind = (lead.siteInspection?.findings?.length || lead.inspection?.findings?.length) ? 'Risk_Assessment' : 'Inspection';
+    const id = lead.siteInspection?.id || lead.inspection?.id || lead.id;
+    return safe(`${prefix()}_${kind}_${id}_${lead.companyName || lead.title}.pdf`);
+  },
+
+  async generateMeetingReportPDF(lead: Lead) {
+    (await buildMeetingReport(lead)).save(this.meetingReportFileName(lead));
+  },
+  async meetingReportPDFBlob(lead: Lead): Promise<Blob> {
+    return (await buildMeetingReport(lead)).output('blob');
+  },
+  meetingReportFileName(lead: Lead) {
+    const id = lead.inspection?.id || lead.id;
+    return safe(`${prefix()}_Meeting_Report_${id}_${lead.companyName || lead.title}.pdf`);
   },
 };

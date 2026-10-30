@@ -16,6 +16,12 @@ import {
   SearchCheck,
   ShieldCheck,
   FolderOpen,
+  ClipboardList,
+  UserCog,
+  CalendarRange,
+  Banknote,
+  Search,
+  MessageSquareWarning,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -54,12 +60,28 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
       { to: '/contracts', label: 'Contracts', icon: FileSpreadsheet, module: 'contracts' },
       { to: '/operations/calendar', label: 'Dispatch Calendar', icon: CalendarDays, module: 'calendar' },
       { to: '/operations/jobs', label: 'Service Jobs', icon: Truck, module: ['jobs', 'pco'] },
+      { to: '/operations/challans', label: 'Challan Register', icon: ClipboardList, module: ['challans', 'jobs', 'invoices'] as ModuleKey[] },
+      { to: '/operations/attendance', label: 'Daily Attendance', icon: CalendarRange, module: 'attendance' },
     ],
   },
   {
     title: 'Accounts',
     items: [
       { to: '/finance/invoices', label: 'Invoices & Payments', icon: Receipt, module: 'invoices' },
+      { to: '/hr/payroll', label: 'Payroll', icon: Banknote, module: 'payroll' },
+    ],
+  },
+  {
+    title: 'HR',
+    items: [
+      { to: '/hr/employees', label: 'Employees', icon: UserCog, module: 'hr' },
+    ],
+  },
+  {
+    title: 'Support',
+    items: [
+      { to: '/complaints', label: 'Complaints', icon: MessageSquareWarning, module: 'complaints' },
+      { to: '/search', label: 'Global Search', icon: Search, module: 'search' },
     ],
   },
   {

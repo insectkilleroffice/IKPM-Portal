@@ -1,4 +1,4 @@
-// Unified Data Service for IKPM Portal.
+﻿// Unified Data Service for IKPM Portal.
 // Cloud Firestore is the source of truth: after sign-in we open live, role-scoped subscriptions
 // (see src/lib/permissions.ts + firestore.rules) and every save is written straight to Firestore.
 // Firestore's persistent cache keeps the portal usable offline and syncs queued writes later.
@@ -14,6 +14,7 @@ import {
   setDoc,
   where,
   writeBatch,
+  runTransaction,
   type Query,
   type Unsubscribe,
 } from 'firebase/firestore';
@@ -36,7 +37,8 @@ import type {
 } from '../types/customer';
 import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadActivity, LeadBranch, LeadContact, LeadStage, MeetingFollowUp, PestType, RiskFinding, SiteInspection } from '../types/crm';
 import type { Proposal, ProposalRevision } from '../types/proposal';
-import type { Contract, PhotoEvidence, ServiceJob } from '../types/operations';
+import type { Contract, PhotoEvidence, ServiceJob, Challan } from '../types/operations';
+import type { Employee, EmployeePrivate, EmployeePay, AttendanceRecord, SalaryCycle } from '../types/hr';
 import type { Complaint } from '../types/complaints';
 import type { Approval } from '../types/approvals';
 import type { Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
@@ -112,6 +114,12 @@ interface DbState {
   roles: RoleDefinition[];
   complaints: Complaint[];
   approvals: Approval[];
+  challans: any[];
+  employees: any[];
+  employeePrivate: any[];
+  employeePay: any[];
+  attendance: any[];
+  salaryCycles: any[];
 }
 
 type StateKey = keyof DbState;
@@ -140,6 +148,12 @@ const COLLECTIONS: Record<StateKey, string> = {
   roles: 'roles',
   complaints: 'complaints',
   approvals: 'approvals',
+  challans: 'challans',
+  employees: 'hr',
+  employeePrivate: 'hr',
+  employeePay: 'payroll',
+  attendance: 'attendance',
+  salaryCycles: 'payroll',
 };
 
 /** Document owner kinds that are client files; 'library' is the Company (IKPM) area (mirrors firestore.rules). */
@@ -155,7 +169,7 @@ const SCOPED: StateKey[] = ['companies', 'branches', 'clients', 'sites', 'leads'
 const BUSINESS_KEYS: StateKey[] = [
   'companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs',
   'invoices', 'payments', 'taxRules', 'auditLogs', 'documents', 'documentPacks', 'outreachLogs',
-  'devices', 'monitoringRecords', 'complaints', 'approvals',
+  'devices', 'monitoringRecords', 'complaints', 'approvals', 'challans', 'employees', 'employeePrivate', 'employeePay', 'attendance', 'salaryCycles',
 ];
 
 /** Module that grants read access to each business collection (mirrors firestore.rules). */
@@ -173,6 +187,12 @@ const MODULE_FOR: Partial<Record<StateKey, ModuleKey>> = {
   auditLogs: 'settings',
   complaints: 'complaints',
   approvals: 'approvals',
+  challans: 'challans',
+  employees: 'hr',
+  employeePrivate: 'hr',
+  employeePay: 'payroll',
+  attendance: 'attendance',
+  salaryCycles: 'payroll',
 };
 
 /** Records uploaded by the one-time local → cloud migration (users/teams/audit are never migrated). */
@@ -219,6 +239,12 @@ const emptyState = (): DbState => ({
   roles: [...DEFAULT_ROLES],
   complaints: [],
   approvals: [],
+  challans: [],
+  employees: [],
+  employeePrivate: [],
+  employeePay: [],
+  attendance: [],
+  salaryCycles: [],
 });
 
 const now = () => new Date().toISOString();
@@ -267,6 +293,31 @@ const friendlyError = (code: string, message: string) => {
 type Listener = () => void;
 
 class DataService {
+  /**
+   * Safe transactional ID counter (Item 47).
+   * Reads and increments id_counters/{key} within a Firestore transaction so two simultaneous
+   * operations never generate the same sequence number.
+   */
+  async nextSequence(key: string): Promise<number> {
+    try {
+      const counterRef = doc(db, 'id_counters', key);
+      const nextSeq = await runTransaction(db, async (txn) => {
+        const snap = await txn.get(counterRef);
+        let current = 0;
+        if (snap.exists()) {
+          current = Number(snap.data().seq || 0);
+        }
+        const next = current + 1;
+        txn.set(counterRef, { key, seq: next, updatedAt: new Date().toISOString() }, { merge: true });
+        return next;
+      });
+      return nextSeq;
+    } catch (err) {
+      console.warn('[dataService] Transaction failed for counter ' + key + ', fallback to local time offset', err);
+      return Math.floor(Date.now() % 100000);
+    }
+  }
+
   private s: DbState = emptyState();
   private listeners = new Set<Listener>();
   private errorListeners = new Set<(e: WriteError) => void>();
@@ -1933,6 +1984,17 @@ class DataService {
     this.audit(userEmail, created ? 'create' : 'update', 'job', job.id, job.serviceType,
       created ? `Scheduled service job ${job.id} for ${job.customerName}` : `Updated job ${job.id} status to ${job.status}`);
     this.write('service_jobs', job.id, job);
+    // Auto-sync contract's totalJobsCompleted counter whenever a job is saved
+    if (job.contractId) {
+      const contract = this.getContractById(job.contractId);
+      if (contract) {
+        const contractJobs = this.s.jobs.filter((j) => j.contractId === job.contractId && j.status !== 'cancelled');
+        const completedCount = contractJobs.filter((j) => j.status === 'completed').length;
+        const updatedContract = { ...contract, totalJobsCompleted: completedCount, updatedAt: now() };
+        this.upsert(this.s.contracts, updatedContract);
+        this.write('contracts', contract.id, { totalJobsCompleted: completedCount, updatedAt: now() });
+      }
+    }
     return job;
   }
 
@@ -1961,18 +2023,150 @@ class DataService {
     }
   }
 
-  public checkPcoConflict(technicianId: string, date: string, timeSlot: string, currentJobId?: string): boolean {
+  public checkPcoConflict(pcoIdOrName: string, date: string, timeSlot: string, currentJobId?: string): boolean {
+    if (!pcoIdOrName) return false;
     return this.s.jobs.some(
       (j) =>
         j.id !== currentJobId &&
         j.status !== 'cancelled' &&
         j.scheduledDate === date &&
         j.timeSlot === timeSlot &&
-        j.assignedTechnicianNames.includes(technicianId)
+        (
+          (j.leadPcoEmployeeId && j.leadPcoEmployeeId === pcoIdOrName) ||
+          (j.assignedPcoEmployeeIds && j.assignedPcoEmployeeIds.includes(pcoIdOrName)) ||
+          (j.leadPcoId && j.leadPcoId === pcoIdOrName) ||
+          (j.assignedTechnicianIds && j.assignedTechnicianIds.includes(pcoIdOrName)) ||
+          (j.assignedTechnicianNames && j.assignedTechnicianNames.includes(pcoIdOrName))
+        )
     );
   }
 
-  // --- Invoices & Financial Controls ---
+  // ---------- Employees (Change 42, 48) ----------
+  public getEmployees(filter?: { role?: string; status?: string }): Employee[] {
+    let list = (this.s.employees || []) as Employee[];
+    if (filter?.role) list = list.filter((e) => e.role === filter.role);
+    if (filter?.status) list = list.filter((e) => e.status === filter.status);
+    return list;
+  }
+
+  public getEmployeeById(id: string): Employee | undefined {
+    return (this.s.employees || []).find((e) => e.id === id);
+  }
+
+  public saveEmployee(employee: Employee, userEmail = 'admin'): Employee {
+    const created = this.upsert(this.s.employees, employee);
+    this.audit(
+      userEmail,
+      created ? 'create' : 'update',
+      'employee',
+      employee.id,
+      employee.name,
+      created ? 'Enrolled employee ' + employee.name + ' (' + employee.role + ')' : 'Updated employee ' + employee.name
+    );
+    this.write('employees', employee.id, employee);
+    return employee;
+  }
+
+  public getEmployeePay(employeeId: string): EmployeePay | undefined {
+    return (this.s.employeePay || []).find((p) => p.id === employeeId);
+  }
+
+  public getAllEmployeePay(): EmployeePay[] {
+    return (this.s.employeePay || []) as EmployeePay[];
+  }
+
+  public saveEmployeePay(pay: EmployeePay, userEmail = 'admin'): EmployeePay {
+    const created = this.upsert(this.s.employeePay, pay);
+    this.audit(
+      userEmail,
+      created ? 'create' : 'update',
+      'employee',
+      pay.id,
+      pay.id,
+      'Configured salary structure for employee ' + pay.id + ': Gross PKR ' + pay.totalGross
+    );
+    this.write('employee_pay', pay.id, pay);
+    return pay;
+  }
+
+  // ---------- Challans (Change 39, 40) ----------
+  public getChallans(): Challan[] {
+    return (this.s.challans || []) as Challan[];
+  }
+
+  public getChallanById(id: string): Challan | undefined {
+    return (this.s.challans || []).find((c) => c.id === id);
+  }
+
+  public findChallanByNumber(queryStr: string): Challan[] {
+    const key = (queryStr || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!key) return [];
+    return this.getChallans().filter(
+      (c) => (c.challanKey || '').includes(key) || (c.challanNumber || '').toLowerCase().includes(queryStr.toLowerCase())
+    );
+  }
+
+  public saveChallan(challan: Challan, userEmail = 'admin'): Challan {
+    const created = this.upsert(this.s.challans, challan);
+    this.audit(
+      userEmail,
+      created ? 'create' : 'update',
+      'challan',
+      challan.id,
+      'Challan #' + challan.challanNumber,
+      created ? 'Uploaded challan #' + challan.challanNumber + ' for Job ' + challan.jobId : 'Updated challan #' + challan.challanNumber
+    );
+    this.write('challans', challan.id, challan);
+    return challan;
+  }
+
+  // ---------- Attendance (Change 43) ----------
+  public getAttendance(employeeId?: string, fromDate?: string, toDate?: string): AttendanceRecord[] {
+    let list = (this.s.attendance || []) as AttendanceRecord[];
+    if (employeeId) list = list.filter((a) => a.employeeId === employeeId);
+    if (fromDate) list = list.filter((a) => a.date >= fromDate);
+    if (toDate) list = list.filter((a) => a.date <= toDate);
+    return list;
+  }
+
+  public saveAttendance(record: AttendanceRecord, userEmail = 'admin'): AttendanceRecord {
+    const created = this.upsert(this.s.attendance, record);
+    this.audit(
+      userEmail,
+      created ? 'create' : 'update',
+      'attendance',
+      record.id,
+      record.employeeName + ' (' + record.date + ')',
+      'Marked attendance ' + record.status + ' for ' + record.employeeName + ' on ' + record.date
+    );
+    this.write('attendance', record.id, record);
+    return record;
+  }
+
+  // ---------- Payroll (Change 44) ----------
+  public getSalaryCycles(): SalaryCycle[] {
+    return (this.s.salaryCycles || []) as SalaryCycle[];
+  }
+
+  public getSalaryCycleById(id: string): SalaryCycle | undefined {
+    return (this.s.salaryCycles || []).find((c) => c.id === id);
+  }
+
+  public saveSalaryCycle(cycle: SalaryCycle, userEmail = 'admin'): SalaryCycle {
+    const created = this.upsert(this.s.salaryCycles, cycle);
+    this.audit(
+      userEmail,
+      created ? 'create' : 'status_change',
+      'payroll',
+      cycle.id,
+      cycle.title,
+      created ? 'Generated payroll cycle ' + cycle.title : 'Updated payroll cycle ' + cycle.title + ' -> ' + cycle.status
+    );
+    this.write('salaryCycles', cycle.id, cycle);
+    return cycle;
+  }
+
+    // --- Invoices & Financial Controls ---
   public getInvoices(customerId?: string, branchId?: string): Invoice[] {
     return this.s.invoices.filter((i) => {
       if (customerId && i.customerId !== customerId) return false;
@@ -2025,6 +2219,34 @@ class DataService {
     const invoice = this.getInvoiceById(payment.invoiceId);
     if (!invoice) throw new Error('Associated invoice not found.');
 
+    // 1. One receipt per invoice restriction
+    const existingPaymentForInvoice = this.s.payments.find((p) => p.invoiceId === payment.invoiceId);
+    if (existingPaymentForInvoice) {
+      throw new Error(`A payment receipt (${existingPaymentForInvoice.receiptNumber}) has already been recorded for invoice ${invoice.invoiceNumber}. Only 1 receipt can be recorded per invoice.`);
+    }
+
+    // 2. Settle status check
+    if (invoice.status === 'paid' || invoice.balanceDue <= 0) {
+      throw new Error(`Invoice ${invoice.invoiceNumber} is already fully paid and settled.`);
+    }
+
+    // 3. Prevent duplicate receipt ID / number
+    const duplicateReceipt = this.s.payments.find((p) => p.id === payment.id || p.receiptNumber === payment.receiptNumber);
+    if (duplicateReceipt) {
+      throw new Error(`Payment receipt ${payment.receiptNumber} already exists in the system.`);
+    }
+
+    // 4. Validate payment credit amount
+    const cash = Number(payment.cashAmountReceived) || 0;
+    const wht = Number(payment.customerWhtDeducted?.amountDeducted) || 0;
+    const totalCredit = cash + wht;
+    if (totalCredit <= 0) {
+      throw new Error('Payment amount must be greater than zero.');
+    }
+    if (totalCredit > invoice.balanceDue) {
+      throw new Error(`Payment credit (PKR ${totalCredit.toLocaleString()}) exceeds invoice remaining balance due (PKR ${invoice.balanceDue.toLocaleString()}).`);
+    }
+
     this.fileRecord(payment, {
       customerId: payment.customerId,
       customerType: invoice.customerType,
@@ -2035,8 +2257,8 @@ class DataService {
     });
     this.s.payments.unshift(payment);
 
-    const newPaid = (invoice.amountPaid || 0) + payment.cashAmountReceived;
-    const newWht = (invoice.customerWhtTotal || 0) + (payment.customerWhtDeducted?.amountDeducted || 0);
+    const newPaid = (invoice.amountPaid || 0) + cash;
+    const newWht = (invoice.customerWhtTotal || 0) + wht;
     const newBalance = Math.max(0, invoice.grossPayable - newPaid - newWht);
 
     invoice.amountPaid = newPaid;

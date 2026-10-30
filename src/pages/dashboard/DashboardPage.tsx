@@ -19,6 +19,7 @@ import { dataService } from '../../services/dataService';
 import { formatPKR, formatDate } from '../../lib/formatters';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
+import { baseRoleOf } from '../../lib/permissions';
 import { ScheduleGeneratorModal } from '../../features/schedule/ScheduleGeneratorModal';
 import type { Contract } from '../../types/operations';
 
@@ -979,10 +980,16 @@ function AdminDashboard() {
 // ─── Main Export ───────────────────────────────────────────────────────────────
 export const DashboardPage: React.FC = () => {
   const { effectiveRole } = useAuth();
+  const base = baseRoleOf(effectiveRole);
 
-  if (effectiveRole === 'sales') return <CRODashboard />;
-  if (effectiveRole === 'team_leader') return <OpsManagerDashboard />;
-  if (effectiveRole === 'operations') return <OperationPersonDashboard />;
-  if (effectiveRole === 'technician') return <TechnicianDashboard />;
+  // CRO / Sales: lead pipeline & proposal management
+  if (base === 'sales') return <CRODashboard />;
+  // Operations Coordinator: schedules jobs, dispatches, assigns teams
+  if (base === 'operations') return <OpsManagerDashboard />;
+  // Team Leader (PCO field lead): sees own assigned visits & meetings
+  if (base === 'team_leader') return <OperationPersonDashboard />;
+  // Technician: sees only their own jobs
+  if (base === 'technician') return <TechnicianDashboard />;
+  // Super Admin / Admin / Management: full overview
   return <AdminDashboard />;
 };

@@ -13,6 +13,10 @@ import {
   UsersRound,
   Building2,
   FileText,
+  Banknote,
+  Clock,
+  Receipt,
+  Save,
 } from 'lucide-react';
 import { CompanyProfileForm } from '../../features/settings/CompanyProfileForm';
 import { TemplatesForm } from '../../features/settings/TemplatesForm';
@@ -32,7 +36,7 @@ export const SettingsPage: React.FC = () => {
   const { success, error } = useNotification();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  type SettingsTab = 'company' | 'templates' | 'cloud' | 'roles' | 'audit' | 'sync';
+  type SettingsTab = 'company' | 'templates' | 'cloud' | 'roles' | 'audit' | 'sync' | 'fbr' | 'operations' | 'payroll';
   const [activeTab, setActiveTabState] = useState<SettingsTab>((searchParams.get('tab') as SettingsTab) || 'cloud');
   const setActiveTab = (t: SettingsTab) => {
     setActiveTabState(t);
@@ -361,6 +365,133 @@ export const SettingsPage: React.FC = () => {
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Tab: FBR Profiles (Change 23) */}
+      {activeTab === 'fbr' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div className="card">
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', marginBottom: '0.5rem' }}>
+              FBR Statutory Tax & Withholding Profiles
+            </h3>
+            <p className="cell-sub" style={{ marginBottom: '1.25rem' }}>
+              Standard Federal Board of Revenue billing profiles for corporate tax filers and cash invoices. Super Admin authorized only.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+              <div className="card" style={{ border: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+                <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--ikpm-navy-900)', marginBottom: '0.25rem' }}>
+                  FBR Sales Tax Profile (Active Filers)
+                </div>
+                <div className="cell-sub" style={{ marginBottom: '0.75rem' }}>Applicable to registered corporate clients</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', fontSize: '0.85rem' }}>
+                  <div><strong>Standard Withholding Tax (WHT):</strong> 15.0%</div>
+                  <div><strong>Statutory Section:</strong> Section 153(1)(b) - Services</div>
+                  <div><strong>Sales Tax on Services:</strong> 15% (SRB / PRA aligned)</div>
+                  <div><strong>Jurisdiction Code:</strong> <code>fbr_sales_tax</code></div>
+                </div>
+              </div>
+
+              <div className="card" style={{ border: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+                <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--ikpm-navy-900)', marginBottom: '0.25rem' }}>
+                  FBR Cash & Non-Filer Profile
+                </div>
+                <div className="cell-sub" style={{ marginBottom: '0.75rem' }}>Applicable to walk-in, cash, and individual clients</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', fontSize: '0.85rem' }}>
+                  <div><strong>Withholding Tax (WHT):</strong> 5.5%</div>
+                  <div><strong>Statutory Section:</strong> Section 153(1)(a) / Cash Service</div>
+                  <div><strong>Sales Tax Rate:</strong> 0% (Inclusive retail rate)</div>
+                  <div><strong>Jurisdiction Code:</strong> <code>fbr_cash</code></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tab: Operations & SLAs (Change 31) */}
+      {activeTab === 'operations' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div className="card">
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', marginBottom: '0.5rem' }}>
+              Operations Working Hours & Service SLAs
+            </h3>
+            <p className="cell-sub" style={{ marginBottom: '1.25rem' }}>
+              Operating thresholds, shift timings, complaint escalation rules, and QC random inspection frequencies.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div className="form-group">
+                <label className="form-label">Official Start Time (PCO Reporting)</label>
+                <input className="form-input" defaultValue="08:30" disabled={!isSuperAdmin} />
+                <span className="cell-sub">PCOs arriving after this time are marked Late on muster roll.</span>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Late Arrival Threshold (Grace Period)</label>
+                <input className="form-input" defaultValue="15 minutes" disabled={!isSuperAdmin} />
+                <span className="cell-sub">Allowed tolerance before late deduction counter activates.</span>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Complaint Escalation Timeout</label>
+                <input className="form-input" defaultValue="24 hours" disabled={!isSuperAdmin} />
+                <span className="cell-sub">Unresolved complaints automatically escalate to CEO inbox.</span>
+              </div>
+              <div className="form-group">
+                <label className="form-label">PCO Random Visit Frequency</label>
+                <input className="form-input" defaultValue="Every 14 days" disabled={!isSuperAdmin} />
+                <span className="cell-sub">Supervisor surprise QC field check interval per technician.</span>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '1.25rem' }}>
+              <label className="form-label" style={{ marginBottom: '0.5rem' }}>Registered Operational Service Types</label>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                {['Rodent Control', 'Termite Treatment', 'General Fumigation', 'Cockroach Gel Treatment', 'Bed Bugs Eradication', 'Fogging & Mosquito Control', 'Water Tank Disinfection'].map((svc) => (
+                  <span key={svc} className="badge badge-teal" style={{ padding: '0.4rem 0.75rem', fontSize: '0.85rem' }}>
+                    {svc}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tab: Payroll Rules (Change 44) */}
+      {activeTab === 'payroll' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div className="card">
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', marginBottom: '0.5rem' }}>
+              30-Day Payroll & Deduction Governance
+            </h3>
+            <p className="cell-sub" style={{ marginBottom: '1.25rem' }}>
+              Automated salary computation rules, attendance penalties, and job incentives. Super Admin exclusive.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div className="form-group">
+                <label className="form-label">Payroll Cycle Period</label>
+                <input className="form-input" defaultValue="30 Days" disabled />
+                <span className="cell-sub">Standard payroll distribution cycle.</span>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Late Marks per Absence Deduction</label>
+                <input className="form-input" defaultValue="3" disabled={!isSuperAdmin} />
+                <span className="cell-sub">Every 3 late arrivals trigger a 1-day daily wage deduction.</span>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Absence Deduction Ratio</label>
+                <input className="form-input" defaultValue="1.0 (100% of Daily Wage)" disabled={!isSuperAdmin} />
+                <span className="cell-sub">Deduction applied per unexcused absence (Base Salary / 30).</span>
+              </div>
+              <div className="form-group">
+                <label className="form-label">PCO Verified Job Completion Incentive</label>
+                <input className="form-input" defaultValue="PKR 100 per verified job" disabled={!isSuperAdmin} />
+                <span className="cell-sub">Bonus added for each QC-confirmed service report.</span>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

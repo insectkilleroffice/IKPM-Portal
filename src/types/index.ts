@@ -83,7 +83,7 @@ export interface AuditLogEntry {
   userId: string;
   userEmail: string;
   action: 'create' | 'update' | 'delete' | 'status_change' | 'approve' | 'reject' | 'reverse' | 'login';
-  entityType: 'client' | 'company' | 'branch' | 'lead' | 'proposal' | 'contract' | 'job' | 'report' | 'invoice' | 'payment' | 'user' | 'tax_rule' | 'document' | 'outreach' | 'template' | 'device' | 'monitoring' | 'complaint' | 'approval';
+  entityType: 'client' | 'company' | 'branch' | 'lead' | 'proposal' | 'contract' | 'job' | 'report' | 'invoice' | 'payment' | 'user' | 'tax_rule' | 'document' | 'outreach' | 'template' | 'device' | 'monitoring' | 'complaint' | 'approval' | 'challan' | 'employee' | 'attendance' | 'payroll';
   entityId: string;
   entityTitle?: string;
   details: string;

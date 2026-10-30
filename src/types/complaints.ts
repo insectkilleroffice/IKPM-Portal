@@ -6,12 +6,16 @@ export type ComplaintStatus =
   | 'in_progress' // ops manager actively working
   | 'resolved'    // ops manager resolved, awaiting CRO confirmation
   | 'closed'      // CRO confirmed, client satisfied
-  | 'reopened';   // CRO reopened because client not satisfied
+  | 'reopened'    // CRO reopened because client not satisfied
+  | 'escalated';  // escalated to CEO (Change 22)
 
 export type ComplaintCategory =
-  | 'pest_present'         // pest still active after service
+  | 're_infestation'       // pest still active / recurring after service (SRS)
+  | 'pco_behaviour'        // technician conduct/attitude issue (SRS)
+  | 'service_quality'      // chemical / service quality issue (SRS)
+  | 'pest_present'         // legacy: pest still active after service
   | 'missed_visit'         // scheduled visit did not happen
-  | 'technician_behaviour' // technician conduct/attitude issue
+  | 'technician_behaviour' // legacy: technician conduct/attitude issue
   | 'chemical_safety'      // chemical or safety concern
   | 'billing'              // billing or payment dispute
   | 'other';
@@ -73,6 +77,9 @@ export const COMPLAINT_DUE_DAYS: Record<ComplaintPriority, number> = {
 };
 
 export const CATEGORY_LABELS: Record<ComplaintCategory, string> = {
+  re_infestation: 'Re-infestation (SRS)',
+  pco_behaviour: 'PCO Behaviour (SRS)',
+  service_quality: 'Service Quality (SRS)',
   pest_present: 'Pest still active',
   missed_visit: 'Missed visit',
   technician_behaviour: 'Technician behaviour',
@@ -88,6 +95,7 @@ export const STATUS_LABELS: Record<ComplaintStatus, string> = {
   resolved: 'Awaiting confirmation',
   closed: 'Closed',
   reopened: 'Reopened',
+  escalated: 'Escalated to CEO',
 };
 
 export const PRIORITY_LABELS: Record<ComplaintPriority, string> = {

@@ -89,3 +89,29 @@ export function generatePermanentId(prefix: 'CL' | 'CO' | 'BR' | 'SITE' | 'LD' |
   const padded = String(seqNumber).padStart(4, '0');
   return `${prefix}-${year}-${padded}`;
 }
+
+
+/**
+ * Standard IKPM Document ID format (Change 28 / Change 47):
+ * Pattern: IKPM-[ClientAbbr]-[ClientSeq]-[DocType]-[DocSeq]
+ * Examples:
+ *   IKPM-NEST-001-INV-001
+ *   IKPM-UNIL-002-PROP-001
+ *   IKPM-ENG-003-JBR-005
+ *   IKPM-GEN-001-CH-001
+ */
+export function generateDocumentId(
+  docType: 'PROP' | 'INV' | 'JBR' | 'RPT' | 'CH' | 'CT',
+  clientAbbr: string,
+  clientSeq: number,
+  docSeq: number
+): string {
+  const cleanAbbr = (clientAbbr || 'GEN')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 4)
+    .padEnd(3, 'X');
+  const cSeq = String(clientSeq).padStart(3, '0');
+  const dSeq = String(docSeq).padStart(3, '0');
+  return `IKPM-${cleanAbbr}-${cSeq}-${docType}-${dSeq}`;
+}
