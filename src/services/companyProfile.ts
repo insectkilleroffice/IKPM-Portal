@@ -55,6 +55,12 @@ export interface CompanyProfile {
   invoiceNotes?: string;
   /** Branch offices printed in the letterhead and the company-profile document. */
   branches?: CompanyBranchInfo[];
+  /** "Our valued clients" logo strip printed on proposals (only clients who agreed to be listed). */
+  clientLogos?: { name: string; url: string }[];
+  /** "Why choose us" points printed on proposals, one per line. Empty = section not printed. */
+  proposalHighlights?: string;
+  /** SRS 5.6 / 19: hours a complaint may stay open before the CEO is alerted (default 48). */
+  complaintEscalationHours?: number;
   updatedAt?: string;
   updatedBy?: string;
 }

@@ -238,7 +238,7 @@ export const BranchDetailPage: React.FC = () => {
                 <th>Scheduled Date & Slot</th>
                 <th>Site Premises</th>
                 <th>Target Pests</th>
-                <th>Lead PCO</th>
+                <th>Team (who worked)</th>
                 <th>Status</th>
                 <th>Action</th>
               </tr>
@@ -260,7 +260,7 @@ export const BranchDetailPage: React.FC = () => {
                     </td>
                     <td>{j.siteName}</td>
                     <td>{j.targetPests.join(', ')}</td>
-                    <td>{j.leadPcoName}</td>
+                    <td>{dataService.jobTeamText(j)}</td>
                     <td><StatusBadge status={j.status} /></td>
                     <td>
                       <button

@@ -53,7 +53,7 @@ export async function fileInspectionReport(
         source: 'generated',
         file: stored,
         uploadedBy: user.email || 'admin',
-        uploadedByName: user.displayName || 'Operations Coordinator',
+        uploadedByName: user.displayName || 'Supervisor',
         uploadedAt: new Date().toISOString(),
       },
       user.email

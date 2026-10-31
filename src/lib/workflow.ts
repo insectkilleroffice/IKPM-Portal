@@ -221,7 +221,7 @@ export function getProposalNextAction(proposal: Proposal): NextAction {
       return {
         label: 'Submit for Manager Approval',
         targetStage: 'Approval Queue',
-        description: `Discount ${proposal.discountPercent}% exceeds 10% limit. Requires Sales Manager sign-off.`,
+        description: `Discount ${proposal.discountPercent}% exceeds 10% limit. Requires CRO Manager sign-off.`,
         isBlocked: false,
         actionType: 'submit_approval',
       };
@@ -289,24 +289,32 @@ export function getContractNextAction(contract: Contract): NextAction {
  */
 export function getJobNextAction(job: ServiceJob, invoice?: Invoice): NextAction {
   if (job.status === 'scheduled') {
-    const hasTechnician = job.assignedTechnicianNames && job.assignedTechnicianNames.length > 0 && job.assignedTechnicianNames[0] !== 'Unassigned';
+    const hasTeamLeader = Boolean(job.assignedTeamLeaderId || (job.leadPcoId && job.leadPcoName !== 'Unassigned'));
     return {
-      label: 'Start Job Visit',
+      label: 'Start Visit',
       targetStage: 'In Progress',
-      description: 'Technician punches in on site and begins guided chemical application.',
-      isBlocked: !hasTechnician,
-      blockerReason: !hasTechnician ? 'Guard Rail: Cannot start job without an assigned technician' : undefined,
+      description: 'Supervisor confirms uniform, safety gear and chemicals issued (before photos optional).',
+      isBlocked: !hasTeamLeader,
+      blockerReason: !hasTeamLeader ? 'Assign a Supervisor before this visit can start' : undefined,
       actionType: 'start_job',
     };
   }
   if (job.status === 'en_route' || job.status === 'in_progress') {
-    return {
-      label: 'Complete Job & Sign-off',
-      targetStage: 'Client Signature',
-      description: 'Record chemicals used, photo evidence, and obtain digital customer signature.',
-      isBlocked: false,
-      actionType: 'complete_job',
-    };
+    return job.qcReturn
+      ? {
+          label: 'Fix & Resubmit Report',
+          targetStage: 'Client Signature',
+          description: `Sent back by QC (${job.qcReturn.byName}): ${job.qcReturn.reason}`,
+          isBlocked: false,
+          actionType: 'complete_job',
+        }
+      : {
+          label: 'Close Out Visit',
+          targetStage: 'Client Signature',
+          description: 'Tick the PCOs who worked, record chemicals used and the signed challan (photos optional).',
+          isBlocked: false,
+          actionType: 'complete_job',
+        };
   }
   if (job.status === 'completed' && !job.supervisorVerification?.isVerified) {
     return {

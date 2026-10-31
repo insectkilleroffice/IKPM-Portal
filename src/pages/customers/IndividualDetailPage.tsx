@@ -481,7 +481,7 @@ export const IndividualDetailPage: React.FC = () => {
                 <th>Job ID</th>
                 <th>Scheduled Date & Slot</th>
                 <th>Target Pests</th>
-                <th>Lead PCO</th>
+                <th>Team (who worked)</th>
                 <th>Status</th>
                 <th>Action</th>
               </tr>
@@ -502,7 +502,7 @@ export const IndividualDetailPage: React.FC = () => {
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Slot: {j.timeSlot}</div>
                     </td>
                     <td>{j.targetPests.join(', ')}</td>
-                    <td>{j.leadPcoName}</td>
+                    <td>{dataService.jobTeamText(j)}</td>
                     <td><StatusBadge status={j.status} /></td>
                     <td>
                       <button

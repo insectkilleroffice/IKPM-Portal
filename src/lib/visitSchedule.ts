@@ -23,8 +23,11 @@ export interface PlannedVisit {
   windowStart?: string;
   windowEnd?: string;
   closingTime?: string;
+  /** Supervisor (portal login) responsible for the visit. */
   pcoId?: string;
   pcoName?: string;
+  /** Planned PCOs from the Supervisor's team (HR employee ids; PCOs have no login). */
+  pcoEmployeeIds?: string[];
   /** Services to be performed during this visit (from the contract's service plan). */
   services?: string[];
 }
@@ -152,19 +155,27 @@ export function planVisits(input: PlanInput): PlannedVisit[] {
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.branchName.localeCompare(b.branchName));
 }
 
-/** Visits that double-book a PCO: same person, same date and slot (against each other and existing jobs). */
+/** Visits that double-book a PCO: same person, same date and slot (against each other and existing jobs).
+ * Supervisors / Supervisors can be passed in `exemptPcoIds` so they are not flagged when overseeing visits.
+ */
 export function pcoConflicts(
   visits: Pick<PlannedVisit, 'key' | 'date' | 'timeSlot' | 'pcoId'>[],
-  existing: { id: string; scheduledDate: string; timeSlot: string; assignedTechnicianIds: string[]; status?: string }[]
+  existing: { id: string; scheduledDate: string; timeSlot: string; assignedTechnicianIds: string[]; status?: string; contractId?: string }[],
+  exemptPcoIds?: Set<string>
 ): Set<string> {
   const taken = new Map<string, string>();
   existing
-    .filter((j) => j.status !== 'cancelled')
-    .forEach((j) => j.assignedTechnicianIds.forEach((uid) => taken.set(`${uid}|${j.scheduledDate.slice(0, 10)}|${j.timeSlot}`, j.id)));
+    .filter((j) => j.status !== 'cancelled' && j.status !== 'completed')
+    .forEach((j) => j.assignedTechnicianIds.forEach((uid) => {
+      if (!exemptPcoIds?.has(uid)) {
+        taken.set(`${uid}|${j.scheduledDate.slice(0, 10)}|${j.timeSlot}`, j.id);
+      }
+    }));
   const bad = new Set<string>();
   const seen = new Map<string, string>();
   visits.forEach((v) => {
     if (!v.pcoId) return;
+    if (exemptPcoIds?.has(v.pcoId)) return;
     const k = `${v.pcoId}|${v.date}|${v.timeSlot}`;
     if (taken.has(k)) bad.add(v.key);
     const other = seen.get(k);
@@ -172,6 +183,37 @@ export function pcoConflicts(
       bad.add(v.key);
       bad.add(other);
     } else seen.set(k, v.key);
+  });
+  return bad;
+}
+
+/**
+ * PCO double-bookings by HR employee id (PCOs have no login). A PCO is the person physically on
+ * site, so one PCO cannot be on two open visits in the same date + slot. Supervisors are not
+ * checked: one TL coordinates several PCO pairs at the same time.
+ * Returns visit key -> conflicting employee ids.
+ */
+export function pcoEmployeeConflicts(
+  visits: Pick<PlannedVisit, 'key' | 'date' | 'timeSlot' | 'pcoEmployeeIds'>[],
+  existing: { id: string; scheduledDate: string; timeSlot: string; status?: string; assignedPcoEmployeeIds?: string[] }[]
+): Map<string, string[]> {
+  const taken = new Set<string>();
+  existing
+    .filter((j) => j.status !== 'cancelled' && j.status !== 'completed')
+    .forEach((j) => (j.assignedPcoEmployeeIds ?? []).forEach((e) => taken.add(`${e}|${j.scheduledDate.slice(0, 10)}|${j.timeSlot}`)));
+  const bad = new Map<string, string[]>();
+  const flag = (key: string, emp: string) => bad.set(key, Array.from(new Set([...(bad.get(key) ?? []), emp])));
+  const seen = new Map<string, string>();
+  visits.forEach((v) => {
+    (v.pcoEmployeeIds ?? []).forEach((e) => {
+      const k = `${e}|${v.date}|${v.timeSlot}`;
+      if (taken.has(k)) flag(v.key, e);
+      const other = seen.get(k);
+      if (other) {
+        flag(v.key, e);
+        flag(other, e);
+      } else seen.set(k, v.key);
+    });
   });
   return bad;
 }

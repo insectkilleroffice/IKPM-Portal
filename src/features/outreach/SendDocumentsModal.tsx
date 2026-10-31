@@ -62,7 +62,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
   const library = store.getLibraryDocuments();
   const packs = store.getLibraryPacks();
   const sendable = [...library, ...extraDocuments.filter((d) => !library.some((l) => l.id === d.id))];
-  const senderName = userProfile?.displayName || 'IKPM Sales Team';
+  const senderName = userProfile?.displayName || 'IKPM CRO Team';
   const senderEmail = userProfile?.businessEmail || userProfile?.email || '';
 
   const [name, setName] = useState(recipient.name);
@@ -91,10 +91,8 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     setManualEmailInput('');
     setManualNameInput('');
     setAttachProposal(Boolean(proposal));
-    const initialChannels = new Set<OutreachChannel>();
-    if (recipient.phone) initialChannels.add('whatsapp');
-    if (isValidEmail(recipient.email)) initialChannels.add('email');
-    setChannels(initialChannels);
+    // The sender must choose WhatsApp and/or Email every time — nothing is pre-selected
+    setChannels(new Set());
     const draft = buildPitchMessage({
       recipientName: recipient.name,
       senderName,
@@ -195,7 +193,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
   })();
 
   const problems: string[] = [];
-  if (channels.size === 0) problems.push('Choose WhatsApp and/or Email.');
+  if (channels.size === 0) problems.push('Choose how to send: WhatsApp and/or Email (step 1).');
   if (channels.has('whatsapp') && !phoneValid) problems.push('Enter a valid mobile number for WhatsApp (03XX XXXXXXX).');
   if (channels.has('email') && !hasValidEmail) problems.push('Add at least one valid email address.');
   if (selectedDocs.length === 0 && !attachProposal) problems.push('Select at least one document.');
@@ -364,7 +362,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
       footer={
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', gap: '0.75rem', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
-            {integrations.outreachApi && (!channels.has('email') || emailVia === 'api') ? (
+            {channels.size === 0 ? null : integrations.outreachApi && (!channels.has('email') || emailVia === 'api') ? (
               <><Zap size={13} color="var(--ikpm-emerald-600)" /> Sends automatically as {senderEmail}</>
             ) : (
               <><ExternalLink size={13} /> Opens WhatsApp / email with everything pre-filled</>
@@ -383,7 +381,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
             </button>
             <button className="btn btn-primary" onClick={handleSend} disabled={sending || downloading || problems.length > 0} title={problems.join('\n')}>
               <Send size={15} />
-              <span>{sending ? 'Sending…' : `Send${channelLabel ? ` via ${channelLabel}` : ''}`}</span>
+              <span>{sending ? 'Sending…' : channelLabel ? `Send via ${channelLabel}` : 'Choose WhatsApp or Email'}</span>
             </button>
           </div>
         </div>
@@ -391,19 +389,55 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
     >
       {/* 1. Recipient */}
       <section className="flow-step">
-        <div className="flow-step-title"><span className="flow-step-num">1</span> Recipient &amp; channel</div>
+        <div className="flow-step-title"><span className="flow-step-num">1</span> How do you want to send? <span className="required">*</span></div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.9rem' }}>
+          {([
+            { value: 'whatsapp' as OutreachChannel, label: 'WhatsApp', hint: 'Send to a mobile number', Icon: MessageCircle, color: '#16A34A', bg: '#F0FDF4' },
+            { value: 'email' as OutreachChannel, label: 'Email', hint: 'Send to one or more email addresses', Icon: Mail, color: '#2563EB', bg: '#EFF6FF' },
+          ]).map(({ value, label, hint, Icon, color, bg }) => {
+            const on = channels.has(value);
+            return (
+              <label
+                key={value}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.7rem', cursor: 'pointer',
+                  padding: '0.8rem 1rem', borderRadius: '0.6rem',
+                  border: `2px solid ${on ? color : channels.size === 0 ? 'var(--ikpm-amber-400, #FBBF24)' : 'var(--border-subtle)'}`,
+                  background: on ? bg : 'var(--surface-card, #fff)',
+                  boxShadow: on ? `0 0 0 3px ${color}22` : undefined,
+                }}
+              >
+                <input type="checkbox" checked={on} onChange={() => toggleChannel(value)} style={{ width: 18, height: 18, accentColor: color, flexShrink: 0 }} />
+                <Icon size={22} color={color} />
+                <span style={{ display: 'flex', flexDirection: 'column' }}>
+                  <strong style={{ fontSize: '0.95rem', color: on ? color : 'var(--text-primary)' }}>{label}</strong>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{hint}</span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        {channels.size === 0 && (
+          <div className="info-hint" style={{ marginBottom: '0.75rem', background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E' }}>
+            Tick <strong>WhatsApp</strong>, <strong>Email</strong> or both to continue.
+          </div>
+        )}
+
+        {channels.has('whatsapp') && (
         <div className="form-grid-2" style={{ marginBottom: '0.75rem' }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">Contact name (WhatsApp)</label>
             <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">WhatsApp number</label>
+            <label className="form-label">WhatsApp number <span className="required">*</span></label>
             <input className="form-input" placeholder="03001234567" value={phone} onChange={(e) => setPhone(e.target.value)} />
           </div>
         </div>
+        )}
 
         {/* Email recipients */}
+        {channels.has('email') && (
         <div className="form-group" style={{ marginBottom: '0.5rem' }}>
           <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <Mail size={13} /> Email recipients
@@ -437,7 +471,6 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
                   onClick={() => {
                     const toAdd = availableContacts.filter((c) => !emailRecipients.some((r) => r.email === c.email));
                     if (toAdd.length) setEmailRecipients((prev) => [...prev, ...toAdd]);
-                    setChannels((prev) => { const n = new Set(prev); n.add('email'); return n; });
                   }}>
                   Add all
                 </button>
@@ -454,7 +487,6 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
                           setEmailRecipients((prev) => prev.filter((r) => r.email !== c.email));
                         } else {
                           setEmailRecipients((prev) => [...prev, c]);
-                          setChannels((prev) => { const n = new Set(prev); n.add('email'); return n; });
                         }
                       }}>
                       {already ? <X size={11} /> : <Plus size={11} />}
@@ -494,7 +526,6 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
                       setEmailRecipients((prev) => [...prev, { name: manualNameInput.trim(), email: manualEmailInput.trim() }]);
                       setManualEmailInput('');
                       setManualNameInput('');
-                      setChannels((prev) => { const n = new Set(prev); n.add('email'); return n; });
                     }
                   }
                 }}
@@ -507,23 +538,13 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
                   setEmailRecipients((prev) => [...prev, { name: manualNameInput.trim(), email: manualEmailInput.trim() }]);
                   setManualEmailInput('');
                   setManualNameInput('');
-                  setChannels((prev) => { const n = new Set(prev); n.add('email'); return n; });
                 }
               }}>
               <Plus size={13} /> Add
             </button>
           </div>
         </div>
-
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button type="button" className={`chip ${channels.has('whatsapp') ? 'chip-on whatsapp' : ''}`} onClick={() => toggleChannel('whatsapp')}>
-            <MessageCircle size={14} /> WhatsApp
-          </button>
-          <button type="button" className={`chip ${channels.has('email') ? 'chip-on' : ''}`} onClick={() => toggleChannel('email')}
-            title={emailRecipients.length === 0 ? 'Add at least one email address above' : undefined}>
-            <Mail size={14} /> Email {emailRecipients.length > 0 && `(${emailRecipients.length})`}
-          </button>
-        </div>
+        )}
       </section>
 
       {/* 2. Documents */}

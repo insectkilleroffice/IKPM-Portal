@@ -54,7 +54,8 @@ export const SettingsPage: React.FC = () => {
   const uploadLocal = async () => {
     setUploading(true);
     try {
-      const n = await dataService.uploadLocalRecords(includeSamples);
+      // Same safe rule as the automatic upload: never overwrite a record that is already in the cloud
+      const n = await dataService.uploadLocalRecords(includeSamples, true);
       success('Uploaded to Firestore', `${n} record(s) from this browser are now saved in the cloud.`);
     } catch (err) {
       const code = (err as { code?: string }).code;
@@ -93,15 +94,15 @@ export const SettingsPage: React.FC = () => {
     },
     {
       role: 'operations',
-      title: 'Operation Coordinator',
-      leads: 'View meetings, assign team leaders',
+      title: 'Supervisor',
+      leads: 'View meetings, assign supervisors',
       proposals: 'View accepted proposals',
       jobs: 'Create contracts, schedule & dispatch jobs',
       finance: 'No access',
     },
     {
       role: 'team_leader',
-      title: 'Team Leader',
+      title: 'Supervisor',
       leads: 'Submit meeting reports',
       proposals: 'View (read-only)',
       jobs: 'Execute jobs, submit field reports',
@@ -194,12 +195,13 @@ export const SettingsPage: React.FC = () => {
               <div style={{ flex: 1, minWidth: 240 }}>
                 <div className="card-title">Data saved only in this browser</div>
                 <div className="cell-sub">
-                  Before the database was connected, records were kept in this browser only. Upload them once so the whole team can see them.
+                  Records kept in this browser before the database was connected are uploaded automatically when the Super Admin signs in.
+                  Records that already exist in the cloud are kept as they are. Demo records are only uploaded if you tick the box below.
                 </div>
               </div>
-              {isSuperAdmin && (
-                <button className="btn btn-primary" disabled={uploading || localTotal === 0} onClick={uploadLocal}>
-                  <CloudUpload size={16} /> {uploading ? 'Uploading…' : `Upload ${localTotal} record(s)`}
+              {isSuperAdmin && localTotal > 0 && (
+                <button className="btn btn-secondary" disabled={uploading} onClick={uploadLocal}>
+                  <CloudUpload size={16} /> {uploading ? 'Uploading…' : includeSamples ? `Upload ${localTotal} record(s) incl. demo` : 'Retry upload'}
                 </button>
               )}
             </div>

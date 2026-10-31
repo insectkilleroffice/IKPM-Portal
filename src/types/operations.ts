@@ -4,6 +4,7 @@ import type { CustomerType } from './customer';
 import type { PestType } from './crm';
 import type { FolderMeta, TemplateStamp } from './folders';
 import type { ServicePlanItem } from '../lib/proposalPlan';
+import type { RecordOwnership } from './index';
 
 export type ContractType = 'one_time' | 'amc_recurring';
 
@@ -100,7 +101,33 @@ export interface SupervisorVerification {
   supervisorNotes?: string;
 }
 
-export interface ServiceJob extends FolderMeta {
+/** Start gate (SRS 5.5): confirmed by the Supervisor before the job can start. */
+export interface JobPreCheck {
+  uniform: boolean;
+  safetyGear: boolean;
+  chemicalsIssued: boolean;
+  /** What was issued from store for this job, e.g. "Maxforce gel 2 tubes". */
+  chemicalsIssuedNote?: string;
+  confirmedByUid?: string;
+  confirmedByName: string;
+  confirmedAt: string;
+}
+
+/** QC sent the report back to the Supervisor instead of verifying it. */
+export interface QcReturn {
+  reason: string;
+  byName: string;
+  at: string;
+}
+
+/** QC re-entered chemicals from the signed paper report (SRS 5.5 chemical match). */
+export interface QcChemicalCheck {
+  entries: { name: string; qty: number; unit: ChemicalUsageRecord['unit'] }[];
+  matches: boolean;
+  checkedAt: string;
+}
+
+export interface ServiceJob extends FolderMeta, Partial<RecordOwnership> {
   id: string;
   contractId?: string;
   proposalId?: string;
@@ -122,14 +149,14 @@ export interface ServiceJob extends FolderMeta {
   assignedTechnicianNames: string[];
   leadPcoId: string;
   leadPcoName: string;
-  /** Team leader accountable for this service visit. */
+  /** Supervisor accountable for this service visit. */
   assignedTeamLeaderId?: string;
   assignedTeamLeaderName?: string;
   status: JobStatus;
   rescheduledReason?: string;
   cancellationReason?: string;
   cancellationReasonCode?: 'client_denied_access' | 'team_unavailable' | 'chemical_unavailable' | 'client_request' | 'other';
-  /** Outcome recorded by the Team Leader when submitting the service report. */
+  /** Outcome recorded by the Supervisor when submitting the service report. */
   visitOutcome?: 'completed' | 'partial' | 'client_blocked' | 'postponed';
   complaintId?: string;
   checklists: ServiceChecklistItem[];
@@ -137,16 +164,26 @@ export interface ServiceJob extends FolderMeta {
   photoEvidence: PhotoEvidence[];
   customerSignOff?: CustomerSignOff;
   supervisorVerification?: SupervisorVerification;
+  preCheck?: JobPreCheck;
+  /** Latest QC send-back; cleared when QC verifies. */
+  qcReturn?: QcReturn;
+  qcChemicalCheck?: QcChemicalCheck;
   executionNotes?: string;
   // Challan fields (Change 39)
   challanNumber?: string;
   challanId?: string;
   challanFileUrl?: string;
-  // PCO Enrollment & Assignment fields (Change 48)
+  // PCOs are HR employees with no login (Change 48). The Supervisor is the login on the job.
   leadPcoEmployeeId?: string;
+  /** PCOs planned for the visit (employee ids, from the Supervisor's team). */
   assignedPcoEmployeeIds?: string[];
-  // Coordinator submission on behalf of PCO (Change 49)
+  /** PCOs who actually did the work, ticked by the Supervisor on the report (employee ids; payroll credit). */
   performedByPcoIds?: string[];
+  /** Supervisor went on site personally. */
+  teamLeaderOnSite?: boolean;
+  /** Why a PCO from another team was used. */
+  borrowedPcoReason?: string;
+  // Supervisor submission on behalf of PCOs (Change 49)
   submittedByUid?: string;
   submittedByName?: string;
   submittedAt?: string;
@@ -191,7 +228,7 @@ export interface Contract extends FolderMeta, TemplateStamp {
   status: 'active' | 'expired' | 'renewed' | 'cancelled';
   renewalAlertDate: string;
   isRenewalInitiated?: boolean;
-  /** Team leader responsible for delivering this contract's service visits. */
+  /** Supervisor responsible for delivering this contract's service visits. */
   assignedTeamLeaderId?: string;
   assignedTeamLeaderName?: string;
   /** Operations Manager assigned to oversee this contract's execution. */

@@ -22,12 +22,12 @@ const MEETING_TYPE_LABEL: Record<string, string> = {
   renewal: 'Renewal',
 };
 
-/** Client meeting visits scheduled from the Leads pipeline. Team Leaders submit reports here. */
+/** Client meeting visits scheduled from the Leads pipeline. Supervisors submit reports here. */
 export const MeetingsPage: React.FC = () => {
   const store = useDataStore();
   const { userProfile, effectiveRole } = useAuth();
   const [tab, setTab] = useState<Tab>('upcoming');
-  // Operations role has no CRO (crm) access but needs to see all meetings to assign team leaders.
+  // Operations role has no CRO (crm) access but needs to see all meetings to assign supervisors.
   const [mine, setMine] = useState(!canAccessModule(effectiveRole, 'crm') && baseRoleOf(effectiveRole) !== 'operations');
   const [query, setQuery] = useState('');
   const [reportLead, setReportLead] = useState<Lead | null>(null);
@@ -35,9 +35,10 @@ export const MeetingsPage: React.FC = () => {
   const [inspectLead, setInspectLead] = useState<Lead | null>(null);
   const canRecord = canEditModule(effectiveRole, 'pco') || canEditModule(effectiveRole, 'inspections');
   // Rescheduling and editing submitted reports is restricted to ops/admin/CRO.
-  // Team leaders may only submit a new report; the operations coordinator handles the calendar.
+  // Supervisors may only submit a new report; the operations coordinator handles the calendar.
   const canReschedule = canEditModule(effectiveRole, 'crm') || ['operations', 'admin', 'super_admin'].includes(baseRoleOf(effectiveRole) ?? '');
-  const canAssign = baseRoleOf(effectiveRole) === 'team_leader' || baseRoleOf(effectiveRole) === 'operations' || baseRoleOf(effectiveRole) === 'super_admin' || baseRoleOf(effectiveRole) === 'admin';
+  // CRO can also assign a meeting / inspection — to himself or to any operations staff
+  const canAssign = ['team_leader', 'operations', 'sales', 'super_admin', 'admin'].includes(baseRoleOf(effectiveRole) ?? '');
   const canOpenLeads = canAccessModule(effectiveRole, 'crm');
 
   const all = store.getLeads().filter((l) => l.inspection && l.inspection.status !== 'cancelled');
@@ -112,7 +113,7 @@ export const MeetingsPage: React.FC = () => {
         <EmptyState
           icon={tab === 'unassigned' ? UserCog : CalendarClock}
           title={tab === 'unassigned' ? 'No unassigned meetings' : tab === 'done' ? 'No completed meetings' : 'No meetings scheduled'}
-          description={tab === 'unassigned' ? 'All scheduled meetings have a team leader assigned.' : canOpenLeads ? 'Meetings are scheduled from the Leads pipeline.' : 'Meetings assigned to you will appear here.'}
+          description={tab === 'unassigned' ? 'All scheduled meetings have a supervisor assigned.' : canOpenLeads ? 'Meetings are scheduled from the Leads pipeline.' : 'Meetings assigned to you will appear here.'}
         />
       ) : (
         <div className="table-container">
@@ -122,7 +123,7 @@ export const MeetingsPage: React.FC = () => {
                 <th>Date</th>
                 <th>Company</th>
                 <th>Contact</th>
-                <th>Team leader</th>
+                <th>Supervisor</th>
                 <th>{tab === 'done' ? 'Meeting type' : 'Instructions'}</th>
                 <th style={{ width: 180 }} />
               </tr>
@@ -164,6 +165,10 @@ export const MeetingsPage: React.FC = () => {
                         <>
                           {i.teamName && <div className="cell-title">{i.teamName}</div>}
                           {i.assignedTeamLeaderName || i.inspectorName}
+                          {(() => {
+                            const others = [...(i.inspectorNames ?? []).filter((n) => n !== i.assignedTeamLeaderName), ...(i.pcoEmployeeNames ?? []).map((n) => `${n} (PCO)`)];
+                            return others.length ? <div style={{ fontSize: '0.72rem' }}>+ {others.join(', ')}</div> : null;
+                          })()}
                         </>
                       ) : (
                         <span className="badge-status badge-amber" style={{ fontSize: '0.75rem', fontWeight: 600 }}>Unassigned</span>

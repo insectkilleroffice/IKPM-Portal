@@ -907,7 +907,7 @@ export const ContractsListPage: React.FC = () => {
 
           {teamLeaders.length > 0 && (
             <div className="form-group">
-              <label className="form-label">Assign Team Leader <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional — can be changed later)</span></label>
+              <label className="form-label">Assign Supervisor <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional — can be changed later)</span></label>
               <select
                 className="form-select"
                 value={newContract.assignedTeamLeaderId}

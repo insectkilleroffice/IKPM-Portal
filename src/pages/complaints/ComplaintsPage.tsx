@@ -115,6 +115,14 @@ export const ComplaintsPage: React.FC = () => {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const allComplaints = dataService.getComplaints();
+
+  // Notification link: ?view=ID opens that complaint
+  const paramView = searchParams.get('view');
+  useEffect(() => {
+    const c = paramView ? allComplaints.find((x) => x.id === paramView) : undefined;
+    if (c) setSelected(c);
+  }, [paramView, allComplaints.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const staff = dataService.getStaff();

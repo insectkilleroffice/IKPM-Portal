@@ -13,6 +13,7 @@ import {
   type NotificationCategory,
 } from '../../lib/notifications';
 import { formatDate } from '../../lib/formatters';
+import { companyProfile } from '../../services/companyProfile';
 
 const CATEGORY_ICON: Record<NotificationCategory, React.ElementType> = {
   assigned: UserCheck,
@@ -52,6 +53,17 @@ export const NotificationBell: React.FC = () => {
     setReadIds(userProfile ? getReadIds(userProfile.uid) : new Set());
   }, [userProfile?.uid]);
 
+  // Re-check every 10 seconds (overdue reports, escalations, read state from other tabs).
+  // New assignments also arrive instantly through the live database listeners.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      setTick((n) => n + 1);
+      if (userProfile) setReadIds(getReadIds(userProfile.uid));
+    }, 10_000);
+    return () => window.clearInterval(t);
+  }, [userProfile?.uid]);
+
   const notifications = useMemo<AppNotification[]>(() => {
     if (!userProfile || !effectiveRole) return [];
     return computeNotifications(
@@ -60,9 +72,12 @@ export const NotificationBell: React.FC = () => {
       userProfile,
       effectiveRole,
       dataService.getProposals(),
-      dataService.getContracts()
+      dataService.getContracts(),
+      dataService.getComplaints(),
+      companyProfile.get().complaintEscalationHours
     );
-  }, [store, userProfile, effectiveRole]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, store.getVersion(), userProfile, effectiveRole, tick]);
 
   const unreadCount = notifications.filter((n) => !readIds.has(n.id)).length;
 

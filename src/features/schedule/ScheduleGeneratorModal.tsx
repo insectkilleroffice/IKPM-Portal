@@ -12,8 +12,9 @@ import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { formatDate } from '../../lib/formatters';
+import { PcoTicks } from './PcoTicks';
 import {
-  pcoConflicts,
+  pcoEmployeeConflicts,
   planVisits,
   visitsPerMonth,
   type PlannedVisit,
@@ -44,9 +45,13 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
   const { userProfile } = useAuth();
   const { success, error } = useNotification();
 
-  const technicians = store.getStaff(['team_leader']);
-  // Exclude this contract's own jobs so regenerating a schedule doesn't flag self-conflicts
-  const existingJobs = store.getJobs().filter((j) => j.contractId !== contract.id);
+  // Each visit gets a Supervisor (portal login) and optionally PCOs from that TL's team
+  // (HR employees — PCOs have no login; the TL coordinates them and submits the report).
+  const teamLeaders = store.getTeamLeaders();
+  const tlName = (uid?: string) => teamLeaders.find((t) => t.uid === uid)?.displayName || (uid === contract.assignedTeamLeaderId ? contract.assignedTeamLeaderName : '') || '';
+
+  // Other contracts' jobs; this contract's own jobs are replaced when the schedule is confirmed
+  const existingJobs = useMemo(() => store.getJobs().filter((j) => j.contractId !== contract.id), [store, contract.id]);
 
   // Load branches for the contract
   const companyBranches: CompanyBranch[] = useMemo(() => {
@@ -85,10 +90,9 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
   const [skipSundays, setSkipSundays] = useState(true);
   const [followUpGapDays, setFollowUpGapDays] = useState(3);
   const [holidaysText, setHolidaysText] = useState(DEFAULT_HOLIDAYS.join(', '));
-  // Pre-select from contract's assigned TL; fall back to first in list
-  const [defaultPcoId, setDefaultPcoId] = useState<string>(
-    () => technicians.find((t) => t.uid === contract.assignedTeamLeaderId)?.uid || technicians[0]?.uid || ''
-  );
+  // Pre-select the contract's assigned Supervisor
+  const [defaultTlId, setDefaultTlId] = useState<string>(contract.assignedTeamLeaderId || '');
+  const [defaultPcoIds, setDefaultPcoIds] = useState<string[]>([]);
   const [isExporting, setIsExporting] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
 
@@ -118,8 +122,6 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
       .map((h) => h.trim())
       .filter((h) => /^\d{4}-\d{2}-\d{2}$/.test(h));
 
-    const defaultTech = technicians.find((t) => t.uid === defaultPcoId);
-
     const planned = planVisits({
       start: contract.startDate,
       end: contract.endDate,
@@ -134,11 +136,13 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
 
     return planned.map((v) => ({
       ...v,
-      pcoId: defaultTech?.uid,
-      pcoName: defaultTech?.displayName,
+      pcoId: defaultTlId || undefined,
+      pcoName: tlName(defaultTlId),
+      pcoEmployeeIds: [],
       services: servicePlanItems.length > 0 ? [] : undefined,
     }));
-  }, [contract, branchConfigs, skipSundays, holidaysText, followUpGapDays, defaultPcoId, isOneOff, serviceVpm, followUpVpm, servicePlanItems, technicians]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [visits, setVisits] = useState<PlannedVisit[]>(initialVisits);
 
@@ -148,8 +152,6 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
       .split(',')
       .map((h) => h.trim())
       .filter((h) => /^\d{4}-\d{2}-\d{2}$/.test(h));
-
-    const defaultTech = technicians.find((t) => t.uid === defaultPcoId);
 
     const planned = planVisits({
       start: contract.startDate,
@@ -166,8 +168,9 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
     setVisits(
       planned.map((v) => ({
         ...v,
-        pcoId: defaultTech?.uid,
-        pcoName: defaultTech?.displayName,
+        pcoId: defaultTlId || undefined,
+        pcoName: tlName(defaultTlId),
+        pcoEmployeeIds: defaultPcoIds,
         services: servicePlanItems.length > 0 ? [] : undefined,
       }))
     );
@@ -200,18 +203,32 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
         if (v.key !== key) return v;
         const updated = { ...v, ...patch };
         if (patch.pcoId !== undefined) {
-          const tech = technicians.find((t) => t.uid === patch.pcoId);
-          updated.pcoName = tech?.displayName || '';
+          updated.pcoId = patch.pcoId || undefined;
+          updated.pcoName = tlName(patch.pcoId);
+          // PCOs belong to a team: changing the Supervisor clears PCOs from the old team
+          const team = new Set(store.getTeamPcos(patch.pcoId).map((e) => e.id));
+          updated.pcoEmployeeIds = (v.pcoEmployeeIds ?? []).filter((id) => team.has(id));
         }
         return updated;
       })
     );
   };
 
-  // Identify double-booking conflicts
-  const conflicts = useMemo(() => {
-    return pcoConflicts(visits, existingJobs);
-  }, [visits, existingJobs]);
+  // Bulk apply a Supervisor (and their default PCOs) to every visit
+  const applyDefaults = (tlId: string, pcoIds: string[]) => {
+    setDefaultTlId(tlId);
+    setDefaultPcoIds(pcoIds);
+    setVisits((prev) => prev.map((v) => ({ ...v, pcoId: tlId || undefined, pcoName: tlName(tlId), pcoEmployeeIds: pcoIds })));
+  };
+
+  // PCO double-bookings (a PCO is on site, so one PCO can't be on two visits in the same slot).
+  // A Supervisor may run several visits at once, so TLs are never flagged.
+  const conflicts = useMemo(() => pcoEmployeeConflicts(visits, existingJobs), [visits, existingJobs]);
+  const unassignedCount = visits.filter((v) => !v.pcoId).length;
+  const pcoLabel = (v: PlannedVisit) => {
+    const names = store.pcoNames(v.pcoEmployeeIds);
+    return [v.pcoName, names.length ? `(${names.join(', ')})` : ''].filter(Boolean).join(' ');
+  };
 
   // Export PDF in Dunkin format and file into Documents folder
   const handleExportPdf = async () => {
@@ -226,7 +243,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
           closingTime: v.closingTime,
           date: v.date,
           kind: v.kind,
-          pcoName: v.pcoName,
+          pcoName: pcoLabel(v),
         })),
       };
 
@@ -259,14 +276,30 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
 
   // Confirm schedule and create service jobs in Firestore
   const handleConfirmSchedule = () => {
-    // Guard: check for existing jobs on this contract
-    const existingJobs = store.getJobs().filter((j) => j.contractId === contract.id && j.status !== 'cancelled');
-    if (existingJobs.length > 0) {
+    // Checks first, so declining never leaves the old schedule half-cancelled
+    if (conflicts.size > 0) {
+      error('PCO double-booked', `${conflicts.size} visit(s) put a PCO in two places at the same time (red rows). Change the PCO or date first.`);
+      return;
+    }
+    if (unassignedCount > 0) {
       const proceed = window.confirm(
-        `${existingJobs.length} visits already exist for this contract.\n\nCreating a new schedule will cancel all existing scheduled visits and replace them. Proceed?`
+        `${unassignedCount} visit(s) have no Supervisor. Nobody will see them in the field until a Supervisor is assigned.\n\nCreate the schedule anyway?`
       );
       if (!proceed) return;
-      existingJobs
+    }
+
+    // Replacing an existing schedule cancels its not-yet-started visits
+    const existingOwn = store.getJobs().filter((j) => j.contractId === contract.id && j.status !== 'cancelled');
+    if (existingOwn.length > 0) {
+      const proceed = window.confirm(
+        `${existingOwn.length} visits already exist for this contract.\n\nCreating a new schedule will cancel the visits that are still Scheduled and replace them. Proceed?`
+      );
+      if (!proceed) return;
+    }
+
+    try {
+      setIsConfirming(true);
+      existingOwn
         .filter((j) => j.status === 'scheduled')
         .forEach((j) =>
           store.saveJob(
@@ -274,22 +307,11 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
             userProfile?.email
           )
         );
-    }
-
-    if (conflicts.size > 0) {
-      const confirmProceed = window.confirm(
-        `There are ${conflicts.size} visits with technician scheduling conflicts (double-bookings). Do you wish to proceed anyway?`
-      );
-      if (!confirmProceed) return;
-    }
-
-    try {
-      setIsConfirming(true);
       const created = store.createScheduledJobs(contract, visits, userProfile?.email);
-      const tlName = contract.assignedTeamLeaderName || technicians.find((t) => t.uid === defaultPcoId)?.displayName;
+      const leaders = Array.from(new Set(created.map((j) => j.assignedTeamLeaderName).filter(Boolean)));
       success(
         'Visit Schedule Dispatched',
-        `${created.length} service jobs created (${created.filter((j) => j.visitKind === 'service').length} service, ${created.filter((j) => j.visitKind === 'follow_up').length} follow-up)${tlName ? ` · Notified TL: ${tlName}` : ''}.`
+        `${created.length} service jobs created (${created.filter((j) => j.visitKind === 'service').length} service, ${created.filter((j) => j.visitKind === 'follow_up').length} follow-up)${leaders.length ? ` · Supervisor: ${leaders.join(', ')}` : ''}.`
       );
       onClose();
     } catch (err) {
@@ -491,35 +513,40 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
             />
           </div>
 
-          <div style={{ minWidth: '180px' }}>
+          <div style={{ minWidth: '200px' }}>
             <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-              Assign to Team Leader
+              Supervisor for all visits
             </label>
             <select
               className="form-select"
               style={{ height: '32px', fontSize: '0.8rem' }}
-              value={defaultPcoId}
-              onChange={(e) => {
-                const val = e.target.value;
-                setDefaultPcoId(val);
-                const tech = technicians.find((t) => t.uid === val);
-                setVisits((prev) =>
-                  prev.map((v) => ({
-                    ...v,
-                    pcoId: val,
-                    pcoName: tech?.displayName || '',
-                  }))
-                );
-              }}
+              value={defaultTlId}
+              onChange={(e) => applyDefaults(e.target.value, [])}
             >
-              <option value="">-- Unassigned --</option>
-              {technicians.map((t) => (
+              <option value="">-- Choose per visit below --</option>
+              {teamLeaders.map((t) => (
                 <option key={t.uid} value={t.uid}>
-                  {t.displayName}
+                  {t.displayName}{t.teamName ? ` · ${t.teamName}` : ''}
                 </option>
               ))}
             </select>
+            {teamLeaders.length === 0 && (
+              <div style={{ fontSize: '0.7rem', color: '#B45309', marginTop: 2 }}>No Supervisors yet. Add staff with the Supervisor role in Team &amp; Access.</div>
+            )}
           </div>
+
+          {defaultTlId && (
+            <div style={{ minWidth: '220px', flex: 1 }}>
+              <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
+                Usual PCOs (optional — Supervisor can change on the day)
+              </label>
+              <PcoTicks
+                pcos={store.getTeamPcos(defaultTlId)}
+                selected={defaultPcoIds}
+                onChange={(ids) => applyDefaults(defaultTlId, ids)}
+              />
+            </div>
+          )}
 
           <button
             type="button"
@@ -549,9 +576,9 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
           >
             <AlertTriangle size={18} color="#DC2626" />
             <div>
-              <strong>{conflicts.size} PCO Double-booking Conflict(s) Detected!</strong>
+              <strong>{conflicts.size} visit(s) double-book a PCO</strong>
               <div style={{ fontSize: '0.75rem', color: '#B91C1C' }}>
-                The flagged technician is assigned to multiple visits or existing jobs in the same time slot. Adjust technician or date below.
+                A PCO is on two visits (or another job) in the same time slot. Untick the PCO or change the date in the red rows.
               </div>
             </div>
           </div>
@@ -569,7 +596,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
                 <th>Date</th>
                 <th style={{ minWidth: 220 }}>Time Slot & Custom Timing</th>
                 <th>Branch Hours</th>
-                <th>Assigned Team Leader</th>
+                <th style={{ minWidth: 200 }}>Supervisor &amp; PCOs</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -694,13 +721,23 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
                         value={v.pcoId || ''}
                         onChange={(e) => handleUpdateVisit(v.key, { pcoId: e.target.value })}
                       >
-                        <option value="">-- Unassigned --</option>
-                        {technicians.map((t) => (
+                        <option value="">-- No Supervisor --</option>
+                        {teamLeaders.map((t) => (
                           <option key={t.uid} value={t.uid}>
                             {t.displayName}
                           </option>
                         ))}
                       </select>
+                      {v.pcoId && (
+                        <div style={{ marginTop: 4 }}>
+                          <PcoTicks
+                            pcos={store.getTeamPcos(v.pcoId)}
+                            selected={v.pcoEmployeeIds ?? []}
+                            flagged={conflicts.get(v.key)}
+                            onChange={(ids) => handleUpdateVisit(v.key, { pcoEmployeeIds: ids })}
+                          />
+                        </div>
+                      )}
                     </td>
                     <td>
                       {isConflict ? (
@@ -714,7 +751,11 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
                             fontWeight: 700,
                           }}
                         >
-                          <AlertTriangle size={12} /> Double-booked
+                          <AlertTriangle size={12} /> PCO double-booked
+                        </span>
+                      ) : !v.pcoId ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', color: '#B45309', fontSize: '0.72rem', fontWeight: 600 }}>
+                          <AlertTriangle size={12} /> No Supervisor
                         </span>
                       ) : (
                         <span

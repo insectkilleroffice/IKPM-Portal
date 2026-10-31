@@ -748,7 +748,7 @@ export const CompanyDetailPage: React.FC = () => {
                 <th>Scheduled Date & Slot</th>
                 <th>Branch / Site</th>
                 <th>Target Pests</th>
-                <th>Lead PCO</th>
+                <th>Team (who worked)</th>
                 <th>Status</th>
                 <th>Action</th>
               </tr>
@@ -774,7 +774,7 @@ export const CompanyDetailPage: React.FC = () => {
                       ))}
                     </div>
                   </td>
-                  <td>{j.leadPcoName}</td>
+                  <td>{dataService.jobTeamText(j)}</td>
                   <td><StatusBadge status={j.status} /></td>
                   <td>
                     <button

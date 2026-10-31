@@ -102,6 +102,30 @@ export const CompanyProfileForm: React.FC = () => {
     }
   };
 
+  // "Our valued clients" logos for proposals
+  const clientLogoInput = useRef<HTMLInputElement>(null);
+  const [uploadingClientLogo, setUploadingClientLogo] = useState(false);
+  const [clientLogoName, setClientLogoName] = useState('');
+  const uploadClientLogo = async (file?: File) => {
+    if (!file) return;
+    if (!clientLogoName.trim()) return error('Client name needed', 'Type the client’s name first, then choose their logo.');
+    if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) return error('Unsupported logo', 'Use a PNG or JPG image.');
+    const problem = validateFile(file);
+    if (problem) return error('Logo not accepted', problem);
+    setUploadingClientLogo(true);
+    try {
+      const stored = await uploadFile(file, { scope: { ownerScope: 'company', category: 'other' }, subPath: 'branding/clients', fileName: `client_${Date.now()}.${file.type.split('/')[1]}` });
+      set('clientLogos', [...(form.clientLogos ?? []), { name: clientLogoName.trim(), url: stored.url }]);
+      setClientLogoName('');
+      pdfGenerator.clearImageCache();
+    } catch (err) {
+      error('Logo upload failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploadingClientLogo(false);
+      if (clientLogoInput.current) clientLogoInput.current.value = '';
+    }
+  };
+
   const addBranch = () => {
     const branches = form.branches ?? [];
     const newB: CompanyBranchInfo = {
@@ -289,6 +313,62 @@ export const CompanyProfileForm: React.FC = () => {
             <RotateCcw size={13} /> Restore default note
           </button>
         )}
+      </div>
+
+      <div className="card">
+        <div className="card-title" style={{ marginBottom: '0.35rem' }}>Proposal presentation</div>
+        <div className="form-hint" style={{ marginBottom: '1rem' }}>Printed on every proposal / quotation to build trust. Only list clients who have agreed to be named.</div>
+        <Field label="Our valued clients (logos)" hint="Shown as a logo strip near the end of proposals. Up to 12 logos are printed.">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', marginBottom: '0.6rem' }}>
+            {(form.clientLogos ?? []).map((c, i) => (
+              <div key={`${c.url}_${i}`} style={{ width: 110, border: '1px solid var(--border-subtle)', borderRadius: 6, padding: 6, textAlign: 'center', background: '#fff' }}>
+                <img src={c.url} alt={c.name} style={{ maxWidth: '100%', height: 40, objectFit: 'contain' }} />
+                <div className="cell-sub" style={{ fontSize: '0.7rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</div>
+                {isSuperAdmin && (
+                  <button className="btn btn-ghost btn-sm" style={{ padding: '0 4px' }} onClick={() => set('clientLogos', (form.clientLogos ?? []).filter((_, j) => j !== i))}>
+                    <Trash2 size={12} /> Remove
+                  </button>
+                )}
+              </div>
+            ))}
+            {!(form.clientLogos ?? []).length && <span className="cell-sub">No client logos yet.</span>}
+          </div>
+          {isSuperAdmin && (
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              <input className="form-input" style={{ maxWidth: 240 }} value={clientLogoName} onChange={(e) => setClientLogoName(e.target.value)} placeholder="Client name, e.g. Dunkin' Pakistan" />
+              <button className="btn btn-secondary btn-sm" onClick={() => clientLogoInput.current?.click()} disabled={uploadingClientLogo || !integrations.cloudinary || !clientLogoName.trim()}>
+                <ImagePlus size={14} /> {uploadingClientLogo ? 'Uploading…' : 'Add logo'}
+              </button>
+              <input ref={clientLogoInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => uploadClientLogo(e.target.files?.[0])} />
+            </div>
+          )}
+        </Field>
+        <Field label="Why choose us (one point per line)" hint="Printed as a short box on proposals. Leave empty to skip. Write only what is true for your company.">
+          <textarea
+            className="form-textarea"
+            rows={4}
+            value={form.proposalHighlights || ''}
+            onChange={(e) => set('proposalHighlights', e.target.value)}
+            placeholder={'Licensed and trained PCOs\nApproved chemicals with MSDS provided\nSigned service report after every visit\nSame-day complaint response'}
+            disabled={!isSuperAdmin}
+          />
+        </Field>
+      </div>
+
+      <div className="card">
+        <div className="card-title" style={{ marginBottom: '1rem' }}>Workflow rules</div>
+        <Field label="Complaint escalation (hours)" hint="If a complaint is still open after this many hours, the CEO (Super Admin) is alerted. Default 48.">
+          <input
+            type="number"
+            min={1}
+            className="form-input"
+            style={{ maxWidth: 160 }}
+            value={form.complaintEscalationHours ?? ''}
+            placeholder="48"
+            onChange={(e) => set('complaintEscalationHours', e.target.value ? Number(e.target.value) : undefined)}
+            disabled={!isSuperAdmin}
+          />
+        </Field>
       </div>
 
       <div className="sticky-actions">

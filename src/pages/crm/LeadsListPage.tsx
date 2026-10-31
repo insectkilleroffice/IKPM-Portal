@@ -245,7 +245,7 @@ export const LeadsListPage: React.FC = () => {
       case 'record_findings': return setFindingsLead(lead);
       case 'record_meeting': return setMeetingReportLead(lead);
       case 'schedule_site_inspection': return setSiteScheduleLead(lead);
-      case 'record_site_inspection': if (!isOpsRole) { warning('Operation only', 'Only Operations or Operation Coordinator can complete inspections.'); return; } return setSiteInspFindingsLead(lead);
+      case 'record_site_inspection': if (!isOpsRole) { warning('Operation only', 'Only Operations or a Supervisor can complete inspections.'); return; } return setSiteInspFindingsLead(lead);
       case 'create_proposal': return createProposal(lead);
       case 'skip_inspection': return lead.inspectionSkipped ? createProposal(lead) : setSkipLead(lead);
       case 'send_documents': return setSendLead(lead);
@@ -738,9 +738,9 @@ const ChangeStageModal: React.FC<{ lead: Lead; onClose: () => void; onMoved: (up
 interface DetailProps {
   lead: Lead;
   canEdit: boolean;
-  /** True when the viewer has pco:edit — lets team leaders submit/edit meeting & inspection reports. */
+  /** True when the viewer has pco:edit — lets supervisors submit/edit meeting & inspection reports. */
   canEditPco: boolean;
-  /** True when the viewer has inspections:edit — lets team leaders/sales see inspection action buttons. */
+  /** True when the viewer has inspections:edit — lets supervisors/sales see inspection action buttons. */
   canEditInspections: boolean;
   onClose: () => void;
   onAction: (id: LeadActionId) => void;
@@ -750,7 +750,7 @@ interface DetailProps {
 
 const channelLabel = (a: LeadActivity) => CHANNELS.find((c) => c.value === a.channel)?.label || a.channel;
 
-// Actions gated by pco or inspections module (team leaders can use these)
+// Actions gated by pco or inspections module (supervisors can use these)
 const PCO_ACTIONS: LeadActionId[] = ['record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection', 'schedule_negotiation_meeting'];
 
 const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, canEditPco, canEditInspections, onClose, onAction, menuItems }) => {
@@ -885,11 +885,11 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, canEditPco, canEditI
                 <dt>Date</dt><dd>{formatDate(lead.inspection.scheduledDate)}{lead.inspection.timeSlot ? ` · ${lead.inspection.timeSlot}` : ''}</dd>
                 {lead.inspection.teamName && (<><dt>Team</dt><dd>{lead.inspection.teamName}</dd></>)}
                 {(lead.inspection.assignedTeamLeaderName || lead.inspection.inspectorNames?.length) && (
-                  <><dt>Team leader</dt><dd>{lead.inspection.assignedTeamLeaderName || lead.inspection.inspectorNames?.join(', ')}</dd></>
+                  <><dt>Supervisor</dt><dd>{lead.inspection.assignedTeamLeaderName || lead.inspection.inspectorNames?.join(', ')}</dd></>
                 )}
                 {lead.inspection.siteName && (<><dt>Site</dt><dd>{lead.inspection.siteName}</dd></>)}
                 {lead.inspection.observedBy && (<><dt>Observed by</dt><dd>{lead.inspection.observedBy}</dd></>)}
-                {lead.inspection.teamLeaderNotes && (<><dt>TL notes</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.teamLeaderNotes}</dd></>)}
+                {lead.inspection.teamLeaderNotes && (<><dt>Supervisor notes</dt><dd style={{ whiteSpace: 'pre-wrap' }}>{lead.inspection.teamLeaderNotes}</dd></>)}
               </dl>
               {lead.inspection.meetingFollowUps?.length ? (
                 <div style={{ margin: '0.6rem 0', padding: '0.65rem 0.8rem', background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.4rem' }}>

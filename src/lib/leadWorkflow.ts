@@ -3,8 +3,8 @@
 // Step-by-step flow:
 //   new → contacted → engaged → meeting_scheduled → meeting_done → profile_sent / proposal_sent → negotiation → won | lost
 //
-// CRO (Sales) aligns a Team Leader for the meeting at "meeting_scheduled".
-// Team Leader conducts the meeting, records findings and what the client asked for.
+// CRO (Sales) aligns a Supervisor for the meeting at "meeting_scheduled".
+// Supervisor conducts the meeting, records findings and what the client asked for.
 // After meeting_done, next step depends on the client request:
 //   - Client asked for company profile → profile_sent
 //   - Client asked for proposal → proposal_sent
@@ -34,11 +34,11 @@ export type PipelineStage =
   | 'lost';
 
 export const PIPELINE: { stage: PipelineStage; label: string; short: string; hint: string; color: string }[] = [
-  { stage: 'new', label: 'New inquiries', short: 'New', hint: 'New lead captured — not yet contacted by Sales / CRO', color: '#1A73E8' },
+  { stage: 'new', label: 'New inquiries', short: 'New', hint: 'New lead captured — not yet contacted by CRO', color: '#1A73E8' },
   { stage: 'contacted', label: 'Contacted', short: 'Contacted', hint: 'CRO reached out — awaiting client interest', color: '#0891B2' },
-  { stage: 'engaged', label: 'Engaged', short: 'Engaged', hint: 'Client is interested — CRO aligns a Team Leader and schedules a meeting', color: '#7C3AED' },
-  { stage: 'meeting_scheduled', label: 'Meeting scheduled', short: 'Meeting', hint: 'Team Leader confirmed for the client meeting', color: '#D97706' },
-  { stage: 'meeting_done', label: 'Meeting done', short: 'Meeting done', hint: 'Team Leader submitted the meeting report — create proposal or schedule site inspection', color: '#B45309' },
+  { stage: 'engaged', label: 'Engaged', short: 'Engaged', hint: 'Client is interested — CRO aligns a Supervisor and schedules a meeting', color: '#7C3AED' },
+  { stage: 'meeting_scheduled', label: 'Meeting scheduled', short: 'Meeting', hint: 'Supervisor confirmed for the client meeting', color: '#D97706' },
+  { stage: 'meeting_done', label: 'Meeting done', short: 'Meeting done', hint: 'Supervisor submitted the meeting report — create proposal or schedule site inspection', color: '#B45309' },
   { stage: 'profile_sent', label: 'Company profile sent', short: 'Profile sent', hint: 'Company profile sent to client', color: '#6366F1' },
   { stage: 'proposal_sent', label: 'Proposal sent', short: 'Proposal', hint: 'Proposal created and shared with the client', color: '#0E8A5F' },
   { stage: 'negotiation', label: 'Negotiation', short: 'Negotiation', hint: 'Price or terms bargaining in progress', color: '#EA580C' },
@@ -201,7 +201,7 @@ export const STAGE_ACTIONS: Record<PipelineStage, LeadActionId[]> = {
 export const ACTION_LABELS: Record<LeadActionId, string> = {
   edit: 'Edit details',
   log_contact: 'Log contact',
-  schedule_inspection: 'Schedule meeting (assign Team Leader)',
+  schedule_inspection: 'Schedule meeting (assign Supervisor)',
   reschedule_inspection: 'Reschedule meeting',
   record_findings: 'Submit meeting report / inspection findings',
   create_proposal: 'Create proposal',
@@ -272,10 +272,10 @@ export function availableActions(lead: Lead): AvailableAction[] {
             disabledReason = 'A completed inspection is required. Record findings during the meeting or complete the site inspection first.';
           } else if (tl === 'waiting') {
             enabled = false;
-            disabledReason = 'Team Leader set status to "Hold — need more steps". Update the meeting report when ready.';
+            disabledReason = 'Supervisor set status to "Hold — need more steps". Update the meeting report when ready.';
           } else if (!skipInspCheck && !tl) {
             enabled = false;
-            disabledReason = 'Team Leader must submit their report and set decision to "Ready — send proposal" first.';
+            disabledReason = 'Supervisor must submit their report and set decision to "Ready — send proposal" first.';
           }
         }
         break;
@@ -400,10 +400,10 @@ export function assertStageTransition(
   if (!(ALLOWED_TRANSITIONS[from] ?? []).includes(target)) {
     throw new StageTransitionError(`A lead cannot move from ${stageLabel(from)} to ${stageLabel(target)}.`);
   }
-  // engaged → proposal_sent without TL meeting requires a skip reason for B2B
+  // engaged → proposal_sent without Supervisor meeting requires a skip reason for B2B
   if (from === 'engaged' && target === 'proposal_sent' && lead.clientType !== 'residential') {
     if (!next?.inspectionSkipped?.reason?.trim()) {
-      throw new StageTransitionError('Skipping the TL meeting to send a proposal requires an inspection-skipped reason.');
+      throw new StageTransitionError('Skipping the Supervisor meeting to send a proposal requires an inspection-skipped reason.');
     }
   }
 }
@@ -443,7 +443,7 @@ export function assertCanCreateProposal(lead: Lead): void {
 const NEXT_ACTION: Record<PipelineStage, { action: LeadActionId; label: string }> = {
   new: { action: 'log_contact', label: 'Log first contact' },
   contacted: { action: 'log_contact', label: 'Log follow-up' },
-  engaged: { action: 'schedule_inspection', label: 'Schedule meeting — assign Team Leader' },
+  engaged: { action: 'schedule_inspection', label: 'Schedule meeting — assign Supervisor' },
   meeting_scheduled: { action: 'record_meeting', label: 'Submit meeting report' },
   meeting_done: { action: 'create_proposal', label: 'Create proposal' },
   profile_sent: { action: 'create_proposal', label: 'Create proposal' },
@@ -457,7 +457,7 @@ const NEXT_ACTION: Record<PipelineStage, { action: LeadActionId; label: string }
 export function nextStep(lead: Lead): { label: string; action: LeadActionId } {
   const stage = stageOf(lead);
   const actions = availableActions(lead);
-  // Residential shortcut: propose directly without TL meeting.
+  // Residential shortcut: propose directly without Supervisor meeting.
   if (lead.clientType === 'residential' && !lead.proposalId && !['won', 'lost'].includes(stage)) {
     const cp = actions.find((a) => a.id === 'create_proposal' && a.enabled);
     if (cp) return { action: 'create_proposal', label: 'Create proposal' };

@@ -13,6 +13,7 @@ import { PhotoCapture } from '../field/PhotoCapture';
 import { SinglePhotoField } from '../field/SinglePhotoField';
 import { FINDING_SUGGESTIONS, findingFilled, findingsSummary, newFinding, recommendedTreatmentOf } from '../../lib/riskAssessment';
 import { fileInspectionReport, fileMeetingReport } from './inspectionFiles';
+import { PcoTicks } from '../schedule/PcoTicks';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -295,7 +296,7 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
 };
 
 // ---------------------------------------------------------------------------
-// Schedule meeting / inspection & assign team leader
+// Schedule meeting / inspection & assign supervisor
 // ---------------------------------------------------------------------------
 export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
   const store = useDataStore();
@@ -311,9 +312,14 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
   const [customAddress, setCustomAddress] = useState('');
   const [instructions, setInstructions] = useState('');
   const [meetingType, setMeetingType] = useState<'first_meeting' | 'negotiation' | 'renewal'>('first_meeting');
+  // More people going along: other staff with a login, and PCOs (HR employees, no login)
+  const [extraIds, setExtraIds] = useState<string[]>([]);
+  const [pcoIds, setPcoIds] = useState<string[]>([]);
 
   const teams = store.getTeams();
-  const staff = store.getStaff().filter((u) => u.role !== 'technician');
+  // Who can take a meeting: operations staff (Supervisors, Ops Managers) plus the person assigning
+  const staff = store.getStaff().filter((u) =>
+    u.isActive !== false && (['team_leader', 'operations'].includes(baseRoleOf(u.role) ?? '') || u.uid === userProfile?.uid));
 
   useEffect(() => {
     if (!lead) return;
@@ -321,10 +327,13 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
     setDate(i?.scheduledDate || addDays(1));
     setScheduledTime(i?.scheduledTime || '');
     setTimeSlot(i?.timeSlot || 'morning');
-    const initialTeamId = i?.teamId || teams[0]?.id || '';
+    // A CRO books without a team by default; Ops Manager picks the team (or the CRO picks a person)
+    const initialTeamId = i?.teamId || (isCRO ? '' : teams[0]?.id || '');
     setTeamId(initialTeamId);
     const initialTeam = teams.find((t) => t.id === initialTeamId);
-    setTeamLeaderId(i?.assignedTeamLeaderId || initialTeam?.leaderId || initialTeam?.leadUid || staff.find((u) => u.teamId === initialTeamId)?.uid || '');
+    setTeamLeaderId(i?.assignedTeamLeaderId || (isCRO ? '' : initialTeam?.leaderId || initialTeam?.leadUid || staff.find((u) => u.teamId === initialTeamId)?.uid || ''));
+    setExtraIds((i?.inspectorIds ?? []).filter((id) => id !== i?.assignedTeamLeaderId));
+    setPcoIds(i?.pcoEmployeeIds ?? []);
     setInstructions(i?.instructions || '');
     setAddressChoice(i?.meetingAddress ? 'custom' : 'headquarter');
     setCustomAddress(i?.meetingAddress || '');
@@ -336,7 +345,10 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
   if (!lead) return null;
 
   const teamMembers = staff.filter((u) => u.teamId === teamId);
-  const eligibleLeaders = teamMembers.length > 0 ? teamMembers : staff;
+  const me = staff.find((u) => u.uid === userProfile?.uid);
+  const eligibleLeaders = teamMembers.length > 0
+    ? [...(me && !teamMembers.includes(me) ? [me] : []), ...teamMembers]
+    : staff;
 
   const pickTeam = (id: string) => {
     setTeamId(id);
@@ -364,8 +376,9 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
           scheduledTime: scheduledTime || undefined,
           timeSlot,
           teamId: isCRO ? undefined : (teamId || undefined),
-          teamLeaderId: isCRO ? undefined : (teamLeaderId || undefined),
-          inspectorIds: isCRO ? [] : (teamLeaderId ? [teamLeaderId] : []),
+          teamLeaderId: teamLeaderId || undefined,
+          inspectorIds: [teamLeaderId, ...extraIds].filter((v, idx, a) => v && a.indexOf(v) === idx),
+          pcoEmployeeIds: pcoIds,
           instructions: instructions.trim() || undefined,
           meetingAddress: selectedMeetingAddress || undefined,
           meetingType,
@@ -377,7 +390,8 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
     }
     if (updated) {
       if (teamLeaderId) {
-        success('Meeting scheduled & assigned', `${new Date(date).toLocaleDateString('en-GB')} (${timeSlot}). Assigned to team leader.`);
+        const who = teamLeaderId === userProfile?.uid ? 'you' : staff.find((u) => u.uid === teamLeaderId)?.displayName || 'the selected person';
+        success('Meeting scheduled & assigned', `${new Date(date).toLocaleDateString('en-GB')} (${timeSlot}). Assigned to ${who}.`);
       } else {
         success('Meeting scheduled', `${new Date(date).toLocaleDateString('en-GB')} (${timeSlot}). Pending team assignment by Operations Manager.`);
       }
@@ -396,7 +410,7 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
       footer={
         <>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save}>{isCRO ? 'Schedule meeting' : teamLeaderId ? 'Schedule & assign' : 'Schedule (unassigned)'}</button>
+          <button className="btn btn-primary" onClick={save}>{teamLeaderId ? 'Schedule & assign' : isCRO ? 'Schedule meeting' : 'Schedule (unassigned)'}</button>
         </>
       }
     >
@@ -439,8 +453,8 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
         </div>
       </div>
 
-      {!isCRO && (
-        <div className="form-grid-2">
+      <div className="form-grid-2">
+        {!isCRO && (
           <div className="form-group">
             <label className="form-label">Team</label>
             <select className="form-select" value={teamId} onChange={(e) => pickTeam(e.target.value)}>
@@ -448,24 +462,62 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
               {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
             </select>
           </div>
-          <div className="form-group">
-            <label className="form-label">Team Leader</label>
-            <select className="form-select" value={teamLeaderId} onChange={(e) => setTeamLeaderId(e.target.value)}>
-              <option value="">— Unassigned —</option>
+        )}
+        <div className="form-group" style={isCRO ? { gridColumn: 'span 2' } : undefined}>
+          <label className="form-label">Who will attend the meeting?</label>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <select className="form-select" style={{ flex: 1, minWidth: 200 }} value={teamLeaderId} onChange={(e) => setTeamLeaderId(e.target.value)}>
+              <option value="">{isCRO ? '— Leave for Operations Manager —' : '— Unassigned —'}</option>
               {eligibleLeaders.map((u) => (
                 <option key={u.uid} value={u.uid}>
-                  {u.displayName} ({roleLabel(u.role)})
+                  {u.uid === userProfile?.uid ? `Myself — ${u.displayName}` : `${u.displayName} (${roleLabel(u.role)})`}
                 </option>
               ))}
             </select>
+            {userProfile && teamLeaderId !== userProfile.uid && (
+              <button type="button" className="btn btn-sm btn-secondary" onClick={() => setTeamLeaderId(userProfile.uid)}>Assign myself</button>
+            )}
+          </div>
+          <div className="form-hint">
+            {teamLeaderId === userProfile?.uid
+              ? 'You will hold this meeting and submit the meeting report yourself.'
+              : teamLeaderId
+                ? 'They get a notification and submit the meeting report.'
+                : 'The Operations Manager will be notified to assign someone.'}
           </div>
         </div>
-      )}
-      {isCRO && (
-        <div className="form-hint" style={{ padding: '0.5rem 0.75rem', background: 'var(--ikpm-amber-50, #fffbeb)', border: '1px solid var(--ikpm-amber-200, #fde68a)', borderRadius: 6, marginBottom: '0.5rem' }}>
-          Operations Manager will assign a team leader after you schedule this meeting.
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">Also attending <span className="cell-sub" style={{ fontWeight: 400 }}>optional — staff going along</span></label>
+        <div className="chip-row" style={{ marginBottom: 0 }}>
+          {staff.filter((u) => u.uid !== teamLeaderId).map((u) => {
+            const on = extraIds.includes(u.uid);
+            return (
+              <button key={u.uid} type="button" className={`chip ${on ? 'chip-on' : ''}`}
+                onClick={() => setExtraIds((prev) => on ? prev.filter((x) => x !== u.uid) : [...prev, u.uid])}>
+                {on ? <Check size={14} /> : <Plus size={13} />} {u.uid === userProfile?.uid ? 'Myself' : u.displayName}
+              </button>
+            );
+          })}
         </div>
-      )}
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">PCOs going <span className="cell-sub" style={{ fontWeight: 400 }}>optional — PCOs have no login, the leader coordinates them</span></label>
+        {(() => {
+          const allPcos = store.getActivePcos();
+          const teamPcos = store.getTeamPcos(teamLeaderId);
+          return (
+            <PcoTicks
+              pcos={teamPcos.length ? teamPcos : allPcos}
+              selected={pcoIds}
+              onChange={setPcoIds}
+              otherPcos={teamPcos.length ? allPcos : undefined}
+            />
+          );
+        })()}
+      </div>
 
       <div className="form-group">
         <label className="form-label">Meeting location / address</label>
@@ -520,6 +572,27 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
   const [schedulingNote, setSchedulingNote] = useState('');
   const [preferredInspectionDate, setPreferredInspectionDate] = useState('');
   const [scheduleAssigneeId, setScheduleAssigneeId] = useState('');
+  // Who carried out the inspection when it was done during the meeting
+  const [inspectedById, setInspectedById] = useState('');
+  // Operations staff who can take an inspection, plus the person filling the report
+  const opsStaff = store.getStaff().filter((u) =>
+    u.isActive !== false && (['team_leader', 'operations'].includes(baseRoleOf(u.role) ?? '') || u.uid === userProfile?.uid));
+  const staffLabel = (u: { uid: string; displayName: string; role: string }) =>
+    u.uid === userProfile?.uid ? `Myself — ${u.displayName}` : `${u.displayName} (${roleLabel(u.role)})`;
+  // Who actually attended (the person submitting is always included). Starts from the planned
+  // team; the submitter can add staff and PCOs who went along.
+  const [attendeeUids, setAttendeeUids] = useState<string[]>([]);
+  const [attendeePcoIds, setAttendeePcoIds] = useState<string[]>([]);
+  const myUid = userProfile?.uid || '';
+  // "Inspection done by" choices come only from the attendees: staff "u:<uid>", PCOs "p:<employee id>"
+  const attendeeStaff = [myUid, ...attendeeUids]
+    .filter((v, idx, a) => !!v && a.indexOf(v) === idx)
+    .map((id) => store.getStaff().find((u) => u.uid === id)).filter((u): u is NonNullable<typeof u> => !!u);
+  const attendeePcos = attendeePcoIds.map((id) => store.getEmployeeById(id)).filter((e): e is NonNullable<typeof e> => !!e);
+  const inspectorChoices = [...attendeeStaff.map((u) => `u:${u.uid}`), ...attendeePcos.map((e) => `p:${e.id}`)];
+  const inspectorName = (key: string) =>
+    key.startsWith('p:') ? store.getEmployeeById(key.slice(2))?.name
+      : store.getStaff().find((u) => u.uid === key.slice(2))?.displayName;
   // Inline inspection fields (when inspectionHandling === 'done_inline')
   const [inlinePestTypes, setInlinePestTypes] = useState<import('../../types/crm').PestType[]>([]);
   const [inlineSeverity, setInlineSeverity] = useState<'low' | 'moderate' | 'high' | 'severe'>('moderate');
@@ -548,7 +621,17 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
     setInspectionHandling(i?.inspectionHandling || '');
     setSchedulingNote(i?.schedulingNote || '');
     setPreferredInspectionDate(i?.preferredInspectionDate || '');
-    setScheduleAssigneeId(i?.assignedTeamLeaderId || '');
+    setScheduleAssigneeId(lead.siteInspection?.teamLeaderId || '');
+    {
+      const uids = [userProfile?.uid, i?.assignedTeamLeaderId, ...(i?.inspectorIds ?? [])]
+        .filter((v, idx, a): v is string => !!v && a.indexOf(v) === idx);
+      setAttendeeUids(uids);
+      setAttendeePcoIds(i?.pcoEmployeeIds ?? []);
+      // Re-select whoever was recorded before, else the person filling the report
+      const prevStaff = store.getStaff().find((u) => u.displayName === i?.findingsBy && uids.includes(u.uid));
+      const prevPco = (i?.pcoEmployeeIds ?? []).map((id) => store.getEmployeeById(id)).find((e) => e?.name === i?.findingsBy);
+      setInspectedById(prevPco ? `p:${prevPco.id}` : prevStaff ? `u:${prevStaff.uid}` : `u:${userProfile?.uid || ''}`);
+    }
     setInlinePhotos(i?.photos ?? []);
     if (i?.pestTypesFound?.length) {
       setInlinePestTypes(i.pestTypesFound);
@@ -604,6 +687,16 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
       hasProfile ? 'company_profile' :
       followUps.length ? 'more_info' : undefined;
     const validBranches = branches.filter((b) => b.name.trim() || b.address.trim());
+    const scheduleLater = !isNegoRenewal && (inspectionHandling === 'tl_schedule' || inspectionHandling === 'separate_visit');
+    const assignee = scheduleLater && scheduleAssigneeId ? store.getStaff().find((u) => u.uid === scheduleAssigneeId) : undefined;
+    if (assignee && !preferredInspectionDate) {
+      return error('Inspection date needed', `Pick the inspection date for ${assignee.uid === userProfile?.uid ? 'yourself' : assignee.displayName}, or leave the person unassigned.`);
+    }
+    const inspectionInline = !isNegoRenewal && inspectionHandling === 'done_inline';
+    if (inspectionInline && !inspectorChoices.includes(inspectedById)) {
+      return error('Who did the inspection?', 'Pick the person who did the inspection from the people who attended.');
+    }
+    const inspector = inspectionInline ? inspectorName(inspectedById) : undefined;
     let updated: Lead | undefined;
     try {
       updated = dataService.recordMeetingReport(
@@ -621,10 +714,13 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
           inspectionHandling: (!isNegoRenewal && inspectionHandling) ? inspectionHandling : undefined,
           schedulingNote: (!isNegoRenewal && inspectionHandling && inspectionHandling !== 'done_inline') ? (schedulingNote.trim() || undefined) : undefined,
           preferredInspectionDate: (!isNegoRenewal && inspectionHandling && inspectionHandling !== 'done_inline') ? (preferredInspectionDate || undefined) : undefined,
-          assignedTeamLeaderId: (!isNegoRenewal && inspectionHandling && inspectionHandling !== 'done_inline' && scheduleAssigneeId) ? scheduleAssigneeId : undefined,
-          assignedTeamLeaderName: (!isNegoRenewal && inspectionHandling && inspectionHandling !== 'done_inline' && scheduleAssigneeId)
-            ? (store.getStaff().find((u) => u.uid === scheduleAssigneeId)?.displayName)
-            : undefined,
+          // The meeting's own assignee is kept; the inspection person goes on the site inspection below
+          findingsBy: inspector,
+          // Who actually attended (staff + PCOs), as recorded by the person submitting
+          inspectorIds: attendeeStaff.map((u) => u.uid),
+          inspectorNames: attendeeStaff.map((u) => u.displayName),
+          pcoEmployeeIds: attendeePcoIds,
+          pcoEmployeeNames: attendeePcos.map((e) => e.name),
           negotiationTermsNote: isNegoRenewal ? (negoTermsNote.trim() || undefined) : undefined,
           // Inline inspection fields (first_meeting only, when done_inline)
           ...((!isNegoRenewal && inspectionHandling === 'done_inline') ? (() => {
@@ -644,6 +740,22 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
         userProfile?.email,
         validBranches.length ? validBranches : undefined
       );
+      // Person + date chosen for a separate inspection: book the site inspection now so it
+      // appears on their list and notifies them, instead of waiting for someone to schedule it.
+      if (updated && assignee && preferredInspectionDate && updated.siteInspection?.status !== 'completed') {
+        updated = dataService.scheduleSiteInspection(
+          lead.id,
+          {
+            scheduledDate: preferredInspectionDate,
+            branchName: updated.siteInspection?.branchName || lead.companyName || lead.title,
+            branchAddress: updated.siteInspection?.branchAddress || lead.headquarterAddress || lead.propertyAddress || [lead.area, lead.city].filter(Boolean).join(', '),
+            teamLeaderId: assignee.uid,
+            teamLeaderName: assignee.displayName,
+            notes: schedulingNote.trim() || undefined,
+          },
+          userProfile?.email
+        ) ?? updated;
+      }
     } catch (err) {
       return error('Could not save report', err instanceof Error ? err.message : String(err));
     }
@@ -705,6 +817,36 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
         <textarea className="form-textarea" rows={2} value={teamLeaderNotes} onChange={(e) => setTeamLeaderNotes(e.target.value)} placeholder="Internal notes, client verbal agreements, access details…" />
       </div>
 
+      <div className="form-group">
+        <label className="form-label">Who attended this meeting?</label>
+        <div className="chip-row" style={{ marginBottom: '0.5rem' }}>
+          {[...opsStaff, ...store.getStaff().filter((u) => attendeeUids.includes(u.uid) && !opsStaff.includes(u))].map((u) => {
+            const isMe = u.uid === myUid;
+            const on = isMe || attendeeUids.includes(u.uid);
+            return (
+              <button key={u.uid} type="button" className={`chip ${on ? 'chip-on' : ''}`} disabled={isMe}
+                title={isMe ? 'You are submitting this report, so you are included' : undefined}
+                onClick={() => setAttendeeUids((prev) => on ? prev.filter((x) => x !== u.uid) : [...prev, u.uid])}>
+                {on ? <Check size={14} /> : <Plus size={13} />} {isMe ? `Myself — ${u.displayName}` : u.displayName}
+              </button>
+            );
+          })}
+        </div>
+        <div className="cell-sub" style={{ marginBottom: '0.3rem' }}>PCOs who went along (no login):</div>
+        {(() => {
+          const allPcos = store.getActivePcos();
+          const teamPcos = store.getTeamPcos(lead.inspection?.assignedTeamLeaderId || myUid);
+          return (
+            <PcoTicks
+              pcos={teamPcos.length ? teamPcos : allPcos}
+              selected={attendeePcoIds}
+              onChange={setAttendeePcoIds}
+              otherPcos={teamPcos.length ? allPcos : undefined}
+            />
+          );
+        })()}
+      </div>
+
       {/* ---- Negotiation / Renewal short form ---- */}
       {isNegoRenewal && (
         <div className="form-group" style={{ background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
@@ -736,8 +878,8 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
             </label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
               {([
-                { value: 'done_inline', label: 'Done during this meeting', hint: 'Inspection was completed on site — fill in pest findings below' },
-                { value: 'tl_schedule', label: 'Schedule later — CRO will assign to operations', hint: 'Add notes below so the CRO knows what to arrange' },
+                { value: 'done_inline', label: 'Done during this meeting', hint: 'Inspection was completed on site — choose who did it and fill in pest findings below' },
+                { value: 'tl_schedule', label: 'Separate inspection visit', hint: 'Assign yourself or any operations staff now, or leave it for the Operations Manager' },
               ] as const).map((opt) => {
                 const isActive = inspectionHandling === opt.value
                   || (opt.value === 'tl_schedule' && inspectionHandling === 'separate_visit');
@@ -760,6 +902,16 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
               return (
                 <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid #BFDBFE' }}>
                   <div className="form-label" style={{ color: '#1E40AF', fontWeight: 700, marginBottom: '0.75rem' }}>Inspection findings</div>
+
+                  <div className="form-group">
+                    <label className="form-label">Inspection done by</label>
+                    <select className="form-select" style={{ maxWidth: 360 }} value={inspectorChoices.includes(inspectedById) ? inspectedById : ''} onChange={(e) => setInspectedById(e.target.value)}>
+                      <option value="">— Select from the attendees —</option>
+                      {attendeeStaff.map((u) => <option key={u.uid} value={`u:${u.uid}`}>{staffLabel(u)}</option>)}
+                      {attendeePcos.map((e) => <option key={e.id} value={`p:${e.id}`}>{e.name} (PCO)</option>)}
+                    </select>
+                    <div className="form-hint">Add anyone missing under "Who attended this meeting?" above.</div>
+                  </div>
 
                   <div className="form-group">
                     <label className="form-label">Pests found <span className="required">*</span></label>
@@ -868,21 +1020,26 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
               <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid #BFDBFE', display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
                 <div className="form-grid-2">
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>Preferred date <span style={{ fontWeight: 400 }}>(optional)</span></label>
+                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>
+                      Inspection date {scheduleAssigneeId ? <span className="required">*</span> : <span style={{ fontWeight: 400 }}>(optional)</span>}
+                    </label>
                     <input type="date" className="form-input" value={preferredInspectionDate} min={today()} onChange={(e) => setPreferredInspectionDate(e.target.value)} />
                   </div>
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>Assign to <span style={{ fontWeight: 400 }}>Operations / Team Leader</span></label>
+                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>Who will do the inspection?</label>
                     <select className="form-select" value={scheduleAssigneeId} onChange={(e) => setScheduleAssigneeId(e.target.value)}>
-                      <option value="">Unassigned — TL will pick up</option>
-                      {store.getStaff().filter((u) => ['team_leader', 'operations'].includes(u.role)).map((u) => (
-                        <option key={u.uid} value={u.uid}>{u.displayName} ({roleLabel(u.role)})</option>
-                      ))}
+                      <option value="">— Leave for Operations Manager —</option>
+                      {opsStaff.map((u) => <option key={u.uid} value={u.uid}>{staffLabel(u)}</option>)}
                     </select>
                   </div>
                 </div>
+                <div className="cell-sub">
+                  {scheduleAssigneeId
+                    ? 'The site inspection is booked as soon as you save, and the person gets a notification.'
+                    : 'The Operations Manager will see this inspection request and assign someone.'}
+                </div>
                 <div>
-                  <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600, marginBottom: '0.2rem', display: 'block' }}>CRO notes for the inspection team</label>
+                  <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600, marginBottom: '0.2rem', display: 'block' }}>Notes for the inspection team</label>
                   <textarea className="form-textarea" rows={3} value={schedulingNote} onChange={(e) => setSchedulingNote(e.target.value)} placeholder="What did the client say? Special requirements, restricted areas, preferred timing, who to contact on site, areas to focus on…" />
                 </div>
               </div>
@@ -892,7 +1049,7 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
           {/* Meeting outcome checklist */}
           <div className="form-group" style={{ background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
             <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.5rem', display: 'block' }}>
-              What did the client ask for? <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--ikpm-emerald-700)' }}>tick all that apply · mark done when delivered</span>
+              What did the client ask for? <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--ikpm-emerald-700)' }}>tick all that apply{canSetTlDecision ? ' · mark done when delivered' : ''}</span>
             </label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.75rem' }}>
               {([
@@ -915,10 +1072,14 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
                       {opt.type === 'other_documents' && checked && (
                         <input type="text" className="form-input" style={{ flex: 2, minWidth: 0, padding: '0.2rem 0.5rem', fontSize: '0.8rem' }} value={fu?.note || ''} onChange={(e) => updateFollowUp('other_documents', { note: e.target.value })} placeholder="What documents?" />
                       )}
-                      {checked && !isNegative && (
+                      {/* Only the CRO / admin delivers these, so only they can mark them done */}
+                      {checked && !isNegative && canSetTlDecision && (
                         <button type="button" className={`btn btn-xs ${fu?.doneAt ? 'btn-primary' : 'btn-ghost'}`} style={{ flexShrink: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }} onClick={() => toggleDone(opt.type)} title={fu?.doneAt ? `Done on ${new Date(fu.doneAt).toLocaleDateString('en-GB')}` : 'Mark as done when delivered'}>
                           {fu?.doneAt ? '✓ Done' : 'Mark done'}
                         </button>
+                      )}
+                      {checked && !isNegative && !canSetTlDecision && fu?.doneAt && (
+                        <span className="badge-status badge-emerald" style={{ flexShrink: 0, fontSize: '0.72rem' }}>✓ Done</span>
                       )}
                     </div>
                   </div>
@@ -1032,8 +1193,8 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
     if (!date) return warning('Date required', 'Select a date for the inspection.');
     const b = resolvedBranch();
     if (!b.name) return warning('Location required', 'Enter a branch name or select an existing site.');
-    const chosenTechs = isCRO ? [] : staff.filter((u) => techIds.includes(u.uid));
-    const tl = isCRO ? undefined : staff.find((u) => u.uid === teamLeaderId);
+    const chosenTechs = staff.filter((u) => techIds.includes(u.uid));
+    const tl = staff.find((u) => u.uid === teamLeaderId);
     let updated: Lead | undefined;
     try {
       updated = dataService.scheduleSiteInspection(
@@ -1055,9 +1216,7 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
       return error('Could not schedule inspection', err instanceof Error ? err.message : String(err));
     }
     if (updated) {
-      if (isCRO) {
-        success('Site inspection scheduled', `${new Date(date).toLocaleDateString('en-GB')} at ${b.name}. Operations Manager will assign the team.`);
-      } else if (tl) {
+      if (tl) {
         success('Site inspection scheduled & assigned', `${new Date(date).toLocaleDateString('en-GB')} at ${b.name} · ${tl.displayName}`);
       } else {
         success('Site inspection scheduled', `${new Date(date).toLocaleDateString('en-GB')} at ${b.name}. Pending team assignment.`);
@@ -1072,13 +1231,13 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
       isOpen
       onClose={onClose}
       title={`${lead.siteInspection?.status === 'scheduled' ? 'Reschedule' : 'Schedule'} site inspection: ${lead.title}`}
-      subtitle={isCRO ? 'Book the visit — Operations Manager will assign the team' : 'Schedule and assign the team for this inspection'}
+      subtitle={isCRO ? 'Assign yourself or operations staff — or leave it for the Operations Manager' : 'Schedule and assign the team for this inspection'}
       maxWidth="680px"
       footer={
         <>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={save}>
-            {isCRO ? 'Schedule inspection' : teamLeaderId ? 'Schedule & assign' : 'Schedule (unassigned)'}
+            {teamLeaderId ? 'Schedule & assign' : 'Schedule (unassigned)'}
           </button>
         </>
       }
@@ -1090,12 +1249,12 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
           <>
             {schedNote && (
               <div className="info-hint" style={{ marginBottom: '1rem', background: '#EFF6FF', borderColor: '#BFDBFE', color: '#1E40AF' }}>
-                <strong>Team Leader's notes for this inspection:</strong> {schedNote}
+                <strong>Supervisor's notes for this inspection:</strong> {schedNote}
               </div>
             )}
             {fu?.addressTbd && (
               <div className="info-hint" style={{ marginBottom: '1rem', background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E' }}>
-                ⚠ Team Leader indicated the address hasn't been confirmed with the client yet. Please verify before scheduling.
+                ⚠ Supervisor indicated the address hasn't been confirmed with the client yet. Please verify before scheduling.
               </div>
             )}
           </>
@@ -1135,10 +1294,9 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
         )}
       </div>
 
-      {!isCRO && (
-        <>
+      <>
           <div className="form-group">
-            <label className="form-label">Supervisor / Team Leader</label>
+            <label className="form-label">Who will do the inspection?</label>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
               <select
                 className="form-input"
@@ -1176,14 +1334,7 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
             </div>
             {staff.length === 0 && <div className="cell-sub">No staff found. Add staff users to assign technicians.</div>}
           </div>
-        </>
-      )}
-
-      {isCRO && (
-        <div className="form-hint" style={{ padding: '0.5rem 0.75rem', background: 'var(--ikpm-amber-50, #fffbeb)', border: '1px solid var(--ikpm-amber-200, #fde68a)', borderRadius: 6, marginBottom: '0.5rem' }}>
-          Operations Manager will assign a team leader after you schedule this inspection.
-        </div>
-      )}
+      </>
 
       <div className="form-group" style={{ marginBottom: 0 }}>
         <label className="form-label">Instructions / notes</label>
@@ -1414,7 +1565,7 @@ export const SiteInspectionFindingsModal: React.FC<{ lead: Lead | null; onClose:
 };
 
 // ---------------------------------------------------------------------------
-// Record inspection findings (team leader or office)
+// Record inspection findings (supervisor or office)
 // ---------------------------------------------------------------------------
 export const PEST_OPTIONS: { value: PestType; label: string }[] = [
   { value: 'cockroaches', label: 'Cockroaches' },
@@ -1631,7 +1782,7 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
       </div>
 
       <div className="form-group">
-        <label className="form-label">Team leader notes / technician follow-up</label>
+        <label className="form-label">Supervisor notes / technician follow-up</label>
         <textarea
           className="form-textarea"
           rows={2}
@@ -1644,7 +1795,7 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
       {/* Meeting outcome checklist — tick everything the client asked for, mark done when delivered */}
       <div className="form-group" style={{ background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
         <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.5rem', display: 'block' }}>
-          What did the client ask for? <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--ikpm-emerald-700)' }}>tick all that apply · mark done when delivered</span>
+          What did the client ask for? <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--ikpm-emerald-700)' }}>tick all that apply{canSetTlDecision ? ' · mark done when delivered' : ''}</span>
         </label>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.75rem' }}>
           {([
@@ -1690,7 +1841,7 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
                     placeholder="What documents?"
                   />
                 )}
-                {checked && !isNegative && (
+                {checked && !isNegative && canSetTlDecision && (
                   <button
                     type="button"
                     className={`btn btn-xs ${fu?.doneAt ? 'btn-primary' : 'btn-ghost'}`}
@@ -1700,6 +1851,9 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
                   >
                     {fu?.doneAt ? '✓ Done' : 'Mark done'}
                   </button>
+                )}
+                {checked && !isNegative && !canSetTlDecision && fu?.doneAt && (
+                  <span className="badge-status badge-emerald" style={{ flexShrink: 0, fontSize: '0.72rem' }}>✓ Done</span>
                 )}
               </div>
             );

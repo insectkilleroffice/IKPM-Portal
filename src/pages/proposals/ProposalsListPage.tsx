@@ -152,7 +152,7 @@ export const ProposalsListPage: React.FC = () => {
 
   const decide = (status: 'approved' | 'rejected', reason?: string) => {
     if (!selected) return;
-    if (!canApproveProposals()) return error('Access denied', 'Only Management or Sales Managers can approve escalated proposals.');
+    if (!canApproveProposals()) return error('Access denied', 'Only Management or CRO Managers can approve escalated proposals.');
     save(
       {
         ...selected,

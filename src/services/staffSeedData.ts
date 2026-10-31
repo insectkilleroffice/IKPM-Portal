@@ -1,5 +1,5 @@
 // Karachi Operations Teams — reference data for IKPM Portal
-// 3 Operation Persons, each leading a team of 5 Technicians (PCOs).
+// 3 Supervisors, each leading a team of 5 Technicians (PCOs).
 // This data is used to pre-populate the Team & Access page and to
 // reference technician names and IDs throughout the portal.
 
@@ -8,7 +8,8 @@ export interface OperationPerson {
   displayName: string;
   email: string;
   phone: string;
-  role: 'operations';
+  /** Field Supervisor (portal login). PCOs below are HR employees with no login. */
+  role: 'team_leader';
   city: string;
   area: string;
   teamId: string;
@@ -51,12 +52,12 @@ const TEAM_A: KarachiTeam = {
     displayName: 'Imran Hussain',
     email: 'imran.hussain@ikpm.com.pk',
     phone: '+92 300 1230001',
-    role: 'operations',
+    role: 'team_leader',
     city: 'Karachi',
     area: 'North Karachi',
     teamId: 'KHI-TEAM-A',
     teamName: 'Karachi North Team',
-    designationTitle: 'Operation Person — Karachi North',
+    designationTitle: 'Supervisor —Karachi North',
     isActive: true,
   },
   technicians: [
@@ -139,12 +140,12 @@ const TEAM_B: KarachiTeam = {
     displayName: 'Arif Nawaz',
     email: 'arif.nawaz@ikpm.com.pk',
     phone: '+92 300 1230002',
-    role: 'operations',
+    role: 'team_leader',
     city: 'Karachi',
     area: 'Clifton / DHA',
     teamId: 'KHI-TEAM-B',
     teamName: 'Karachi South Team',
-    designationTitle: 'Operation Person — Karachi South',
+    designationTitle: 'Supervisor —Karachi South',
     isActive: true,
   },
   technicians: [
@@ -227,12 +228,12 @@ const TEAM_C: KarachiTeam = {
     displayName: 'Kamran Abbasi',
     email: 'kamran.abbasi@ikpm.com.pk',
     phone: '+92 300 1230003',
-    role: 'operations',
+    role: 'team_leader',
     city: 'Karachi',
     area: 'Korangi / Landhi',
     teamId: 'KHI-TEAM-C',
     teamName: 'Karachi East Team',
-    designationTitle: 'Operation Person — Karachi East',
+    designationTitle: 'Supervisor —Karachi East',
     isActive: true,
   },
   technicians: [

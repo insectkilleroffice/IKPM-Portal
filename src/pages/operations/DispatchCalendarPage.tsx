@@ -257,7 +257,7 @@ export const DispatchCalendarPage: React.FC = () => {
                   value={selectedTechnician}
                   onChange={(e) => setSelectedTechnician(e.target.value)}
                 >
-                  <option value="all">All Team Leaders</option>
+                  <option value="all">All Supervisors</option>
                   {dataService.getStaff(['team_leader', 'technician']).map((t) => (
                     <option key={t.uid} value={t.displayName}>
                       {t.displayName}

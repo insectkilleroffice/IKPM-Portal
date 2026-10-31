@@ -44,18 +44,18 @@
         return r == 'admin'
           ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
             'contracts':'edit','files':'edit','documents':'edit','company_files':'edit','calendar':'edit',
-            'jobs':'edit','pco':'edit','complaints':'edit','challans':'edit','attendance':'view',
-            'hr':'view','payroll':'view','search':'edit','invoices':'view','settings':'view','approvals':'view'}
+            'jobs':'edit','pco':'edit','complaints':'edit','challans':'edit','attendance':'edit',
+            'hr':'edit','team':'edit','payroll':'view','search':'edit','invoices':'view','settings':'view','approvals':'view','roles':'view'}
           : r == 'sales'
           ? {'dashboard':'edit','customers':'edit','crm':'edit','proposals':'edit','contracts':'edit',
             'pco':'edit','files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
           : (r == 'operations' || r == 'operations_manager')
           ? {'dashboard':'edit','customers':'edit','inspections':'edit','contracts':'edit','calendar':'edit',
-            'jobs':'edit','pco':'view','files':'edit','complaints':'edit','challans':'edit','attendance':'edit',
-            'search':'edit','proposals':'view','documents':'view','company_files':'view'}
+            'jobs':'edit','pco':'edit','files':'edit','complaints':'edit','challans':'edit','attendance':'edit',
+            'search':'edit','proposals':'view','documents':'view','company_files':'view','hr':'view'}
           : (r == 'team_leader' || r == 'operations_coordinator')
-          ? {'dashboard':'edit','inspections':'edit','jobs':'edit','pco':'view','files':'edit','complaints':'edit',
-            'challans':'edit','attendance':'edit','search':'edit','customers':'view','contracts':'view','calendar':'view','company_files':'view'}
+          ? {'dashboard':'edit','inspections':'edit','jobs':'edit','pco':'edit','files':'edit','complaints':'edit',
+            'challans':'edit','attendance':'edit','search':'edit','customers':'view','contracts':'edit','calendar':'edit','company_files':'view','hr':'view'}
           : r == 'technician'
           ? {'dashboard':'view','jobs':'view','pco':'edit','attendance':'view'}
           : r == 'finance'
@@ -327,9 +327,9 @@
         allow create: if createMod('contracts');
         allow update: if updateMod('contracts')
           || (canEdit('contracts') && filingOnly())
-          // Schedule generator: operations / anyone with contracts+jobs edit may update job counters
-          // and TL/ops-manager assignment fields without needing company-wide data scope.
-          || (canEdit('contracts') && canEdit('jobs') && keepsOwner() && folderOwnerKept()
+          // Schedule generator / dispatch: job counters and TL / ops-manager assignment only,
+          // without needing company-wide data scope.
+          || ((canEdit('contracts') || canEdit('jobs')) && keepsOwner() && folderOwnerKept()
               && request.resource.data.diff(resource.data).affectedKeys()
                  .hasOnly(['totalJobsScheduled', 'totalJobsCompleted',
                            'assignedTeamLeaderId', 'assignedTeamLeaderName',
@@ -339,20 +339,22 @@
       }
 
       // ---------- Field operations ----------
+      // The Team Leader on a job (assignedTeamLeaderId, also listed in assignedTechnicianIds) runs it
+      // in the field and submits the report. PCOs have no login; they are HR employee ids on the job.
+      function onMyJob() {
+        return request.auth.uid in resource.data.get('assignedTechnicianIds', [])
+          || resource.data.get('assignedTeamLeaderId', '') == request.auth.uid;
+      }
+
       match /service_jobs/{id} {
-        allow read: if readMod('jobs')
-          || (canView('pco') && (
-               request.auth.uid in resource.data.assignedTechnicianIds
-               || resource.data.get('assignedTeamLeaderId', '') == request.auth.uid
-             ));
+        allow read: if readMod('jobs') || (canView('pco') && onMyJob());
         // Contracts generate their visit schedule, so contract editors may create jobs too
         allow create: if (canEdit('jobs') || canEdit('contracts')) && ownsNew();
         allow update: if updateMod('jobs')
           || ((canEdit('jobs') || canEdit('contracts')) && filingOnly())
-          || (canEdit('pco')
-              && request.auth.uid in resource.data.assignedTechnicianIds
+          || ((canEdit('pco') || canEdit('jobs')) && onMyJob()
               && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-                ['ownerUid', 'teamId', 'assignedTechnicianIds', 'customerId', 'contractId',
+                ['ownerUid', 'teamId', 'assignedTechnicianIds', 'assignedTeamLeaderId', 'customerId', 'contractId',
                 'ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory']));
         allow delete: if isSuperAdmin();
       }
@@ -520,10 +522,15 @@
         allow delete: if false; // Status is set to inactive, never hard deleted
       }
 
-      // Sensitive HR data (CNIC, bank account, address, witnesses): HR and Super Admin ONLY
+      // Sensitive HR data (CNIC, bank account, address, witnesses): HR and Super Admin (CEO) ONLY.
+      // Checked by role, not module level, so giving another role 'hr' edit never exposes it.
+      function isHrOrCeo() {
+        return isSuperAdmin() || (active() && role() == 'hr');
+      }
+
       match /employee_private/{id} {
-        allow read: if canEdit('hr') || isSuperAdmin();
-        allow create, update: if canEdit('hr') || isSuperAdmin();
+        allow read: if isHrOrCeo();
+        allow create, update: if isHrOrCeo();
         allow delete: if false;
       }
 
@@ -543,7 +550,7 @@
 
       // Payroll collection alias
       match /payroll/{id} {
-        allow read: if canView('payroll') || canEdit('payroll') || canEdit('hr') || isSuperAdmin() || active();
+        allow read: if canView('payroll') || canEdit('payroll') || canEdit('hr') || isSuperAdmin();
         allow create, update: if canEdit('payroll') || canEdit('hr') || isSuperAdmin();
         allow delete: if isSuperAdmin();
       }

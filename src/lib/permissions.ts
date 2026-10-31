@@ -56,14 +56,14 @@ export interface RoleDefinition {
 
 export const MODULES: { key: ModuleKey; label: string; group: string; hint?: string }[] = [
   { key: 'dashboard', label: 'Dashboard', group: 'General' },
-  { key: 'customers', label: 'Customer accounts', group: 'Sales & customers' },
-  { key: 'crm', label: 'Leads pipeline', group: 'Sales & customers' },
-  { key: 'inspections', label: 'Site inspections', group: 'Sales & customers', hint: 'Without Leads access: only inspections assigned to the person' },
-  { key: 'proposals', label: 'Proposals', group: 'Sales & customers' },
-  { key: 'contracts', label: 'Contracts & AMCs', group: 'Sales & customers' },
+  { key: 'customers', label: 'Customer accounts', group: 'CRO Sales & customers customers' },
+  { key: 'crm', label: 'Leads pipeline', group: 'CRO Sales & customers customers' },
+  { key: 'inspections', label: 'Site inspections', group: 'CRO Sales & customers customers', hint: 'Without Leads access: only inspections assigned to the person' },
+  { key: 'proposals', label: 'Proposals', group: 'CRO Sales & customers customers' },
+  { key: 'contracts', label: 'Contracts & AMCs', group: 'CRO Sales & customers customers' },
   { key: 'calendar', label: 'Dispatch calendar', group: 'Field operations' },
   { key: 'jobs', label: 'Service jobs', group: 'Field operations' },
-  { key: 'pco', label: 'Meeting & Field Reports', group: 'Field operations', hint: 'Assigned meetings, field reports and follow-ups (Team Leaders and above)' },
+  { key: 'pco', label: 'Meeting & Field Reports', group: 'Field operations', hint: 'Assigned meetings, field reports and follow-ups (Supervisors and above)' },
   { key: 'invoices', label: 'Invoices & receipts', group: 'Accounts' },
   { key: 'settings', label: 'Settings & audit trail', group: 'Administration' },
   { key: 'templates', label: 'Document templates', group: 'Administration', hint: 'Edit = proposal, scope and SOP wording. Commercial / legal wording stays super admin only' },
@@ -72,7 +72,7 @@ export const MODULES: { key: ModuleKey; label: string; group: string; hint?: str
   { key: 'complaints', label: 'Complaints', group: 'Field operations', hint: 'CRO logs, Ops Manager resolves, re-service visits' },
   { key: 'approvals', label: 'Approvals queue', group: 'Administration', hint: 'Manager approves discounts, voids, cancellations and refunds. Others can view their own requests.' },
   { key: 'hr', label: 'Employee management', group: 'Human resources', hint: 'Staff profiles, sensitive HR data, onboarding and probation' },
-  { key: 'attendance', label: 'Daily attendance', group: 'Field operations', hint: 'Coordinator marks daily PCO attendance' },
+  { key: 'attendance', label: 'Daily attendance', group: 'Field operations', hint: 'Supervisor marks daily PCO attendance' },
   { key: 'payroll', label: '30-day payroll', group: 'Accounts', hint: 'Calculate salary, approve cycles, record payment and salary slips' },
   { key: 'challans', label: 'Delivery & service challans', group: 'Field operations', hint: 'Signed challan records and register' },
   { key: 'search', label: 'Global search', group: 'General', hint: 'Search across all records, documents and folders' },
@@ -84,9 +84,9 @@ const all = (level: AccessLevel, keys: ModuleKey[]) => Object.fromEntries(keys.m
 // Super Admin            : Full portal access — users, roles, settings, all data.
 // Admin                  : Daily back-office — all operational records and docs.
 // CRO (sales)            : Leads, meetings, proposals. Hands off when proposal accepted.
-// Operation Coordinator  : Sees CRO meetings → assigns team leader → creates
+// Operation Coordinator  : Sees CRO meetings → assigns supervisor → creates
 //   (operations)           contract → schedules and dispatches jobs.
-// Team Leader            : Field team. Submits meeting reports and job reports.
+// Supervisor            : Field team. Submits meeting reports and job reports.
 //   (team_leader)          Leads PCO technicians on site.
 // Technician (PCO)       : Sees and completes only their own assigned jobs.
 // ────────────────────────────────────────────────────────────────────────────
@@ -111,14 +111,13 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     color: '#0F766E',
     description: 'Daily back-office operations — edits all records and sends documents. Cannot manage roles, staff or invoices.',
     modules: {
-      ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'pco', 'complaints', 'challans']),
+      ...all('edit', ['dashboard', 'customers', 'crm', 'inspections', 'proposals', 'contracts', 'files', 'documents', 'company_files', 'calendar', 'jobs', 'pco', 'complaints', 'challans', 'attendance', 'hr', 'team']),
       invoices: 'view',
       settings: 'view',
       approvals: 'view',
       search: 'edit',
-      attendance: 'view',
-      hr: 'view',
       payroll: 'view',
+      roles: 'view',
     },
   },
   {
@@ -143,31 +142,29 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     isSystem: true,
     defaultScope: 'company',
     color: '#D97706',
-    description: 'Sees all CRO meetings, assigns team leaders, creates contracts and dispatches service jobs.',
+    description: 'Sees all CRO meetings, assigns supervisors, creates contracts and dispatches service jobs.',
     modules: {
-      ...all('edit', ['dashboard', 'customers', 'inspections', 'contracts', 'calendar', 'jobs', 'files', 'complaints', 'challans', 'attendance', 'search']),
+      ...all('edit', ['dashboard', 'customers', 'inspections', 'contracts', 'calendar', 'jobs', 'files', 'complaints', 'challans', 'attendance', 'search', 'pco']),
       crm: 'view',
       proposals: 'view',
-      pco: 'view',
       documents: 'view',
       company_files: 'view',
+      hr: 'view',
     },
   },
   {
     id: 'team_leader',
-    name: 'Operations Coordinator',
+    name: 'Supervisor',
     basedOn: 'team_leader',
     isSystem: true,
     defaultScope: 'company',
     color: '#9A3412',
-    description: 'Field team leader. Submits meeting reports and job reports. Leads PCO technicians on site. Manages challans and daily attendance.',
+    description: 'Field supervisor. Submits meeting reports and job reports. Leads PCO technicians on site. Manages challans and daily attendance.',
     modules: {
-      ...all('edit', ['dashboard', 'inspections', 'jobs', 'files', 'complaints', 'challans', 'attendance', 'search']),
+      ...all('edit', ['dashboard', 'inspections', 'jobs', 'files', 'complaints', 'challans', 'attendance', 'search', 'calendar', 'contracts', 'pco']),
       customers: 'view',
-      contracts: 'view',
-      calendar: 'view',
-      pco: 'view',
       company_files: 'view',
+      hr: 'view',
     },
   },
   {
@@ -224,6 +221,9 @@ export const SYSTEM_ROLE_IDS = DEFAULT_ROLES.map((r) => r.id) as SystemRole[];
 // ---------- Live registry (defaults, overridden by the Firestore `roles` collection) ----------
 let registry = new Map<string, RoleDefinition>(DEFAULT_ROLES.map((r) => [r.id, r]));
 
+/** Earlier display names of built-in roles (Team Leader is now "Supervisor", Sales is "CRO"). */
+const OLD_ROLE_NAMES = ['Team Leader', 'Operations Coordinator', 'Operation Coordinator', 'Sales', 'Sales Executive', 'Sales / CRO'];
+
 export function setRoleDefinitions(fromCloud: RoleDefinition[]) {
   const next = new Map<string, RoleDefinition>(DEFAULT_ROLES.map((r) => [r.id, r]));
   fromCloud.forEach((r) => {
@@ -238,7 +238,9 @@ export function setRoleDefinitions(fromCloud: RoleDefinition[]) {
           Object.entries({ ...baseModules, ...r.modules }).filter(([k]) => k in baseModules)
         ) as Partial<Record<ModuleKey, AccessLevel>>
       : { ...baseModules, ...r.modules };
-    next.set(r.id, { ...base, ...r, modules: mergedModules });
+    // Built-in roles saved under their old names show the current name instead
+    const renamed = base?.isSystem && OLD_ROLE_NAMES.includes(r.name) ? base.name : r.name;
+    next.set(r.id, { ...base, ...r, name: renamed, modules: mergedModules });
   });
   registry = next;
 }

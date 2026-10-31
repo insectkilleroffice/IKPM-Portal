@@ -176,7 +176,7 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
     }
 
     if (revised.status === 'pending_approval') {
-      warning('Approval required (AP-01)', `Discount ${discountPercent}% is above 10%. Sent for Sales Manager / CEO approval.`);
+      warning('Approval required (AP-01)', `Discount ${discountPercent}% is above 10%. Sent for CRO Manager / CEO approval.`);
     } else {
       success('Revision created', `${id} (R${newRev}) is a draft.`);
     }

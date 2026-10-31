@@ -117,6 +117,15 @@ export function isComplaintOverdue(c: Complaint): boolean {
   return c.dueDate < new Date().toISOString().slice(0, 10);
 }
 
+export const DEFAULT_COMPLAINT_ESCALATION_HOURS = 48;
+
+/** SRS 5.6: complaint still open after the configured hours → alert the CEO. */
+export function needsCeoEscalation(c: Complaint, hours = DEFAULT_COMPLAINT_ESCALATION_HOURS, nowMs = Date.now()): boolean {
+  if (['closed', 'resolved'].includes(c.status)) return false;
+  const opened = Date.parse(c.createdAt);
+  return Number.isFinite(opened) && nowMs - opened > hours * 3600 * 1000;
+}
+
 /** Compute dueDate string for a new complaint based on priority. */
 export function computeDueDate(priority: ComplaintPriority): string {
   const d = new Date();

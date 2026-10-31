@@ -197,8 +197,11 @@ export interface InspectionAssessment {
   /** The staff member who leads the team on this visit. */
   assignedTeamLeaderId?: string;
   assignedTeamLeaderName?: string;
+  /** PCOs (HR employee ids — no login) going to the meeting with the team. */
+  pcoEmployeeIds?: string[];
+  pcoEmployeeNames?: string[];
   instructions?: string;
-  /** Notes added by the team leader / for technician follow-up. */
+  /** Notes added by the supervisor / for technician follow-up. */
   teamLeaderNotes?: string;
   branchId?: string;
   branchName?: string;
@@ -219,7 +222,7 @@ export interface InspectionAssessment {
   clientRequest?: 'company_profile' | 'proposal' | 'both' | 'more_info' | 'not_interested' | 'contract_ready';
   /** Checklist of what the client requested — replaces the single clientRequest for new reports. */
   meetingFollowUps?: MeetingFollowUp[];
-  /** Summary note from the Team Leader about what was discussed / what the client wants. */
+  /** Summary note from the Supervisor about what was discussed / what the client wants. */
   meetingReportNote?: string;
   /** TL's go/no-go decision: ready to create a proposal, or hold for more steps. */
   tlStatus?: 'send_proposal' | 'waiting';
@@ -290,7 +293,7 @@ export interface Lead {
   estimatedValue?: number; // PKR
   assignedToUserId?: string;
   assignedToName?: string;
-  /** Team leader (staff user) who owns the meeting / site visit. */
+  /** Supervisor (staff user) who owns the meeting / site visit. */
   assignedTeamLeaderId?: string;
   assignedTeamLeaderName?: string;
   inspection?: InspectionAssessment;

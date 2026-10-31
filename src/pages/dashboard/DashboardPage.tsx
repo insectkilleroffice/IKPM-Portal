@@ -222,7 +222,7 @@ function OpsManagerDashboard() {
   const jobsToday = jobs.filter((j) => j.scheduledDate === todayStr && ['scheduled', 'in_progress'].includes(j.status));
   const reportsAwaitingQC = jobs.filter((j) => j.status === 'completed' && !j.supervisorVerification?.isVerified);
 
-  // Meetings scheduled by CRO that have no team leader assigned yet
+  // Meetings scheduled by CRO that have no supervisor assigned yet
   const meetingsNeedingTL = leads.filter(
     (l) => l.stage === 'meeting_scheduled' && !l.assignedTeamLeaderId
   );
@@ -272,7 +272,7 @@ function OpsManagerDashboard() {
           <div>
             <div className="kpi-title">Meetings to Assign</div>
             <div className="kpi-value" style={{ color: meetingsNeedingTL.length > 0 ? '#D97706' : undefined }}>{meetingsNeedingTL.length}</div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>no team leader yet</div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>no supervisor yet</div>
           </div>
           <div className="kpi-icon" style={{ backgroundColor: '#FEF3C7', color: '#92400E' }}>
             <CalendarDays size={22} />
@@ -309,18 +309,18 @@ function OpsManagerDashboard() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem' }}>
 
-        {/* Meetings from CRO — need a team leader assigned */}
+        {/* Meetings from CRO — need a supervisor assigned */}
         <div className="card" style={{ padding: '1rem', borderLeft: `4px solid ${meetingsNeedingTL.length > 0 ? '#F59E0B' : 'var(--border-subtle)'}` }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <CalendarDays size={18} color={meetingsNeedingTL.length > 0 ? '#D97706' : 'var(--text-muted)'} />
               <strong style={{ fontSize: '0.9rem', color: 'var(--ikpm-navy-900)' }}>
-                Meetings — Assign Team Leader ({meetingsNeedingTL.length})
+                Meetings — Assign Supervisor ({meetingsNeedingTL.length})
               </strong>
             </div>
           </div>
           {meetingsNeedingTL.length === 0 ? (
-            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>All scheduled meetings have a team leader assigned.</p>
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>All scheduled meetings have a supervisor assigned.</p>
           ) : (
             meetingsNeedingTL.slice(0, 5).map((lead) => (
               <div key={lead.id} style={{ padding: '0.6rem 0.75rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-sm)', border: '1px solid #FCD34D', marginBottom: '0.5rem' }}>
@@ -342,7 +342,7 @@ function OpsManagerDashboard() {
                       value={assignTlId}
                       onChange={(e) => setAssignTlId(e.target.value)}
                     >
-                      <option value="">Select team leader…</option>
+                      <option value="">Select supervisor…</option>
                       {teamLeaders.map((tl) => (
                         <option key={tl.uid} value={tl.uid}>{tl.displayName}</option>
                       ))}
@@ -369,7 +369,7 @@ function OpsManagerDashboard() {
                     style={{ padding: '0.2rem 0.6rem', fontSize: '0.7rem', marginTop: '6px' }}
                     onClick={() => { setAssigningLeadId(lead.id); setAssignTlId(''); }}
                   >
-                    Assign Team Leader
+                    Assign Supervisor
                   </button>
                 )}
               </div>
@@ -568,15 +568,80 @@ function OperationPersonDashboard() {
       (l.assignedTeamLeaderId === uid || l.inspection?.assignedTeamLeaderId === uid)
   );
 
+  // My Team Today: my PCOs (HR employees, no login), today's attendance, and their visit today
+  const myTeam = dataService.getTeamPcos(uid);
+  const todayAttendance = dataService.getAttendance(undefined, todayStr, todayStr);
+  const pcoJobToday = (empId: string) =>
+    myJobsToday.find((j) => (j.performedByPcoIds?.length ? j.performedByPcoIds : j.assignedPcoEmployeeIds ?? []).includes(empId));
+  const unmarkedCount = myTeam.filter((p) => !todayAttendance.some((a) => a.employeeId === p.id)).length;
+
+  // Needs action: QC sent back, or the visit date has passed without a report
+  const isMine = (j: (typeof jobs)[number]) => j.assignedTeamLeaderId === uid || j.leadPcoId === uid;
+  const sentBack = jobs.filter((j) => isMine(j) && j.status === 'in_progress' && j.qcReturn);
+  const overdueReports = jobs.filter(
+    (j) => isMine(j) && ['scheduled', 'in_progress'].includes(j.status) && !j.qcReturn && j.scheduledDate.slice(0, 10) < todayStr
+  );
+
   return (
     <div className="animate-fade-in">
       <div style={{ marginBottom: '1.5rem' }}>
         <h1 style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', letterSpacing: '-0.02em' }}>
-          Welcome, {userProfile?.displayName || 'Operations'}
+          Welcome, {userProfile?.displayName || 'Supervisor'}
         </h1>
         <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-          Your assigned visits and meetings for today
+          Your team, visits and meetings for today
         </p>
+      </div>
+
+      {(sentBack.length > 0 || overdueReports.length > 0) && (
+        <div className="card" style={{ padding: '1rem', marginBottom: '1rem', borderLeft: '4px solid #DC2626' }}>
+          <strong style={{ fontSize: '0.9rem', color: '#991B1B' }}>Needs your action ({sentBack.length + overdueReports.length})</strong>
+          <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+            {sentBack.map((j) => (
+              <div key={j.id} onClick={() => navigate(`/operations/jobs?job=${j.id}`)} style={{ cursor: 'pointer', fontSize: '0.8rem' }}>
+                <span className="badge-status badge-rose" style={{ fontSize: '0.62rem', marginRight: 6 }}>Sent back by QC</span>
+                <strong>{j.customerName}</strong> · {j.id} · {j.qcReturn!.reason}
+              </div>
+            ))}
+            {overdueReports.map((j) => (
+              <div key={j.id} onClick={() => navigate(`/operations/jobs?job=${j.id}`)} style={{ cursor: 'pointer', fontSize: '0.8rem' }}>
+                <span className="badge-status badge-amber" style={{ fontSize: '0.62rem', marginRight: 6 }}>Report overdue</span>
+                <strong>{j.customerName}</strong> · {j.id} · visit was {formatDate(j.scheduledDate)}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* My Team Today */}
+      <div className="card" style={{ padding: '1rem', marginBottom: '1.5rem', borderLeft: '4px solid var(--ikpm-navy-700)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
+          <strong style={{ fontSize: '0.9rem', color: 'var(--ikpm-navy-900)' }}>My Team Today ({myTeam.length} PCOs)</strong>
+          <Link to="/operations/attendance" style={{ fontSize: '0.72rem', color: unmarkedCount ? '#DC2626' : 'var(--ikpm-emerald-600)', fontWeight: unmarkedCount ? 700 : undefined }}>
+            {unmarkedCount ? `Mark attendance (${unmarkedCount} not marked)` : 'Attendance done ✓'}
+          </Link>
+        </div>
+        {myTeam.length === 0 ? (
+          <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>No PCOs in your team yet. HR sets each PCO&apos;s Supervisor on the Employees page.</p>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '0.4rem' }}>
+            {myTeam.map((p) => {
+              const att = todayAttendance.find((a) => a.employeeId === p.id);
+              const job = pcoJobToday(p.id);
+              return (
+                <div key={p.id} style={{ padding: '0.45rem 0.6rem', background: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', fontSize: '0.78rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                    <strong>{p.name}</strong>
+                    <span style={{ color: !att ? 'var(--text-muted)' : att.status === 'absent' ? '#DC2626' : att.status === 'late' ? '#D97706' : 'var(--ikpm-emerald-600)', textTransform: 'capitalize' }}>
+                      {att ? att.status.replace('_', ' ') : 'not marked'}
+                    </span>
+                  </div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>{job ? `${job.customerName} · ${job.timeSlot}` : 'No visit planned'}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* KPI Row */}
@@ -643,7 +708,7 @@ function OperationPersonDashboard() {
                   </span>
                 </div>
                 <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                  {j.siteName} · {j.timeSlot}
+                  {j.siteName} · {j.timeSlot} · {dataService.jobTeamText(j)}
                 </div>
               </div>
             ))
@@ -986,7 +1051,7 @@ export const DashboardPage: React.FC = () => {
   if (base === 'sales') return <CRODashboard />;
   // Operations Coordinator: schedules jobs, dispatches, assigns teams
   if (base === 'operations') return <OpsManagerDashboard />;
-  // Team Leader (PCO field lead): sees own assigned visits & meetings
+  // Supervisor (PCO field lead): sees own assigned visits & meetings
   if (base === 'team_leader') return <OperationPersonDashboard />;
   // Technician: sees only their own jobs
   if (base === 'technician') return <TechnicianDashboard />;

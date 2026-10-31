@@ -7,6 +7,7 @@ import type { Proposal } from '../types/proposal';
 import type { UserProfile } from '../types';
 import type { UserRole } from '../types';
 import { baseRoleOf } from './permissions';
+import { DEFAULT_COMPLAINT_ESCALATION_HOURS, needsCeoEscalation, type Complaint } from '../types/complaints';
 
 export type NotificationCategory = 'assigned' | 'completed' | 'action_needed';
 
@@ -34,7 +35,9 @@ export function computeNotifications(
   profile: UserProfile,
   effectiveRole: UserRole | null,
   proposals: Proposal[] = [],
-  contracts: Contract[] = []
+  contracts: Contract[] = [],
+  complaints: Complaint[] = [],
+  complaintEscalationHours = DEFAULT_COMPLAINT_ESCALATION_HOURS
 ): AppNotification[] {
   const role = baseRoleOf(effectiveRole);
   const uid = profile.uid;
@@ -49,7 +52,7 @@ export function computeNotifications(
       if (i && i.status === 'scheduled') {
         if (!i.assignedTeamLeaderId) {
           out.push({
-            id: `op_assign_${l.id}`,
+            id: `op_assign_${l.id}_${i.scheduledDate}`,
             category: 'action_needed',
             title: 'Meeting needs team assignment',
             body: `${l.title} · ${i.scheduledDate}`,
@@ -59,10 +62,10 @@ export function computeNotifications(
           });
         } else {
           out.push({
-            id: `op_meeting_${l.id}`,
+            id: `op_meeting_${l.id}_${i.assignedTeamLeaderId}_${i.scheduledDate}`,
             category: 'assigned',
             title: 'Meeting scheduled',
-            body: `${l.title} · ${i.scheduledDate}${i.assignedTeamLeaderName ? ` · TL: ${i.assignedTeamLeaderName}` : ''}`,
+            body: `${l.title} · ${i.scheduledDate}${i.assignedTeamLeaderName ? ` · Supervisor: ${i.assignedTeamLeaderName}` : ''}`,
             link: `/crm?lead=${l.id}`,
             entityId: l.id,
             createdAt: i.scheduledDate || l.updatedAt,
@@ -85,7 +88,7 @@ export function computeNotifications(
             id: `op_si_sched_${l.id}`,
             category: 'assigned',
             title: 'Site inspection scheduled',
-            body: `${l.title} · ${l.siteInspection.branchName || 'Main site'} · ${l.siteInspection.scheduledDate}${l.siteInspection.teamLeaderName ? ` · TL: ${l.siteInspection.teamLeaderName}` : ''}`,
+            body: `${l.title} · ${l.siteInspection.branchName || 'Main site'} · ${l.siteInspection.scheduledDate}${l.siteInspection.teamLeaderName ? ` · Supervisor: ${l.siteInspection.teamLeaderName}` : ''}`,
             link: `/inspections`,
             entityId: l.id,
             createdAt: l.siteInspection.scheduledDate || l.updatedAt,
@@ -102,7 +105,7 @@ export function computeNotifications(
       if (i && i.status === 'scheduled') {
         if (!i.assignedTeamLeaderId) {
           out.push({
-            id: `op_assign_${l.id}`,
+            id: `op_assign_${l.id}_${i.scheduledDate}`,
             category: 'action_needed',
             title: 'Meeting needs team assignment',
             body: `${l.title} · ${i.scheduledDate}`,
@@ -112,10 +115,10 @@ export function computeNotifications(
           });
         } else {
           out.push({
-            id: `op_meeting_${l.id}`,
+            id: `op_meeting_${l.id}_${i.assignedTeamLeaderId}_${i.scheduledDate}`,
             category: 'assigned',
             title: 'Meeting scheduled',
-            body: `${l.title} · ${i.scheduledDate}${i.assignedTeamLeaderName ? ` · TL: ${i.assignedTeamLeaderName}` : ''}`,
+            body: `${l.title} · ${i.scheduledDate}${i.assignedTeamLeaderName ? ` · Supervisor: ${i.assignedTeamLeaderName}` : ''}`,
             link: `/crm?lead=${l.id}`,
             entityId: l.id,
             createdAt: i.scheduledDate || l.updatedAt,
@@ -138,7 +141,7 @@ export function computeNotifications(
             id: `op_si_sched_${l.id}`,
             category: 'assigned',
             title: 'Site inspection scheduled',
-            body: `${l.title} · ${l.siteInspection.branchName || 'Main site'} · ${l.siteInspection.scheduledDate}${l.siteInspection.teamLeaderName ? ` · TL: ${l.siteInspection.teamLeaderName}` : ''}`,
+            body: `${l.title} · ${l.siteInspection.branchName || 'Main site'} · ${l.siteInspection.scheduledDate}${l.siteInspection.teamLeaderName ? ` · Supervisor: ${l.siteInspection.teamLeaderName}` : ''}`,
             link: `/inspections`,
             entityId: l.id,
             createdAt: l.siteInspection.scheduledDate || l.updatedAt,
@@ -151,7 +154,7 @@ export function computeNotifications(
           id: `admin_report_${l.id}`,
           category: 'completed',
           title: 'Meeting report submitted',
-          body: `${l.title}${i.tlStatus === 'send_proposal' ? ' · TL approved' : ''}`,
+          body: `${l.title}${i.tlStatus === 'send_proposal' ? ' · Supervisor approved' : ''}`,
           link: `/crm?lead=${l.id}`,
           entityId: l.id,
           createdAt: i.completedDate || l.updatedAt,
@@ -176,13 +179,26 @@ export function computeNotifications(
   if (role === 'sales') {
     leads.forEach((l) => {
       const i = l.inspection;
+      // Ops Manager (or someone else) assigned a person to a meeting this CRO booked
+      if (i?.status === 'scheduled' && i.assignedTeamLeaderId && i.assignedTeamLeaderId !== uid
+        && (l.assignedToUserId || (l as { ownerUid?: string }).ownerUid) === uid) {
+        out.push({
+          id: `cro_assigned_${l.id}_${i.assignedTeamLeaderId}_${i.scheduledDate}`,
+          category: 'assigned',
+          title: 'Team assigned to your meeting',
+          body: `${l.title} · ${i.scheduledDate} · ${i.assignedTeamLeaderName || 'Supervisor'}`,
+          link: `/meetings`,
+          entityId: l.id,
+          createdAt: i.scheduledDate || l.updatedAt,
+        });
+      }
       // Meeting report submitted (any completion, not just TL-approved)
       if (i?.status === 'completed' && !l.proposalId) {
         out.push({
           id: `cro_report_${l.id}`,
           category: 'completed',
           title: 'Meeting report submitted',
-          body: `${l.title}${i.tlStatus === 'send_proposal' ? ' · TL approved — send proposal' : ' · Review and send proposal'}`,
+          body: `${l.title}${i.tlStatus === 'send_proposal' ? ' · Supervisor approved — send proposal' : ' · Review and send proposal'}`,
           link: `/crm?lead=${l.id}`,
           entityId: l.id,
           createdAt: i.completedDate || l.updatedAt,
@@ -203,32 +219,31 @@ export function computeNotifications(
     });
   }
 
-  // ── Team Leader / any role directly assigned to a meeting or site inspection ─
-  if (isAdmin || role === 'team_leader') {
-    leads
-      .filter((l) => l.inspection?.assignedTeamLeaderId === uid)
-      .forEach((l) => {
-        const i = l.inspection;
-        if (i?.status === 'scheduled' && i.assignedTeamLeaderId === uid) {
-          out.push({
-            id: `tl_meeting_${l.id}`,
-            category: 'assigned',
-            title: 'Meeting assigned to you',
-            body: `${l.title} · ${i.scheduledDate}${i.meetingAddress ? ` · ${i.meetingAddress}` : ''}`,
-            link: `/operations/dispatch`,
-            entityId: l.id,
-            createdAt: i.scheduledDate || l.updatedAt,
-          });
-        }
-      });
-  }
-
-  // Site inspection "assigned to you" fires for any role whose uid matches the TL slot
+  // ── Anyone assigned to a meeting (Supervisor, Ops Manager, CRO who took it himself…) ─
+  // The id includes the date so a new assignment or a reschedule shows as unread again.
   leads
-    .filter((l) => l.siteInspection?.status === 'scheduled' && l.siteInspection.teamLeaderId === uid)
+    .filter((l) => l.inspection?.status === 'scheduled'
+      && (l.inspection.assignedTeamLeaderId === uid || (l.inspection.inspectorIds ?? []).includes(uid)))
+    .forEach((l) => {
+      const i = l.inspection!;
+      out.push({
+        id: `tl_meeting_${l.id}_${i.scheduledDate}_${i.scheduledTime || ''}`,
+        category: 'assigned',
+        title: 'Meeting assigned to you',
+        body: `${l.title} · ${i.scheduledDate}${i.scheduledTime ? ` ${i.scheduledTime}` : ''}${i.meetingAddress ? ` · ${i.meetingAddress}` : ''}`,
+        link: `/meetings`,
+        entityId: l.id,
+        createdAt: i.scheduledDate || l.updatedAt,
+      });
+    });
+
+  // Site inspection "assigned to you" fires for any role whose uid matches the TL slot or the visit team
+  leads
+    .filter((l) => l.siteInspection?.status === 'scheduled'
+      && (l.siteInspection.teamLeaderId === uid || (l.siteInspection.assignedTechIds ?? []).includes(uid)))
     .forEach((l) => {
       out.push({
-        id: `tl_si_${l.id}`,
+        id: `tl_si_${l.id}_${l.siteInspection!.scheduledDate}`,
         category: 'assigned',
         title: 'Site inspection assigned to you',
         body: `${l.title} · ${l.siteInspection!.branchName || 'Main site'} · ${l.siteInspection!.scheduledDate}`,
@@ -340,12 +355,12 @@ export function computeNotifications(
           createdAt: c.createdAt,
         });
       }
-      // Active contract with no team leader assigned
+      // Active contract with no supervisor assigned
       if (c.totalJobsScheduled > 0 && !c.assignedTeamLeaderId) {
         out.push({
           id: `op_contract_tl_${c.id}`,
           category: 'action_needed',
-          title: 'Contract needs team leader',
+          title: 'Contract needs supervisor',
           body: `${c.customerName}${c.branchName ? ` · ${c.branchName}` : ''} · ${c.id}`,
           link: `/contracts`,
           entityId: c.id,
@@ -355,11 +370,58 @@ export function computeNotifications(
     });
   }
 
-  // ── Operations Coordinator & Operations Manager — Job QC & Challan Review ──
+  // ── Supervisor — QC sent a report back / visit report overdue ───────────
+  if (role === 'team_leader') {
+    const today = new Date().toISOString().slice(0, 10);
+    jobs
+      .filter((j) => j.assignedTeamLeaderId === uid || j.leadPcoId === uid)
+      .forEach((j) => {
+        if (j.status === 'in_progress' && j.qcReturn) {
+          out.push({
+            id: `tl_qc_return_${j.id}_${j.qcReturn.at}`,
+            category: 'action_needed',
+            title: 'QC sent your report back',
+            body: `${j.customerName} · ${j.id} · ${j.qcReturn.reason}`,
+            link: `/operations/jobs?job=${j.id}`,
+            entityId: j.id,
+            createdAt: j.qcReturn.at,
+          });
+        } else if ((j.status === 'scheduled' || j.status === 'in_progress') && j.scheduledDate.slice(0, 10) < today) {
+          out.push({
+            id: `tl_report_due_${j.id}`,
+            category: 'action_needed',
+            title: 'Visit report overdue',
+            body: `${j.customerName} · ${j.id} · was due ${j.scheduledDate.slice(0, 10)}`,
+            link: `/operations/jobs?job=${j.id}`,
+            entityId: j.id,
+            createdAt: j.scheduledDate,
+          });
+        }
+      });
+  }
+
+  // ── CEO — complaints open too long (SRS 5.6 escalation) ───────────────────
+  if (role === 'super_admin') {
+    complaints
+      .filter((c) => needsCeoEscalation(c, complaintEscalationHours))
+      .forEach((c) => {
+        out.push({
+          id: `ceo_complaint_escalation_${c.id}`,
+          category: 'action_needed',
+          title: `Complaint open over ${complaintEscalationHours} hours`,
+          body: `${c.customerName} · ${c.subject}${c.assignedOperationsManagerName ? ` · with ${c.assignedOperationsManagerName}` : ' · not assigned'}`,
+          link: `/complaints?view=${c.id}`,
+          entityId: c.id,
+          createdAt: c.createdAt,
+        });
+      });
+  }
+
+  // ── Supervisor & Operations Manager — Job QC & Challan Review ────────────
   if (role === 'team_leader' || role === 'operations' || isAdmin) {
     jobs.forEach((j) => {
-      // Report submitted but QC not verified yet
-      if (j.submittedAt && !j.supervisorVerification?.isVerified) {
+      // Report submitted and waiting for QC (not ones already sent back to the TL)
+      if (j.status === 'completed' && j.submittedAt && !j.supervisorVerification?.isVerified) {
         const isSubmitter = j.submittedByUid === uid;
         if (!isSubmitter || isAdmin) {
           out.push({

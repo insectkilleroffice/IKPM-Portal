@@ -8,7 +8,7 @@ import { EmptyState } from '../../components/common/EmptyState';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
-import { canEditModule } from '../../lib/permissions';
+import { baseRoleOf, canEditModule } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
 import type { AttendanceRecord, AttendanceStatus, Employee } from '../../types/hr';
@@ -30,7 +30,8 @@ function getTodayStr() {
 interface RowState {
   employeeId: string;
   employeeName: string;
-  status: AttendanceStatus;
+  /** '' = not marked yet (never assume present) */
+  status: AttendanceStatus | '';
   arrivalTime: string;
   lateMinutes: number;
   remarks: string;
@@ -47,9 +48,12 @@ export const AttendancePage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState<string>(getTodayStr());
   const [rows, setRows] = useState<RowState[]>([]);
   const [saving, setSaving] = useState(false);
-  const [roleFilter, setRoleFilter] = useState<'pco' | 'all'>('pco');
+  // A Supervisor marks only their own team; managers / HR can see everyone
+  const isTeamLeader = baseRoleOf(effectiveRole) === 'team_leader';
+  const [roleFilter, setRoleFilter] = useState<'my_team' | 'pco' | 'all'>(isTeamLeader ? 'my_team' : 'pco');
 
   const employees: Employee[] = store.getEmployees ? store.getEmployees() : [];
+  const myTeamIds = new Set(store.getTeamPcos(currentUser?.uid).map((e) => e.id));
   const existingAttendance: AttendanceRecord[] = store.getAttendance ? store.getAttendance(undefined, selectedDate, selectedDate) : [];
 
   // Check 2-day editing barrier for coordinator (unless super_admin / admin)
@@ -62,6 +66,7 @@ export const AttendancePage: React.FC = () => {
   useEffect(() => {
     const activeStaff = employees.filter((e) => {
       if (e.status === 'inactive') return false;
+      if (roleFilter === 'my_team' || isTeamLeader) return myTeamIds.has(e.id);
       if (roleFilter === 'pco') return e.role === 'pco';
       return true;
     });
@@ -82,7 +87,7 @@ export const AttendancePage: React.FC = () => {
       return {
         employeeId: emp.id,
         employeeName: emp.name,
-        status: 'present',
+        status: '',
         arrivalTime: '08:30',
         lateMinutes: 0,
         remarks: '',
@@ -91,7 +96,7 @@ export const AttendancePage: React.FC = () => {
     });
 
     setRows(newRows);
-  }, [selectedDate, roleFilter, employees.length, existingAttendance.length]);
+  }, [selectedDate, roleFilter, employees.length, existingAttendance.length, myTeamIds.size]);
 
   const updateRow = (empId: string, updates: Partial<RowState>) => {
     setRows((prev) =>
@@ -117,16 +122,12 @@ export const AttendancePage: React.FC = () => {
     );
   };
 
+  // Only fills people not marked yet, so it never overwrites a Late / Absent already chosen
   const handleMarkAllPresent = () => {
     setRows((prev) =>
-      prev.map((r) => ({
-        ...r,
-        status: 'present',
-        arrivalTime: '08:30',
-        lateMinutes: 0,
-      }))
+      prev.map((r) => (r.status ? r : { ...r, status: 'present', arrivalTime: '08:30', lateMinutes: 0 }))
     );
-    info('Marked Present', 'All marked present. Adjust exceptions and click Save.');
+    info('Marked Present', 'Everyone not yet marked is now Present. Change the exceptions, then click Save.');
   };
 
   const handleSaveAll = async () => {
@@ -134,12 +135,17 @@ export const AttendancePage: React.FC = () => {
       error('Locked', 'Editing past records older than 2 days is restricted to Super Admin.');
       return;
     }
-    if (rows.length === 0) return;
+    const marked = rows.filter((r): r is RowState & { status: AttendanceStatus } => r.status !== '');
+    if (marked.length === 0) {
+      error('Nothing marked', 'Choose a status for each person (or use Mark All Present), then save.');
+      return;
+    }
+    const unmarked = rows.length - marked.length;
 
     setSaving(true);
     try {
       const now = new Date().toISOString();
-      for (const row of rows) {
+      for (const row of marked) {
         const record: AttendanceRecord = {
           id: row.employeeId + '_' + selectedDate,
           employeeId: row.employeeId,
@@ -150,12 +156,12 @@ export const AttendancePage: React.FC = () => {
           lateMinutes: row.lateMinutes,
           remarks: row.remarks ? row.remarks.trim() : undefined,
           markedBy: currentUser?.uid || 'coordinator',
-          markedByName: userProfile?.displayName || 'Operations Coordinator',
+          markedByName: userProfile?.displayName || 'Supervisor',
           markedAt: now,
         };
         await dataService.saveAttendance(record, userProfile?.email || 'coordinator');
       }
-      success('Attendance Saved', `Attendance for ${rows.length} staff members saved successfully.`);
+      success('Attendance Saved', `Saved ${marked.length} ${marked.length === 1 ? 'person' : 'people'}.${unmarked ? ` ${unmarked} still not marked.` : ''}`);
     } catch (err: unknown) {
       error('Save failed', (err instanceof Error ? err.message : String(err)));
     } finally {
@@ -183,7 +189,9 @@ export const AttendancePage: React.FC = () => {
         <div className="page-title-wrap">
           <h1>Daily Attendance</h1>
           <p className="page-subtitle">
-            Operations Coordinator daily muster roll for PCOs and field staff. Feeds the 30-day payroll cycle.
+            {isTeamLeader
+              ? 'Mark today’s attendance for your PCOs. Feeds the 30-day payroll cycle.'
+              : 'Daily attendance for PCOs and field staff, marked by each Supervisor. Feeds the 30-day payroll cycle.'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -226,22 +234,26 @@ export const AttendancePage: React.FC = () => {
             </button>
           </div>
 
-          <div style={{ display: 'flex', gap: '0.4rem' }}>
-            <button
-              type="button"
-              className={`chip ${roleFilter === 'pco' ? 'chip-active' : ''}`}
-              onClick={() => setRoleFilter('pco')}
-            >
-              PCOs Only
-            </button>
-            <button
-              type="button"
-              className={`chip ${roleFilter === 'all' ? 'chip-active' : ''}`}
-              onClick={() => setRoleFilter('all')}
-            >
-              All Staff
-            </button>
-          </div>
+          {isTeamLeader ? (
+            <span className="cell-sub">My team ({myTeamIds.size} PCOs)</span>
+          ) : (
+            <div style={{ display: 'flex', gap: '0.4rem' }}>
+              <button
+                type="button"
+                className={`chip ${roleFilter === 'pco' ? 'chip-active' : ''}`}
+                onClick={() => setRoleFilter('pco')}
+              >
+                PCOs Only
+              </button>
+              <button
+                type="button"
+                className={`chip ${roleFilter === 'all' ? 'chip-active' : ''}`}
+                onClick={() => setRoleFilter('all')}
+              >
+                All Staff
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Attendance Summary KPIs */}
@@ -250,6 +262,7 @@ export const AttendancePage: React.FC = () => {
           <span className="badge badge-amber">Late: {lateCount}</span>
           <span className="badge badge-rose">Absent: {absentCount}</span>
           <span className="badge badge-blue">Leave/Half: {leaveCount}</span>
+          {rows.some((r) => !r.status) && <span className="badge badge-slate">Not marked: {rows.filter((r) => !r.status).length}</span>}
           <span className="cell-sub">Total: {rows.length}</span>
         </div>
       </div>
@@ -257,8 +270,10 @@ export const AttendancePage: React.FC = () => {
       {rows.length === 0 ? (
         <EmptyState
           icon={CalendarRange}
-          title="No employees found"
-          description="Enroll PCOs or staff members in Employee Management to mark attendance."
+          title={isTeamLeader ? 'No PCOs in your team yet' : 'No employees found'}
+          description={isTeamLeader
+            ? 'HR sets each PCO’s Supervisor on the Employees page. Ask HR to add your PCOs to your team.'
+            : 'Enroll PCOs or staff members in Employee Management to mark attendance.'}
         />
       ) : (
         <div className="table-container">
@@ -291,6 +306,7 @@ export const AttendancePage: React.FC = () => {
                       disabled={isLocked || !canEdit}
                       onChange={(e) => updateRow(r.employeeId, { status: e.target.value as AttendanceStatus })}
                     >
+                      <option value="" disabled>— Mark —</option>
                       {STATUS_OPTIONS.map((opt) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}

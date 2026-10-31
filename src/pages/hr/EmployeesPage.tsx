@@ -9,7 +9,7 @@ import { EmptyState } from '../../components/common/EmptyState';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
-import { canEditModule } from '../../lib/permissions';
+import { baseRoleOf, canEditModule, roleLabel } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
 import type { Employee, EmployeeStatus, EmployeeRole, EmployeePay } from '../../types/hr';
@@ -33,8 +33,9 @@ const STATUS_LABELS: Record<EmployeeStatus, string> = {
 
 const ROLE_LABELS: Record<EmployeeRole, string> = {
   pco: 'PCO / Technician',
-  operations_coordinator: 'Operations Coordinator',
-  team_leader: 'Operations Coordinator',
+  // Same portal role (team_leader): one name everywhere
+  operations_coordinator: 'Supervisor',
+  team_leader: 'Supervisor',
   operations_manager: 'Operations Manager',
   operations: 'Operations Manager',
   cro: 'CRO',
@@ -46,7 +47,7 @@ const ROLE_LABELS: Record<EmployeeRole, string> = {
 
 const ASSIGNABLE_ROLES: { role: EmployeeRole; label: string }[] = [
   { role: 'pco', label: 'PCO / Technician' },
-  { role: 'operations_coordinator', label: 'Operations Coordinator' },
+  { role: 'team_leader', label: 'Supervisor' },
   { role: 'operations_manager', label: 'Operations Manager' },
   { role: 'cro', label: 'CRO' },
   { role: 'accounts', label: 'Accounts' },
@@ -108,6 +109,26 @@ export const EmployeesPage: React.FC = () => {
   const [savingSalary, setSavingSalary] = useState(false);
 
   const employees = store.getEmployees ? store.getEmployees() : [];
+  // Leaders are portal logins (Supervisors, and Operations Managers for staff above PCO level).
+  // A PCO's team = the Supervisor login stored here, which is what jobs, attendance and payroll use.
+  const portalStaff = store.getStaff ? store.getStaff() : [];
+  const availableTeamLeaders = portalStaff
+    .filter((s) => {
+      const base = baseRoleOf(s.role);
+      return base === 'team_leader' || base === 'operations';
+    })
+    .sort((a, b) => (baseRoleOf(a.role) === 'team_leader' ? 0 : 1) - (baseRoleOf(b.role) === 'team_leader' ? 0 : 1))
+    .map((s) => ({ id: s.uid, name: s.displayName, title: `${roleLabel(s.role)}${s.teamName ? ` · ${s.teamName}` : ''}` }));
+
+  // Resolve a leader name: a login uid, or an older record that stored an employee id
+  const getLeaderName = (id?: string) => {
+    if (!id) return null;
+    const s = portalStaff.find((st) => st.uid === id);
+    if (s) return s.displayName;
+    const emp = employees.find((e) => e.id === id);
+    if (emp) return emp.uid ? emp.name : `${emp.name} (no login — re-select)`;
+    return id;
+  };
 
   const filtered = employees.filter((e) => {
     const q = query.toLowerCase();
@@ -201,6 +222,10 @@ export const EmployeesPage: React.FC = () => {
     if (!form.name.trim()) { error('Validation error', 'Name is required.'); return; }
     if (!form.phone.trim()) { error('Validation error', 'Phone is required.'); return; }
     if (!form.joiningDate) { error('Validation error', 'Joining date is required.'); return; }
+    if (form.role === 'pco' && !form.reportingCoordinatorId) {
+      error('Supervisor required', 'Choose this PCO’s Supervisor. PCOs have no login, so their Supervisor assigns them to jobs and records their work.');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -250,7 +275,7 @@ export const EmployeesPage: React.FC = () => {
         <div className="page-title-wrap">
           <h1>Employee Management</h1>
           <p className="page-subtitle">
-            Enroll, manage, and configure salary structures for staff. Roles include Operations Manager, Operations Coordinator, PCO, CRO, and Accounts.
+            Enroll, manage, and configure salary structures for staff. Roles include Operations Manager, Supervisor, PCO, CRO, and Accounts. Each PCO belongs to a Supervisor.
           </p>
         </div>
         {canEdit && (
@@ -341,6 +366,11 @@ export const EmployeesPage: React.FC = () => {
                     <td>
                       <div>{ROLE_LABELS[emp.role] || emp.role}</div>
                       <div className="cell-sub">{emp.department}</div>
+                      {emp.reportingCoordinatorId && (
+                        <div className="cell-sub" style={{ color: 'var(--ikpm-navy-700, #0B1F3A)', fontWeight: 600, marginTop: '2px' }}>
+                          Supervisor: {getLeaderName(emp.reportingCoordinatorId)}
+                        </div>
+                      )}
                     </td>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
@@ -552,6 +582,37 @@ export const EmployeesPage: React.FC = () => {
               </select>
             </div>
             <div className="form-group">
+              <label className="form-label">{form.role === 'pco' ? 'Supervisor' : 'Reports to'}{form.role === 'pco' && <span style={{ color: '#B45309' }}> *</span>}</label>
+              <select
+                className="form-select"
+                value={form.reportingCoordinatorId || ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const leader = availableTeamLeaders.find((l) => l.id === val);
+                  setForm({
+                    ...form,
+                    reportingCoordinatorId: val,
+                    reportingToRole: leader ? leader.title : '',
+                  });
+                }}
+              >
+                <option value="">{form.role === 'pco' ? '-- Choose Supervisor --' : '-- Nobody --'}</option>
+                {form.reportingCoordinatorId && !availableTeamLeaders.some((l) => l.id === form.reportingCoordinatorId) && (
+                  <option value={form.reportingCoordinatorId}>{getLeaderName(form.reportingCoordinatorId)}</option>
+                )}
+                {availableTeamLeaders.map((tl) => (
+                  <option key={tl.id} value={tl.id}>
+                    {tl.name} — {tl.title}
+                  </option>
+                ))}
+              </select>
+              <span className="cell-sub">
+                {form.role === 'pco'
+                  ? 'This PCO appears in that Supervisor’s team for jobs, attendance and payroll credit.'
+                  : 'Reporting manager'}
+              </span>
+            </div>
+            <div className="form-group">
               <label className="form-label">Department *</label>
               <select className="form-select" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })}>
                 {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
@@ -618,6 +679,7 @@ export const EmployeesPage: React.FC = () => {
                     ['Employee ID', selected.id],
                     ['Status', STATUS_LABELS[selected.status]],
                     ['Role', ROLE_LABELS[selected.role] || selected.role],
+                    ['Supervisor', getLeaderName(selected.reportingCoordinatorId) || 'None assigned'],
                     ['Department', selected.department],
                     ['Phone', selected.phone],
                     ['Email', selected.email ?? '—'],

@@ -528,6 +528,36 @@ class DocBuilder {
     }
   }
 
+  /** "Our valued clients": logos in evenly spaced tiles, up to 6 per row, name under each. */
+  logoStrip(heading: string, items: { img: Img; name: string }[]) {
+    if (!items.length) return;
+    const perRow = Math.min(6, items.length);
+    const gap = 4;
+    const w = (CONTENT_W - gap * (perRow - 1)) / perRow;
+    const tileH = 16;
+    const rows = Math.ceil(items.length / perRow);
+    this.ensure(10 + rows * (tileH + 7));
+    this.font(7, 'bold', this.brand);
+    this.doc.text(heading.toUpperCase(), M, this.y, { charSpace: 0.3 });
+    this.y += 3;
+    for (let r = 0; r < rows; r++) {
+      items.slice(r * perRow, r * perRow + perRow).forEach((it, j) => {
+        const x = M + j * (w + gap);
+        this.color(RULE, 'draw');
+        this.color([255, 255, 255], 'fill');
+        this.doc.roundedRect(x, this.y, w, tileH, 1.2, 1.2, 'FD');
+        const scale = Math.min((w - 4) / it.img.w, (tileH - 4) / it.img.h);
+        const iw = it.img.w * scale;
+        const ih = it.img.h * scale;
+        this.doc.addImage(it.img.data, 'PNG', x + (w - iw) / 2, this.y + (tileH - ih) / 2, iw, ih, undefined, 'FAST');
+        this.font(6.4, 'normal', MUTED);
+        this.doc.text(it.name, x + w / 2, this.y + tileH + 3.2, { align: 'center', maxWidth: w });
+      });
+      this.y += tileH + 7;
+    }
+    this.y += 2;
+  }
+
   /** Floor plan image with numbered pins (x / y are 0–1 of the image). */
   floorPlan(img: Img, pins: { x: number; y: number; label: string }[]) {
     const maxH = PAGE_H - FOOTER_H - 30;
@@ -707,6 +737,49 @@ function clientParty(customerType: string, customerId: string, fallbackName: str
 const statusLabel = (s: string) => s.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
 
 // ---------------------------------------------------------------------------
+// Proposal presentation (shared by both proposal layouts)
+// ---------------------------------------------------------------------------
+const SVC_LABEL: Record<string, string> = {
+  general_fumigation: 'General fumigation', cockroach_gel: 'Cockroach gel', rodent_control: 'Rodent control',
+  termite_treatment: 'Termite treatment', bedbug_treatment: 'Bedbug treatment', mosquito_fogging: 'Mosquito / fly fogging',
+  ant_treatment: 'Ant treatment', stored_grain_pest: 'Stored grain pest control', snake_reptile: 'Snake / reptile control',
+  monitoring_visit: 'Monitoring visit',
+};
+const svcLabel = (s: string) => SVC_LABEL[s] || s.replace(/_/g, ' ');
+
+/** Every branch / site the proposal covers, with services, visits and monthly charges. */
+function branchSchedule(b: DocBuilder, proposal: Proposal) {
+  const rows = proposal.branchBreakdowns ?? [];
+  if (!rows.length) return;
+  b.section(`Branches covered (${rows.length})`, 40);
+  b.table(
+    ['#', 'Branch / site', 'Services / treatments', 'Visits\n/month', 'Monthly\ncharges (PKR)'],
+    rows.map((br, i) => [
+      i + 1,
+      br.branchName + (br.address ? `\n${br.address}` : ''),
+      (br.services || []).map((sv) => `${svcLabel(sv.service)}${sv.frequency ? ` (${sv.frequency})` : ''}`).join('\n') || br.treatment || '—',
+      String(br.visitsPerMonth ?? 1),
+      money(br.monthlyAmount),
+    ]),
+    { columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 1: { fontStyle: 'bold', cellWidth: 48 }, 2: { cellWidth: 66 }, 3: { halign: 'center', cellWidth: 16 }, 4: { halign: 'right' } } }
+  );
+  b.keyValues([['Total monthly charges (all branches)', pkr(rows.reduce((s, br) => s + (br.monthlyAmount || 0), 0))]], 2);
+}
+
+/** "Why choose us" box + "Our valued clients" logo strip, both from Settings → Company. */
+async function proposalCredentials(b: DocBuilder, profile: CompanyProfile) {
+  const points = (profile.proposalHighlights || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  if (points.length) b.noteBox(`Why choose ${profile.shortName || profile.legalName}`, points.map((p) => `•  ${p}`), b.brandTint);
+  const logos = (await Promise.all(
+    (profile.clientLogos ?? []).slice(0, 12).map(async (c) => {
+      const img = await loadImage(c.url, 400, 'image/png');
+      return img ? { img, name: c.name } : null;
+    })
+  )).filter(Boolean) as { img: Img; name: string }[];
+  b.logoStrip('Our valued clients', logos);
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 /** Monthly IPM service plan proposal: cover letter, scope A/B/C, terms (a)–(h), service plan, charges & tenure. */
@@ -754,7 +827,9 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
   const toLines = [
     att?.name ? `Attn: ${att.name}${att.designation ? `, ${att.designation}` : ''}` : '',
     party.name,
-    proposal.branchName ? `${proposal.branchName}` : '',
+    proposal.branchBreakdowns?.length
+      ? `${proposal.branchBreakdowns.length} branch${proposal.branchBreakdowns.length === 1 ? '' : 'es'}: ${proposal.branchBreakdowns.map((br) => br.branchName).join(', ')}`
+      : proposal.branchName ? `${proposal.branchName}` : '',
     proposal.clientAddress || (party.lines[1] as string) || '',
   ].filter(Boolean);
   b.ensure(toLines.length * 4.4 + 16);
@@ -798,28 +873,7 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
   ], 3);
   if (proposal.documentationIncluded?.length) b.noteBox('Documentation included', proposal.documentationIncluded.map((d) => `•  ${d}`));
 
-  if (proposal.branchBreakdowns?.length) {
-    const SVC: Record<string, string> = {
-      general_fumigation: 'General fumigation', cockroach_gel: 'Cockroach gel', rodent_control: 'Rodent control',
-      termite_treatment: 'Termite treatment', bedbug_treatment: 'Bedbug treatment', mosquito_fogging: 'Mosquito / fly fogging',
-      ant_treatment: 'Ant treatment', stored_grain_pest: 'Stored grain pest control', snake_reptile: 'Snake / reptile control',
-      monitoring_visit: 'Monitoring visit',
-    };
-    const svcLabel = (s: string) => SVC[s] || s.replace(/_/g, ' ');
-    b.section('Branch-wise service schedule', 40);
-    b.table(
-      ['Branch / site', 'Services / treatments', 'Visits\n/month', 'Monthly\ncharges (PKR)'],
-      proposal.branchBreakdowns.map((br) => [
-        br.branchName + (br.address ? `\n${br.address}` : ''),
-        (br.services || []).map((sv) => svcLabel(sv.service)).join(', ') || br.treatment || '—',
-        String(br.visitsPerMonth ?? 1),
-        money(br.monthlyAmount),
-      ]),
-      { columnStyles: { 0: { fontStyle: 'bold', cellWidth: 40 }, 1: { cellWidth: 70 }, 2: { halign: 'center', cellWidth: 18 }, 3: { halign: 'right', cellWidth: 44 } } }
-    );
-    const branchTotal = proposal.branchBreakdowns.reduce((s, br) => s + (br.monthlyAmount || 0), 0);
-    b.keyValues([['Total monthly charges (all branches)', pkr(branchTotal)]], 2);
-  }
+  branchSchedule(b, proposal);
 
   b.section('Charges & tenure', 40);
   const taxLabel = proposal.taxPercent > 0 ? `Sales tax (${proposal.taxPercent}%)` : 'Sales tax';
@@ -847,6 +901,8 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
 
   // Exclusions and device ownership are included in the Terms list (no separate note box)
 
+  await proposalCredentials(b, profile);
+
   b.paragraph(`We look forward to serving you. For any questions please contact ${proposal.preparedByName}${profile.phone ? ` at ${profile.phone}` : ''}.`);
   const stamp = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
   b.stampBlock(stamp, 'Accepted by client', att?.name || undefined, att?.designation);
@@ -872,17 +928,26 @@ async function buildProposal(proposal: Proposal): Promise<jsPDF> {
     'Integrated Pest Management service proposal'
   );
 
+  const branches = proposal.branchBreakdowns ?? [];
   b.parties(
     clientParty(proposal.customerType, proposal.customerId, proposal.customerName, proposal.branchId, 'Prepared for'),
-    {
-      heading: 'Service site',
-      name: proposal.branchName || 'Main premises',
-      lines: [proposal.siteAddress, proposal.warrantyPeriodMonths ? `Warranty: ${proposal.warrantyPeriodMonths} months` : false, `Payment terms: ${proposal.paymentTerms}`],
-    }
+    branches.length > 1
+      ? {
+          heading: 'Service sites',
+          name: `${branches.length} branches`,
+          lines: [...branches.slice(0, 5).map((br) => `•  ${br.branchName}`), branches.length > 5 ? `…and ${branches.length - 5} more (see table)` : false],
+        }
+      : {
+          heading: 'Service site',
+          name: branches[0]?.branchName || proposal.branchName || 'Main premises',
+          lines: [branches[0]?.address || proposal.siteAddress, proposal.warrantyPeriodMonths ? `Warranty: ${proposal.warrantyPeriodMonths} months` : false, `Payment terms: ${proposal.paymentTerms}`],
+        }
   );
 
   b.section('Scope of work');
   b.paragraph(proposal.scopeOfWork);
+
+  branchSchedule(b, proposal);
 
   b.section('Services & pricing', 30);
   b.table(
@@ -926,6 +991,8 @@ async function buildProposal(proposal: Proposal): Promise<jsPDF> {
     ...(profile.proposalTerms || '').split('\n'),
     ...extraTerms,
   ]);
+
+  await proposalCredentials(b, profile);
 
   const stamp2 = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
   b.stampBlock(stamp2, 'Accepted by client');
@@ -1075,37 +1142,69 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
   const { b, profile } = await builder('Service Report', job.id, job.status === 'cancelled' ? 'CANCELLED' : undefined, undefined, {
     type: 'service_report', issued: job.scheduledDate, client: job.customerName, clientIsPerson: job.customerType !== 'company', status: job.status,
   });
+  const verified = Boolean(job.supervisorVerification?.isVerified);
+  const visitTime = job.windowStart && job.windowEnd ? `${job.windowStart} - ${job.windowEnd}` : job.scheduledTime;
+  const outcome: Record<string, string> = { completed: 'Completed', partial: 'Partially completed', client_blocked: 'Not done: no site access', postponed: 'Postponed' };
   b.titleBand(
     [
-      { label: 'Report / Job No.', value: job.id },
+      { label: 'Report No.', value: job.id },
       { label: 'Service date', value: formatDate(job.scheduledDate) },
-      { label: 'Time', value: statusLabel(job.timeSlot) },
-      { label: 'Status', value: statusLabel(job.status) },
+      { label: 'Time', value: visitTime || statusLabel(job.timeSlot) },
+      { label: 'Visit', value: job.visitOutcome ? outcome[job.visitOutcome] : statusLabel(job.status) },
+      { label: 'Quality check', value: verified ? 'Verified' : job.status === 'completed' ? 'Pending' : '—' },
     ],
-    job.serviceType
+    job.visitKind === 'follow_up' ? 'Follow-up visit report' : 'Pest control service report'
   );
 
-  b.parties(clientParty(job.customerType, job.customerId, job.customerName, job.branchId), {
-    heading: 'Service site',
-    name: job.siteName,
-    lines: [job.siteAddress, `Lead technician: ${job.leadPcoName}`, job.assignedTechnicianNames.length > 1 ? `Team: ${job.assignedTechnicianNames.join(', ')}` : false, job.contractId && `Contract: ${job.contractId}`],
+  // Branch is the service location for company clients; fall back to the site record
+  const branch = job.branchId ? dataService.getBranchById(job.branchId) : undefined;
+  const pcos = dataService.pcoNames(job.performedByPcoIds?.length ? job.performedByPcoIds : job.assignedPcoEmployeeIds);
+  const tlName = job.assignedTeamLeaderName || (job.leadPcoName !== 'Unassigned' ? job.leadPcoName : '');
+  b.parties(clientParty(job.customerType, job.customerId, job.customerName), {
+    heading: 'Service location',
+    name: branch?.branchName || job.branchName || job.siteName,
+    lines: [
+      branch?.physicalAddress || job.siteAddress,
+      tlName && `Supervisor: ${tlName}`,
+      pcos.length > 0 && `Technicians: ${pcos.join(', ')}`,
+      job.contractId && `Contract: ${job.contractId}`,
+      job.challanNumber && `Signed challan No.: ${job.challanNumber}`,
+    ],
   });
 
+  const services = job.visitServices?.length ? job.visitServices.join(', ') : job.serviceType;
   b.keyValues([
-    ['Target pests', job.targetPests.map((p) => statusLabel(p)).join(', ')],
-    ['Service type', job.serviceType],
+    ['Services performed', services],
+    ['Target pests', job.targetPests.length ? job.targetPests.map((p) => statusLabel(p)).join(', ') : undefined],
   ]);
 
+  if (job.preCheck) {
+    b.noteBox('Safety & readiness check', [
+      `Team in uniform, safety gear (PPE) checked and chemicals issued from store before starting. Confirmed by ${job.preCheck.confirmedByName}.`,
+    ]);
+  }
+
   if (job.chemicalsUsed.length) {
+    // Only print columns that were actually filled in (no placeholder values)
+    const chems = job.chemicalsUsed;
+    const has = (f: (c: (typeof chems)[number]) => string | undefined) => chems.some((c) => (f(c) || '').trim() && f(c) !== 'As applied');
+    const cols: [string, (c: (typeof chems)[number]) => string][] = [
+      ['Product', (c) => c.chemicalName],
+      ...(has((c) => c.activeIngredient) ? [['Active ingredient', (c: (typeof chems)[number]) => c.activeIngredient] as [string, (c: (typeof chems)[number]) => string]] : []),
+      ...(has((c) => c.dosageRate) ? [['Dosage', (c: (typeof chems)[number]) => c.dosageRate] as [string, (c: (typeof chems)[number]) => string]] : []),
+      ['Quantity used', (c) => `${c.quantityUsed} ${c.unit.replace('_', ' ')}`],
+      ...(has((c) => c.batchNumber) ? [['Batch', (c: (typeof chems)[number]) => c.batchNumber] as [string, (c: (typeof chems)[number]) => string]] : []),
+    ];
     b.section('Materials applied');
     b.table(
-      ['Product', 'Active ingredient', 'Target', 'Method', 'Dosage', 'Qty used', 'Batch'],
-      job.chemicalsUsed.map((c) => [c.chemicalName, c.activeIngredient, statusLabel(c.targetPest), statusLabel(c.applicationMethod), c.dosageRate, `${c.quantityUsed} ${c.unit}`, c.batchNumber]),
-      { columnStyles: { 0: { fontStyle: 'bold', cellWidth: 34 } } }
+      ['#', ...cols.map(([h]) => h)],
+      chems.map((c, i) => [i + 1, ...cols.map(([, f]) => f(c) || '')]),
+      { columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 1: { fontStyle: 'bold' } } }
     );
   }
 
-  if (job.checklists.length) {
+  // A checklist nobody ticked would print a column of red "Not done"; show it only when used
+  if (job.checklists.some((c) => c.isCompleted)) {
     b.section('Service checklist');
     b.table(
       ['#', 'Task', 'Status', 'Remarks'],
@@ -1120,8 +1219,11 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
   }
 
   if (job.executionNotes) {
-    b.section('Technician remarks');
+    b.section('Findings & remarks');
     b.paragraph(job.executionNotes);
+  }
+  if (job.status === 'cancelled' && job.cancellationReason) {
+    b.noteBox('Visit not carried out', [job.cancellationReason]);
   }
 
   const photos = await photoItems(job.photoEvidence, (p) => {
@@ -1133,8 +1235,9 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
     b.photos(photos);
   }
 
-  if (job.supervisorVerification) {
-    const v = job.supervisorVerification;
+  // Only a passed QC is shown to the client; send-backs are internal
+  if (verified) {
+    const v = job.supervisorVerification!;
     b.section('Quality verification');
     b.keyValues([
       ['Verified by', v.supervisorName],
@@ -1156,8 +1259,8 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
     ]);
   }
   b.signatures([
-    { label: 'Technician', name: job.leadPcoName, sub: profile.pcoLicense ? `PCO Licence: ${profile.pcoLicense}` : undefined },
-    { label: 'Client representative', name: so?.acknowledgedByName || ' ', sub: so?.customerDesignation, image: signature },
+    { label: 'Supervisor', name: tlName || ' ', sub: profile.pcoLicense ? `${profile.shortName || profile.legalName} · PCO Licence: ${profile.pcoLicense}` : profile.shortName || profile.legalName },
+    { label: 'Client representative', name: so?.acknowledgedByName || ' ', sub: so?.customerDesignation || 'Name, signature & stamp', image: signature },
   ]);
   return b.finish();
 }
@@ -1216,7 +1319,7 @@ async function buildMeetingReport(lead: Lead): Promise<jsPDF> {
   }
 
   b.noteBox('Next Step & Action Items', [
-    'CRO / Sales Department will prepare and issue the comprehensive commercial proposal.'
+    'CRO Department will prepare and issue the comprehensive commercial proposal.'
   ], b.brandTint);
 
   b.signatures([

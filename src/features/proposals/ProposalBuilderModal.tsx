@@ -312,7 +312,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
       error('Could not create proposal', err instanceof Error ? err.message : String(err));
       return;
     }
-    if (proposal.status === 'pending_approval') warning('Approval required (AP-01)', `Discount ${discountPercent}% is above 10%. Sent for Sales Manager / CEO approval.`);
+    if (proposal.status === 'pending_approval') warning('Approval required (AP-01)', `Discount ${discountPercent}% is above 10%. Sent for CRO Manager / CEO approval.`);
     else success('Proposal created', `${proposal.id} is saved. The PDF is being filed in the client's Proposals folder.`);
     fileProposalPdf(proposal, { email: userProfile?.email, displayName: userProfile?.displayName })
       .then((doc) => {

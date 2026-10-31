@@ -45,7 +45,7 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
     ],
   },
   {
-    title: 'Sales & pipeline',
+    title: 'CRO Sales & pipeline pipeline',
     items: [
       { to: '/customers', label: 'Client Accounts', icon: Building2, module: 'customers' },
       { to: '/crm', label: 'Leads Pipeline', icon: Users2, module: 'crm' },

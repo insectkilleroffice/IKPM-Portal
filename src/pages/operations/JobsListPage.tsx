@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Plus,
@@ -6,7 +6,6 @@ import {
   Calendar,
   Clock,
   Download,
-  AlertTriangle,
   ArrowRight,
   ShieldCheck,
   FileCheck2,
@@ -21,14 +20,14 @@ import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { Modal } from '../../components/common/Modal';
 import { formatDate, generatePermanentId } from '../../lib/formatters';
-import { SinglePhotoField } from '../../features/field/SinglePhotoField';
-import type { Challan } from '../../types/operations';
+import { PcoTicks } from '../../features/schedule/PcoTicks';
+import { pcoEmployeeConflicts } from '../../lib/visitSchedule';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
-import type { ServiceJob, JobStatus, SupervisorVerification, ChemicalUsageRecord } from '../../types/operations';
+import type { ServiceJob, SupervisorVerification, ChemicalUsageRecord } from '../../types/operations';
 import type { PestType } from '../../types/crm';
 import { UnifiedWorkflowStatusBar } from '../../components/common/UnifiedWorkflowStatusBar';
 import { getJobNextAction } from '../../lib/workflow';
@@ -39,7 +38,7 @@ import type { DocumentOwner } from '../../types/document';
 export const JobsListPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { success, warning } = useNotification();
+  const { success, warning, error } = useNotification();
   const pdfAction = usePdfAction();
   const { userProfile, effectiveRole } = useAuth();
   useDataStore();
@@ -60,7 +59,7 @@ export const JobsListPage: React.FC = () => {
     searchParams.get('action') === 'new_job' || Boolean(searchParams.get('fromProposal'))
   );
 
-  // Reschedule modal (team leader)
+  // Reschedule modal (supervisor)
   const [rescheduleJob, setRescheduleJob] = useState<ServiceJob | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleTime, setRescheduleTime] = useState('');
@@ -98,26 +97,23 @@ export const JobsListPage: React.FC = () => {
     setRescheduleReasonOther('');
   };
 
-  // Assign team leader to a scheduled job
+  // Assign supervisor to a scheduled job
   const [assignTlJob, setAssignTlJob] = useState<ServiceJob | null>(null);
   const [assignTlId, setAssignTlId] = useState('');
 
   const handleAssignTl = () => {
     if (!assignTlJob) return;
-    const tl = dataService.getStaff(['team_leader']).find((u) => u.uid === assignTlId);
-    if (!tl) { warning('No team leader selected', 'Please select a team leader first.'); return; }
+    const tl = dataService.getTeamLeaders().find((u) => u.uid === assignTlId);
+    if (!tl) { warning('No supervisor selected', 'Please select a supervisor first.'); return; }
+    // Planned PCOs stay only if they are in the new Supervisor's team
+    const team = new Set(dataService.getTeamPcos(tl.uid).map((e) => e.id));
     const updated: ServiceJob = {
       ...assignTlJob,
-      assignedTeamLeaderId: tl.uid,
-      assignedTeamLeaderName: tl.displayName,
-      leadPcoId: tl.uid,
-      leadPcoName: tl.displayName,
-      assignedTechnicianIds: [tl.uid, ...assignTlJob.assignedTechnicianIds.filter((id) => id !== assignTlJob.leadPcoId)],
-      assignedTechnicianNames: [tl.displayName, ...assignTlJob.assignedTechnicianNames.filter((n) => n !== assignTlJob.leadPcoName)],
+      ...dataService.teamFields(tl.uid, tl.displayName, (assignTlJob.assignedPcoEmployeeIds ?? []).filter((id) => team.has(id))),
       updatedAt: new Date().toISOString(),
     };
     dataService.saveJob(updated, userProfile?.email);
-    success('Team leader assigned', `${tl.displayName} assigned to ${assignTlJob.id} (${formatDate(assignTlJob.scheduledDate)}).`);
+    success('Supervisor assigned', `${tl.displayName} assigned to ${assignTlJob.id} (${formatDate(assignTlJob.scheduledDate)}).`);
     if (selectedJob?.id === updated.id) setSelectedJob(updated);
     setAssignTlJob(null);
     setAssignTlId('');
@@ -127,14 +123,16 @@ export const JobsListPage: React.FC = () => {
   const [showVerifyModal, setShowVerifyModal] = useState<ServiceJob | null>(null);
   // Service report submission modal
   const [showReportModal, setShowReportModal] = useState<ServiceJob | null>(null);
-  const [reportMember, setReportMember] = useState('');
-  const [reportPcoId, setReportPcoId] = useState('');
-  const [reportRating, setReportRating] = useState<1 | 2 | 3 | 4 | 5>(5);
+  // PCOs have no login: the Supervisor ticks who did the work (HR employee ids)
+  const [reportPcoIds, setReportPcoIds] = useState<string[]>([]);
+  const [reportTlOnSite, setReportTlOnSite] = useState(false);
+  const [reportBorrowReason, setReportBorrowReason] = useState('');
+  const [reportOutcomeReason, setReportOutcomeReason] = useState('');
+  const [reportNewDate, setReportNewDate] = useState('');
   const [reportVisitOutcome, setReportVisitOutcome] = useState<'completed' | 'partial' | 'client_blocked' | 'postponed'>('completed');
   type ReportItem = { id: string; name: string; qty: number; unit: ChemicalUsageRecord['unit'] };
   const [reportItems, setReportItems] = useState<ReportItem[]>([{ id: 'item_1', name: '', qty: 1, unit: 'ml' }]);
   const [reportNotes, setReportNotes] = useState('');
-  const [reportClientName, setReportClientName] = useState('');
   type ReportPhoto = { id: string; url: string; caption: string };
   const [reportFindingPhotos, setReportFindingPhotos] = useState<ReportPhoto[]>([]);
   const [reportFinalPhotos, setReportFinalPhotos] = useState<ReportPhoto[]>([]);
@@ -160,9 +158,12 @@ export const JobsListPage: React.FC = () => {
 
   useEffect(() => {
     if (!showReportModal) return;
-    setReportMember('');
-    setReportPcoId('');
-    setReportRating(5);
+    // Pre-tick the PCOs who did it last time (resubmission) or were planned for the visit
+    setReportPcoIds(showReportModal.performedByPcoIds?.length ? showReportModal.performedByPcoIds : showReportModal.assignedPcoEmployeeIds ?? []);
+    setReportTlOnSite(showReportModal.teamLeaderOnSite ?? false);
+    setReportBorrowReason(showReportModal.borrowedPcoReason || '');
+    setReportOutcomeReason('');
+    setReportNewDate('');
     setReportVisitOutcome('completed');
     setReportItems(
       showReportModal.chemicalsUsed.length
@@ -170,32 +171,66 @@ export const JobsListPage: React.FC = () => {
         : [{ id: `item_${Date.now()}`, name: '', qty: 1, unit: 'ml' as const }]
     );
     setReportNotes(showReportModal.executionNotes || '');
-    setReportClientName(showReportModal.customerSignOff?.acknowledgedByName || '');
     setReportFindingPhotos([]);
     setReportFinalPhotos([]);
     setReportChallanNumber(showReportModal.challanNumber || '');
     setReportChallanFileUrl(showReportModal.challanFileUrl || '');
     setReportChallanDate(todayStr);
   }, [showReportModal?.id]);
+  // QC: starts empty every time — the supervisor is the logged-in person
   const [verifyForm, setVerifyForm] = useState({
-    supervisorName: userProfile?.displayName || 'Muhammad Asif (QC Supervisor)',
-    qcRating: 'excellent' as 'excellent' | 'satisfactory' | 'needs_revisit' | 'rejected',
-    supervisorNotes: 'Dosage calibrations, safety protocols, and pest eradication coverage confirmed compliant with standard IPM operating specs.',
-    challanNumber: '',
-    challanFileUrl: '',
-    challanDate: todayStr,
+    qcRating: 'satisfactory' as 'excellent' | 'satisfactory',
+    supervisorNotes: '',
   });
+  type ChemEntry = { id: string; name: string; qty: number; unit: ChemicalUsageRecord['unit'] };
+  const blankChem = (): ChemEntry => ({ id: `qc_${Date.now()}_${Math.random()}`, name: '', qty: 0, unit: 'ml' });
+  const [qcChemEntries, setQcChemEntries] = useState<ChemEntry[]>([blankChem()]);
+  const [sendBackReason, setSendBackReason] = useState('');
+  useEffect(() => {
+    if (!showVerifyModal) return;
+    setVerifyForm({ qcRating: 'satisfactory', supervisorNotes: '' });
+    setQcChemEntries([blankChem()]);
+    setSendBackReason('');
+  }, [showVerifyModal?.id]);
+
+  // Start gate (SRS 5.5): pre-check + before photos
+  const [startJob, setStartJob] = useState<ServiceJob | null>(null);
+  const [preCheck, setPreCheck] = useState({ uniform: false, safetyGear: false, chemicalsIssued: false, note: '' });
+  const [beforePhotos, setBeforePhotos] = useState<{ id: string; url: string }[]>([]);
+  useEffect(() => {
+    if (!startJob) return;
+    setPreCheck({ uniform: false, safetyGear: false, chemicalsIssued: false, note: '' });
+    setBeforePhotos([]);
+  }, [startJob?.id]);
 
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const jobs = dataService.getJobs();
-  const technicians = dataService.getStaff(['team_leader', 'operations', 'technician']);
+  // Field Supervisors (logins). PCOs are HR employees under them (no login).
+  const technicians = dataService.getTeamLeaders();
+  const allPcos = dataService.getActivePcos();
+  /** "Imran Hussain (Supervisor) · Usman, Bilal" */
+  const teamLabel = (j: ServiceJob) => {
+    const pcos = dataService.pcoNames(j.performedByPcoIds?.length ? j.performedByPcoIds : j.assignedPcoEmployeeIds);
+    return { tl: j.assignedTeamLeaderName || (j.leadPcoName !== 'Unassigned' ? j.leadPcoName : ''), pcos: pcos.join(', ') };
+  };
 
   // If fromProposal or customerId query params are provided, pre-fill
   const fromPropId = searchParams.get('fromProposal');
   const paramCustomerId = searchParams.get('customerId');
   const paramCustomerType = (searchParams.get('customerType') as 'company' | 'individual') || 'company';
   const paramBranchId = searchParams.get('branchId') || undefined;
+
+  // Notification links: ?job=ID opens the job, ?verify=ID opens QC
+  const paramJob = searchParams.get('job');
+  const paramVerify = searchParams.get('verify');
+  useEffect(() => {
+    const j = jobs.find((x) => x.id === (paramVerify || paramJob));
+    if (!j) return;
+    if (paramVerify && j.status === 'completed' && !j.supervisorVerification?.isVerified) setShowVerifyModal(j);
+    else setSelectedJob(j);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramJob, paramVerify, jobs.length]);
   const linkedProposal = fromPropId ? dataService.getProposalById(fromPropId) : undefined;
 
   const [newJob, setNewJob] = useState({
@@ -209,6 +244,7 @@ export const JobsListPage: React.FC = () => {
     targetPests: (linkedProposal?.lineItems.map((li) => li.targetPest) as PestType[]) || ['cockroaches', 'rodents_rats'],
     leadPcoId: '',
     leadPcoName: '',
+    pcoIds: [] as string[],
   });
 
   useEffect(() => {
@@ -224,6 +260,7 @@ export const JobsListPage: React.FC = () => {
         targetPests: linkedProposal.lineItems.map((li) => li.targetPest) as PestType[],
         leadPcoId: '',
         leadPcoName: '',
+        pcoIds: [],
       });
       setShowNewJobModal(true);
     } else if (paramCustomerId) {
@@ -243,7 +280,8 @@ export const JobsListPage: React.FC = () => {
       j.id.toLowerCase().includes(q) ||
       j.customerName.toLowerCase().includes(q) ||
       j.siteName.toLowerCase().includes(q) ||
-      j.leadPcoName.toLowerCase().includes(q);
+      j.leadPcoName.toLowerCase().includes(q) ||
+      j.assignedTechnicianNames.some((n) => n.toLowerCase().includes(q));
 
     const matchStatus = statusFilter === 'all' || j.status === statusFilter;
 
@@ -262,24 +300,26 @@ export const JobsListPage: React.FC = () => {
     return matchSearch && matchStatus && matchDate;
   });
 
-  const handleCreateJob = (e: React.FormEvent) => {
+  const handleCreateJob = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Guard Rail 2: No job without an assigned technician
-    if (!newJob.leadPcoName || newJob.leadPcoName.trim() === '' || newJob.leadPcoName === 'Unassigned') {
-      warning('Team Leader Required', 'Guard Rail: Cannot schedule a service visit without assigning a Team Leader.');
+    // Guard Rail 2: No job without a Supervisor
+    if (!newJob.leadPcoId) {
+      warning('Supervisor Required', 'Choose the Supervisor who will run this visit.');
       return;
     }
 
     let customerName = '';
+    let siteId = 'SITE-01';
     let siteName = 'Main Premises';
     let siteAddress = 'Main City Facility';
 
     if (newJob.customerType === 'company') {
       const co = dataService.getCompanyById(newJob.customerId);
       customerName = co?.legalCompanyName || 'Corporate Company';
-      const sites = dataService.getSites(newJob.customerId);
+      const sites = dataService.getSites(newJob.customerId, paramBranchId);
       if (sites[0]) {
+        siteId = sites[0].id;
         siteName = sites[0].siteName;
         siteAddress = sites[0].addressLine1;
       }
@@ -301,20 +341,18 @@ export const JobsListPage: React.FC = () => {
       }
     }
 
-    // Conflict detection check
-    const hasConflict = dataService.checkPcoConflict(
-      newJob.leadPcoName,
-      newJob.scheduledDate,
-      newJob.timeSlot
-    );
-    if (hasConflict) {
-      warning(
-        'Schedule Overlap Warning',
-        `Warning: ${newJob.leadPcoName} already has another assignment in the ${newJob.timeSlot} slot on ${newJob.scheduledDate}.`
-      );
+    // A PCO can't be on two visits in the same slot (a Supervisor can run several)
+    const clash = pcoEmployeeConflicts(
+      [{ key: 'new', date: newJob.scheduledDate, timeSlot: newJob.timeSlot, pcoEmployeeIds: newJob.pcoIds }],
+      jobs
+    ).get('new');
+    if (clash) {
+      warning('PCO already booked', `${dataService.pcoNames(clash).join(', ')} already on another visit in the ${newJob.timeSlot.replace('_', ' ')} slot on ${formatDate(newJob.scheduledDate)}. Untick them or pick another slot.`);
+      return;
     }
 
-    const nextId = generatePermanentId('JOB', jobs.length + 1);
+    // Transactional counter: IDs never repeat even if jobs are deleted or two people save at once
+    const nextId = generatePermanentId('JOB', await dataService.nextSequence('job'));
     const created: ServiceJob = {
       id: nextId,
       customerType: newJob.customerType,
@@ -322,7 +360,7 @@ export const JobsListPage: React.FC = () => {
       customerName,
       branchId: paramBranchId || undefined,
       proposalId: newJob.proposalId || undefined,
-      siteId: 'SITE-01',
+      siteId,
       siteName,
       siteAddress,
       serviceType: newJob.serviceType,
@@ -330,30 +368,16 @@ export const JobsListPage: React.FC = () => {
       scheduledDate: newJob.scheduledDate,
       scheduledTime: newJob.scheduledTime || undefined,
       timeSlot: newJob.timeSlot,
-      // Real staff uids: technicians only receive jobs listed here (enforced by firestore.rules)
-      assignedTechnicianIds: [newJob.leadPcoId],
-      assignedTechnicianNames: [newJob.leadPcoName],
-      leadPcoId: newJob.leadPcoId,
-      leadPcoName: newJob.leadPcoName,
+      // Supervisor is the login on the job (firestore.rules); PCOs are employee ids
+      ...dataService.teamFields(newJob.leadPcoId, newJob.leadPcoName, newJob.pcoIds),
       status: 'scheduled',
       checklists: [
         { id: 'c1', taskDescription: 'Conduct preliminary perimeter inspection and moisture audit', isCompleted: false },
         { id: 'c2', taskDescription: 'Apply target formulation with correct calibrated dosage', isCompleted: false },
         { id: 'c3', taskDescription: 'Perform post-application sanitation check with client', isCompleted: false },
       ],
-      chemicalsUsed: [
-        {
-          id: 'chem_01',
-          chemicalName: 'Premise 200 SC / Maxforce FC Gel',
-          activeIngredient: 'Imidacloprid / Hydramethylnon',
-          dosageRate: 'Standard Manufacturer Label Spec',
-          quantityUsed: 1,
-          unit: 'litres',
-          batchNumber: 'BATCH-2026-A',
-          targetPest: 'cockroaches',
-          applicationMethod: 'gel_baiting',
-        },
-      ],
+      // Filled in by the Supervisor on the report — never pre-filled
+      chemicalsUsed: [],
       photoEvidence: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -364,29 +388,77 @@ export const JobsListPage: React.FC = () => {
     setShowNewJobModal(false);
   };
 
-  const handleUpdateStatus = (job: ServiceJob, newStatus: JobStatus) => {
-    const updated: ServiceJob = { ...job, status: newStatus };
+
+  /** SRS 5.5 chemical match: QC re-enters chemicals from the signed paper report. */
+  const chemicalCheck = (job: ServiceJob) => {
+    const key = (n: string, q: number, u: string) => `${n.trim().toLowerCase().replace(/\s+/g, ' ')}|${Number(q)}|${u}`;
+    const entered = qcChemEntries.filter((c) => c.name.trim());
+    const reported = job.chemicalsUsed.map((c) => key(c.chemicalName, c.quantityUsed, c.unit)).sort();
+    const qc = entered.map((c) => key(c.name, c.qty, c.unit)).sort();
+    const matches = reported.length === qc.length && reported.every((k, i) => k === qc[i]);
+    const fmt = (list: string[]) => list.map((k) => { const [n, q, u] = k.split('|'); return `${n} ${q} ${u}`; }).join(', ') || 'nothing';
+    return {
+      entered,
+      matches,
+      summary: `Report on paper: ${fmt(qc)}. Entered by Supervisor: ${fmt(reported)}.`,
+    };
+  };
+
+  const handleSendBack = () => {
+    if (!showVerifyModal) return;
+    const reason = sendBackReason.trim();
+    if (!reason) return warning('Reason required', 'Tell the Supervisor what to fix.');
+    const now = new Date().toISOString();
+    const check = chemicalCheck(showVerifyModal);
+    const updated: ServiceJob = {
+      ...showVerifyModal,
+      status: 'in_progress',
+      qcReturn: { reason, byName: userProfile?.displayName || 'QC', at: now },
+      qcChemicalCheck: check.entered.length ? { entries: check.entered.map(({ name, qty, unit }) => ({ name, qty, unit })), matches: check.matches, checkedAt: now } : showVerifyModal.qcChemicalCheck,
+      supervisorVerification: {
+        isVerified: false,
+        supervisorId: userProfile?.uid || '',
+        supervisorName: userProfile?.displayName || 'QC',
+        verifiedAt: now,
+        qcRating: 'needs_revisit',
+        supervisorNotes: reason,
+      },
+      updatedAt: now,
+    };
     dataService.saveJob(updated, userProfile?.email);
-    success('Job Status Updated', `${job.id} marked ${newStatus}`);
-    setSelectedJob(updated);
+    warning('Sent back to Supervisor', `${updated.id} returned to ${updated.assignedTeamLeaderName || updated.leadPcoName}: ${reason}`);
+    setShowVerifyModal(null);
+    if (selectedJob?.id === updated.id) setSelectedJob(updated);
   };
 
   const handleVerifyQC = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!showVerifyModal) return;
 
+    const check = chemicalCheck(showVerifyModal);
+    if (showVerifyModal.chemicalsUsed.length && !check.entered.length) {
+      return warning('Chemical check required', 'Enter the chemicals and quantities written on the signed paper report.');
+    }
+    if (!check.matches) {
+      setSendBackReason(`Chemical mismatch. ${check.summary} Please explain the difference or correct it.`);
+      return error('Chemicals do not match', 'The signed report and the Supervisor’s entry differ. Use "Send back" so the Supervisor gives a reason.');
+    }
+
+    const now = new Date().toISOString();
     const verification: SupervisorVerification = {
       isVerified: true,
-      supervisorId: userProfile?.uid || 'sup_01',
-      supervisorName: verifyForm.supervisorName,
-      verifiedAt: new Date().toISOString(),
+      supervisorId: userProfile?.uid || '',
+      supervisorName: userProfile?.displayName || 'QC',
+      verifiedAt: now,
       qcRating: verifyForm.qcRating,
-      supervisorNotes: verifyForm.supervisorNotes,
+      supervisorNotes: verifyForm.supervisorNotes.trim() || undefined,
     };
 
     const updated: ServiceJob = {
       ...showVerifyModal,
       supervisorVerification: verification,
+      qcChemicalCheck: { entries: check.entered.map(({ name, qty, unit }) => ({ name, qty, unit })), matches: true, checkedAt: now },
+      updatedAt: now,
     };
 
     dataService.saveJob(updated, userProfile?.email);
@@ -420,8 +492,13 @@ export const JobsListPage: React.FC = () => {
 
   const handleExecuteJobAction = (job: ServiceJob) => {
     const nextAct = getJobNextAction(job, dataService.getInvoiceForJob(job.id));
+    if (nextAct.isBlocked) {
+      warning('Not yet', nextAct.blockerReason || 'This step is locked.');
+      if (nextAct.actionType === 'start_job' && canDispatch) { setAssignTlJob(job); setAssignTlId(''); }
+      return;
+    }
     if (nextAct.actionType === 'start_job') {
-      handleUpdateStatus(job, 'in_progress');
+      setStartJob(job);
     } else if (nextAct.actionType === 'complete_job') {
       setShowReportModal(job);
     } else if (nextAct.actionType === 'verify_report') {
@@ -445,8 +522,46 @@ export const JobsListPage: React.FC = () => {
     }
   };
 
+  /** Start gate: uniform, safety gear, chemicals issued, and at least one before photo. */
+  const handleStartJob = () => {
+    if (!startJob) return;
+    const missing: string[] = [];
+    if (!preCheck.uniform) missing.push('uniform');
+    if (!preCheck.safetyGear) missing.push('safety gear');
+    if (!preCheck.chemicalsIssued) missing.push('chemicals issued');
+    if (missing.length) return warning('Pre-check incomplete', `Still needed: ${missing.join(', ')}.`);
+
+    const now = new Date().toISOString();
+    const updated: ServiceJob = {
+      ...startJob,
+      status: 'in_progress',
+      preCheck: {
+        uniform: true,
+        safetyGear: true,
+        chemicalsIssued: true,
+        chemicalsIssuedNote: preCheck.note.trim() || undefined,
+        confirmedByUid: userProfile?.uid,
+        confirmedByName: userProfile?.displayName || 'Supervisor',
+        confirmedAt: now,
+      },
+      photoEvidence: [
+        ...(startJob.photoEvidence || []),
+        ...beforePhotos.map((p) => ({ id: p.id, caption: 'Before service', type: 'before' as const, imageUrl: p.url, capturedAt: now, uploadedBy: userProfile?.displayName })),
+      ],
+      updatedAt: now,
+    };
+    dataService.saveJob(updated, userProfile?.email);
+    success('Visit started', `${updated.id}: pre-check done. Close out the visit when the service is finished.`);
+    if (selectedJob?.id === updated.id) setSelectedJob(updated);
+    setStartJob(null);
+  };
+
   const handleSubmitReport = () => {
     if (!showReportModal) return;
+    const job = showReportModal;
+    const outcome = reportVisitOutcome;
+    // Completed / partial need full proof. Client blocked / postponed have no signed challan.
+    const needsProof = outcome === 'completed' || outcome === 'partial';
 
     const chemicalsUsed: ChemicalUsageRecord[] = reportItems
       .filter((i) => i.name.trim())
@@ -462,45 +577,99 @@ export const JobsListPage: React.FC = () => {
         applicationMethod: 'residual_spray' as const,
       }));
 
-    const pcoEmployees = dataService.getEmployees?.().filter((e) => e.role === 'pco') || [];
-    const selectedPcoEmp = pcoEmployees.find((e) => e.id === reportPcoId);
-    const selectedPcoStaff = dataService.getStaff(['technician']).find((t) => t.uid === reportPcoId);
-    const memberName = selectedPcoEmp ? selectedPcoEmp.name : selectedPcoStaff ? selectedPcoStaff.displayName : reportMember.trim();
-    const memberNames = memberName ? [memberName] : [];
+    // Who did the work: the Supervisor's PCOs (+ borrowed ones, with a reason)
+    const tlUid = job.assignedTeamLeaderId || job.leadPcoId;
+    const ownTeam = new Set(dataService.getTeamPcos(tlUid).map((e) => e.id));
+    const borrowed = reportPcoIds.filter((id) => !ownTeam.has(id));
+
+    // Every missing item listed at once, in plain words
+    const missing: string[] = [];
+    if (needsProof) {
+      if (!reportPcoIds.length && !reportTlOnSite) missing.push('who did the work (tick the PCOs, or "I did it myself")');
+      if (borrowed.length && !reportBorrowReason.trim()) missing.push('why a PCO from another team was used');
+      if (!chemicalsUsed.length) missing.push('at least one chemical / item used');
+      if (!reportChallanNumber.trim()) missing.push('physical challan #');
+      if (!reportChallanFileUrl.trim()) missing.push('photo of the signed challan');
+    } else if (outcome === 'client_blocked') {
+      if (!reportOutcomeReason.trim()) missing.push('what happened on site');
+      if (!reportFindingPhotos.length && !reportFinalPhotos.length) missing.push('a photo as proof (e.g. closed gate)');
+    } else if (outcome === 'postponed') {
+      if (!reportNewDate) missing.push('the new visit date');
+      if (!reportOutcomeReason.trim()) missing.push('reason for postponing');
+    }
+    if (missing.length) {
+      error('Cannot submit yet', `Still needed: ${missing.join('; ')}.`);
+      return;
+    }
 
     const now = new Date().toISOString();
     const newPhotos: import('../../types/operations').PhotoEvidence[] = [
       ...reportFindingPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Findings', type: 'infestation_focus' as const, imageUrl: p.url, capturedAt: now, uploadedBy: userProfile?.displayName })),
       ...reportFinalPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Final report', type: 'after' as const, imageUrl: p.url, capturedAt: now, uploadedBy: userProfile?.displayName })),
     ];
+    const submittedBy = { submittedByUid: userProfile?.uid, submittedByName: userProfile?.displayName || 'Supervisor', submittedAt: now };
 
-    // Change 14: Late submission calculation
-    const schedDate = new Date(showReportModal.scheduledDate).getTime();
-    const subDate = new Date(now).getTime();
-    const diffDays = Math.floor((subDate - schedDate) / (1000 * 60 * 60 * 24));
-    const isLate = diffDays > 1;
+    // Postponed on site: straight back to the schedule on the new date
+    if (outcome === 'postponed') {
+      const updated: ServiceJob = {
+        ...job,
+        status: 'scheduled',
+        visitOutcome: 'postponed',
+        scheduledDate: reportNewDate,
+        rescheduledReason: `Postponed on site: ${reportOutcomeReason.trim()}`,
+        photoEvidence: [...(job.photoEvidence || []), ...newPhotos],
+        ...submittedBy,
+        updatedAt: now,
+      };
+      dataService.saveJob(updated, userProfile?.email);
+      success('Visit rescheduled', `${job.id} moved to ${formatDate(reportNewDate)}.`);
+      if (selectedJob?.id === updated.id) setSelectedJob(updated);
+      setShowReportModal(null);
+      return;
+    }
 
-    const jobStatus: import('../../types/operations').JobStatus = reportVisitOutcome === 'completed' ? 'completed' : 'in_progress';
+    // Client blocked access: closed as cancelled with the reason code and proof photo
+    if (outcome === 'client_blocked') {
+      const updated: ServiceJob = {
+        ...job,
+        status: 'cancelled',
+        visitOutcome: 'client_blocked',
+        cancellationReasonCode: 'client_denied_access',
+        cancellationReason: reportOutcomeReason.trim(),
+        photoEvidence: [...(job.photoEvidence || []), ...newPhotos],
+        executionNotes: reportNotes.trim() || job.executionNotes,
+        ...submittedBy,
+        updatedAt: now,
+      };
+      dataService.saveJob(updated, userProfile?.email);
+      warning('Visit closed: client blocked access', `${job.id} recorded as cancelled (client denied access). Operations Manager can reschedule it.`);
+      if (selectedJob?.id === updated.id) setSelectedJob(updated);
+      setShowReportModal(null);
+      return;
+    }
+
+    // Late = not submitted on the service day (SRS 5.5)
+    const lateDays = Math.max(0, Math.round((Date.parse(todayStr) - Date.parse(job.scheduledDate.slice(0, 10))) / 86400000));
+    const isLate = lateDays > 0;
+    const tlName = job.assignedTeamLeaderName || job.leadPcoName;
+
     const updatedJob: ServiceJob = {
-      ...showReportModal,
-      status: jobStatus,
-      visitOutcome: reportVisitOutcome,
+      ...job,
+      status: 'completed',
+      visitOutcome: outcome,
       chemicalsUsed,
-      photoEvidence: [...(showReportModal.photoEvidence || []), ...newPhotos],
+      photoEvidence: [...(job.photoEvidence || []), ...newPhotos],
       executionNotes: reportNotes.trim() || undefined,
-      assignedTechnicianIds: reportPcoId ? [showReportModal.leadPcoId, reportPcoId] : [showReportModal.leadPcoId],
-      assignedTechnicianNames: [showReportModal.leadPcoName, ...memberNames],
-      leadPcoEmployeeId: selectedPcoEmp?.id,
-      performedByPcoIds: selectedPcoEmp ? [selectedPcoEmp.id] : reportPcoId ? [reportPcoId] : [],
-      submittedByUid: userProfile?.uid,
-      submittedByName: userProfile?.displayName || 'Operations Coordinator',
-      submittedAt: now,
+      // assignedTechnicianIds (logins) is left alone; PCOs are recorded by employee id
+      assignedTechnicianNames: [tlName, ...dataService.pcoNames(reportPcoIds)],
+      performedByPcoIds: reportPcoIds,
+      leadPcoEmployeeId: reportPcoIds[0],
+      teamLeaderOnSite: reportTlOnSite,
+      borrowedPcoReason: borrowed.length ? reportBorrowReason.trim() : undefined,
+      ...submittedBy,
       lateSubmission: isLate,
-      lateDays: isLate ? diffDays : undefined,
-      lateReason: isLate ? 'Submitted after service date' : undefined,
-      customerSignOff: reportClientName.trim()
-        ? { acknowledgedByName: reportClientName.trim(), feedbackRating: reportRating, signedAt: now }
-        : showReportModal.customerSignOff,
+      lateDays: isLate ? lateDays : undefined,
+      lateReason: isLate ? `Submitted ${lateDays} day(s) after the service date` : undefined,
       updatedAt: now,
     };
     if (reportChallanNumber.trim()) {
@@ -551,7 +720,7 @@ export const JobsListPage: React.FC = () => {
     }
 
     dataService.saveJob(updatedJob, userProfile?.email);
-    success('Service report submitted', `${showReportModal.id} submitted for supervisor QC.`);
+    success('Service report submitted', `${job.id} sent for QC${isLate ? ` (late by ${lateDays} day(s))` : ''}.`);
     if (selectedJob?.id === updatedJob.id) setSelectedJob(updatedJob);
     setShowReportModal(null);
   };
@@ -662,7 +831,7 @@ export const JobsListPage: React.FC = () => {
               <th>Site & Address</th>
               <th>Scheduled Date & Time</th>
               <th>Shift</th>
-              <th>Team Leader</th>
+              <th>Supervisor</th>
               <th>QC Verification</th>
               <th>Status</th>
               <th>Next Action</th>
@@ -698,12 +867,15 @@ export const JobsListPage: React.FC = () => {
                   <td><span className="badge-status badge-slate">{j.timeSlot}</span></td>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                      <span>{j.leadPcoName || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>Unassigned</span>}</span>
+                      <div>
+                        {teamLabel(j).tl ? <span>{teamLabel(j).tl}</span> : <span style={{ color: '#B45309', fontStyle: 'italic' }}>No Supervisor</span>}
+                        {teamLabel(j).pcos && <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>PCOs: {teamLabel(j).pcos}</div>}
+                      </div>
                       {canDispatch && j.status === 'scheduled' && (
                         <button
                           className="btn btn-secondary"
                           style={{ padding: '0.15rem 0.35rem', fontSize: '0.7rem' }}
-                          title="Assign / change team leader"
+                          title="Assign / change supervisor"
                           onClick={() => { setAssignTlJob(j); setAssignTlId(j.leadPcoId || ''); }}
                         >
                           <UserCheck size={11} />
@@ -719,6 +891,10 @@ export const JobsListPage: React.FC = () => {
                       </span>
                     ) : j.status === 'completed' ? (
                       <span className="badge-status badge-amber">QC Pending</span>
+                    ) : j.status === 'in_progress' && j.qcReturn ? (
+                      <span className="badge-status badge-rose" title={j.qcReturn.reason}>Sent back by QC</span>
+                    ) : j.status === 'cancelled' && j.visitOutcome === 'client_blocked' ? (
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Client blocked access</span>
                     ) : (
                       <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Awaiting visit</span>
                     )}
@@ -885,7 +1061,7 @@ export const JobsListPage: React.FC = () => {
 
             <div className="form-group">
               <label className="form-label">
-                Assign Team Member <span className="required">*</span>
+                Supervisor <span className="required">*</span>
               </label>
               <select
                 className="form-select"
@@ -893,10 +1069,11 @@ export const JobsListPage: React.FC = () => {
                 value={newJob.leadPcoId}
                 onChange={(e) => {
                   const tech = technicians.find((t) => t.uid === e.target.value);
-                  setNewJob({ ...newJob, leadPcoId: tech?.uid || '', leadPcoName: tech?.displayName || '' });
+                  // PCOs belong to the Supervisor's team, so changing TL clears them
+                  setNewJob({ ...newJob, leadPcoId: tech?.uid || '', leadPcoName: tech?.displayName || '', pcoIds: [] });
                 }}
               >
-                <option value="">Select a team leader…</option>
+                <option value="">Select a Supervisor…</option>
                 {technicians.map((t) => (
                   <option key={t.uid} value={t.uid}>
                     {t.displayName}{t.teamName ? ` · ${t.teamName}` : ''}
@@ -904,10 +1081,21 @@ export const JobsListPage: React.FC = () => {
                 ))}
               </select>
               {technicians.length === 0 && (
-                <div className="form-hint">No team leaders yet. Add them under Team & Access with the Team Leader role.</div>
+                <div className="form-hint">No Supervisors yet. Add them under Team &amp; Access with the Supervisor role.</div>
               )}
             </div>
           </div>
+
+          {newJob.leadPcoId && (
+            <div className="form-group">
+              <label className="form-label">PCOs for this visit <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional — the Supervisor confirms who went when closing out)</span></label>
+              <PcoTicks
+                pcos={dataService.getTeamPcos(newJob.leadPcoId)}
+                selected={newJob.pcoIds}
+                onChange={(ids) => setNewJob({ ...newJob, pcoIds: ids })}
+              />
+            </div>
+          )}
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
             <button type="button" className="btn btn-secondary" onClick={() => setShowNewJobModal(false)}>
@@ -975,12 +1163,12 @@ export const JobsListPage: React.FC = () => {
         </Modal>
       )}
 
-      {/* Modal: Assign Team Leader to a scheduled job */}
+      {/* Modal: Assign Supervisor to a scheduled job */}
       {assignTlJob && (
         <Modal
           isOpen
           onClose={() => setAssignTlJob(null)}
-          title={`Assign team leader: ${assignTlJob.id}`}
+          title={`Assign supervisor: ${assignTlJob.id}`}
           subtitle={`${assignTlJob.customerName} · ${formatDate(assignTlJob.scheduledDate)} (${assignTlJob.timeSlot})`}
           maxWidth="400px"
           footer={
@@ -993,15 +1181,15 @@ export const JobsListPage: React.FC = () => {
           }
         >
           <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">Team leader <span className="required">*</span></label>
+            <label className="form-label">Supervisor <span className="required">*</span></label>
             <select
               className="form-select"
               value={assignTlId}
               onChange={(e) => setAssignTlId(e.target.value)}
             >
               <option value="">— Select —</option>
-              {dataService.getStaff(['team_leader']).map((u) => (
-                <option key={u.uid} value={u.uid}>{u.displayName}</option>
+              {technicians.map((u) => (
+                <option key={u.uid} value={u.uid}>{u.displayName}{u.teamName ? ` · ${u.teamName}` : ''}</option>
               ))}
             </select>
             {assignTlJob.leadPcoName && (
@@ -1032,54 +1220,115 @@ export const JobsListPage: React.FC = () => {
                 color: 'var(--ikpm-emerald-800)',
               }}
             >
-              <strong>Quality Control Gate:</strong> Verifying this report will certify that chemical application, PPE compliance, and client sign-off meet quality standards. This unlocks the single-click &ldquo;Create Invoice&rdquo; action.
+              <strong>Check before you verify:</strong> photos (if any), signed challan, and that the chemicals on the signed paper report match what the Supervisor entered. Only verified visits go to Accounts.
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '1rem' }}>
-              <div className="form-group">
-                <label className="form-label">Verifying Supervisor Name <span className="required">*</span></label>
-                <input
-                  type="text"
-                  required
-                  className="form-input"
-                  value={verifyForm.supervisorName}
-                  onChange={(e) => setVerifyForm({ ...verifyForm, supervisorName: e.target.value })}
-                />
+            {/* What the Supervisor submitted */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', fontSize: '0.8rem', marginBottom: '0.85rem' }}>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>Team:</span>
+                <div style={{ fontWeight: 600 }}>{teamLabel(showVerifyModal).tl || '—'}{showVerifyModal.teamLeaderOnSite ? ' (on site)' : ''}</div>
+                <div>{teamLabel(showVerifyModal).pcos || 'No PCOs ticked'}</div>
+                {showVerifyModal.borrowedPcoReason && <div style={{ color: '#B45309' }}>Borrowed PCO: {showVerifyModal.borrowedPcoReason}</div>}
               </div>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>Submitted:</span>
+                <div style={{ fontWeight: 600 }}>
+                  {showVerifyModal.submittedAt ? formatDate(showVerifyModal.submittedAt) : '—'} · {showVerifyModal.visitOutcome === 'partial' ? 'Partial service' : 'Completed'}
+                </div>
+                {showVerifyModal.lateSubmission && <div style={{ color: '#DC2626', fontWeight: 600 }}>Late by {showVerifyModal.lateDays} day(s)</div>}
+                <div>
+                  Photos: {(showVerifyModal.photoEvidence || []).filter((p) => p.type === 'before').length} before · {(showVerifyModal.photoEvidence || []).filter((p) => p.type === 'after').length} after
+                  {showVerifyModal.challanFileUrl && <> · <a href={showVerifyModal.challanFileUrl} target="_blank" rel="noreferrer">signed challan #{showVerifyModal.challanNumber}</a></>}
+                </div>
+              </div>
+            </div>
+            {showVerifyModal.qcReturn && (
+              <div style={{ fontSize: '0.78rem', marginBottom: '0.75rem', color: '#9A3412' }}>
+                Previously sent back ({formatDate(showVerifyModal.qcReturn.at)}): {showVerifyModal.qcReturn.reason}
+              </div>
+            )}
 
+            {/* Chemical match (SRS 5.5) */}
+            <div className="form-group">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>
+                  Chemicals on the signed paper report <span className="required">*</span>
+                </label>
+                <button type="button" className="btn btn-sm btn-secondary" onClick={() => setQcChemEntries((p) => [...p, blankChem()])}>
+                  <Plus size={13} /> Add
+                </button>
+              </div>
+              <div className="form-hint" style={{ marginBottom: 6 }}>Type them from the paper, without looking at the Supervisor&rsquo;s entry. The system compares the two.</div>
+              {qcChemEntries.map((c, idx) => (
+                <div key={c.id} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr auto', gap: '0.4rem', marginBottom: 4 }}>
+                  <input className="form-input" placeholder="Chemical / item" value={c.name}
+                    onChange={(e) => setQcChemEntries((p) => p.map((r, i) => i === idx ? { ...r, name: e.target.value } : r))} />
+                  <input className="form-input" type="number" min={0} step="any" value={c.qty}
+                    onChange={(e) => setQcChemEntries((p) => p.map((r, i) => i === idx ? { ...r, qty: Number(e.target.value) } : r))} />
+                  <select className="form-select" value={c.unit}
+                    onChange={(e) => setQcChemEntries((p) => p.map((r, i) => i === idx ? { ...r, unit: e.target.value as ChemicalUsageRecord['unit'] } : r))}>
+                    <option value="grams">g</option>
+                    <option value="kg">kg</option>
+                    <option value="ml">ml</option>
+                    <option value="litres">litres</option>
+                    <option value="bait_stations">bait stations</option>
+                  </select>
+                  <button type="button" className="icon-btn" title="Remove" onClick={() => setQcChemEntries((p) => p.length > 1 ? p.filter((_, i) => i !== idx) : p)}>
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1rem' }}>
               <div className="form-group">
-                <label className="form-label">QC Assessment Rating</label>
+                <label className="form-label">QC rating</label>
                 <select
                   className="form-select"
                   value={verifyForm.qcRating}
-                  onChange={(e) => setVerifyForm({ ...verifyForm, qcRating: e.target.value as any })}
+                  onChange={(e) => setVerifyForm({ ...verifyForm, qcRating: e.target.value as 'excellent' | 'satisfactory' })}
                 >
-                  <option value="excellent">Excellent (Zero Deviations)</option>
-                  <option value="satisfactory">Satisfactory (Acceptable Standard)</option>
-                  <option value="needs_revisit">Needs Revisit</option>
-                  <option value="rejected">Rejected</option>
+                  <option value="satisfactory">Satisfactory</option>
+                  <option value="excellent">Excellent</option>
                 </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Notes (optional)</label>
+                <input
+                  className="form-input"
+                  value={verifyForm.supervisorNotes}
+                  onChange={(e) => setVerifyForm({ ...verifyForm, supervisorNotes: e.target.value })}
+                  placeholder="Anything worth recording"
+                />
               </div>
             </div>
 
-            <div className="form-group">
-              <label className="form-label">Supervisor Quality Observations & Notes</label>
+            <div className="form-group" style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem' }}>
+              <label className="form-label">Something wrong? Reason to send back to the Supervisor</label>
               <textarea
-                className="form-input"
-                rows={3}
-                value={verifyForm.supervisorNotes}
-                onChange={(e) => setVerifyForm({ ...verifyForm, supervisorNotes: e.target.value })}
+                className="form-textarea"
+                rows={2}
+                value={sendBackReason}
+                onChange={(e) => setSendBackReason(e.target.value)}
+                placeholder="e.g. After photos are of a different area; challan not signed"
               />
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
               <button type="button" className="btn btn-secondary" onClick={() => setShowVerifyModal(null)}>
                 Cancel
               </button>
-              <button type="submit" className="btn btn-primary">
-                <ShieldCheck size={15} />
-                <span>Certify Report & Unlock Invoicing</span>
-              </button>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button type="button" className="btn btn-secondary" style={{ color: 'var(--ikpm-rose-600)' }} onClick={handleSendBack} disabled={!sendBackReason.trim()}>
+                  <X size={15} />
+                  <span>Send back</span>
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  <ShieldCheck size={15} />
+                  <span>Verify (signed by {userProfile?.displayName || 'you'})</span>
+                </button>
+              </div>
             </div>
           </form>
         </Modal>
@@ -1143,10 +1392,31 @@ export const JobsListPage: React.FC = () => {
                 <div style={{ fontWeight: 700 }}>{formatDate(selectedJob.scheduledDate)} ({selectedJob.timeSlot})</div>
               </div>
               <div>
-                <span style={{ color: 'var(--text-muted)' }}>Team Leader:</span>
-                <div style={{ fontWeight: 600 }}>{selectedJob.leadPcoName}</div>
+                <span style={{ color: 'var(--text-muted)' }}>Team:</span>
+                <div style={{ fontWeight: 600 }}>{teamLabel(selectedJob).tl || 'No Supervisor'}{selectedJob.teamLeaderOnSite ? ' (on site)' : ''}</div>
+                <div style={{ fontSize: '0.78rem' }}>
+                  {selectedJob.performedByPcoIds?.length ? 'Performed by: ' : 'Planned PCOs: '}
+                  {teamLabel(selectedJob).pcos || '—'}
+                </div>
               </div>
             </div>
+
+            {selectedJob.qcReturn && selectedJob.status === 'in_progress' && (
+              <div style={{ padding: '0.75rem', background: '#FFF7ED', border: '1px solid #FDBA74', borderRadius: 'var(--radius-sm)' }}>
+                <strong>Sent back by QC ({selectedJob.qcReturn.byName}, {formatDate(selectedJob.qcReturn.at)}):</strong> {selectedJob.qcReturn.reason}
+              </div>
+            )}
+            {selectedJob.status === 'cancelled' && selectedJob.cancellationReason && (
+              <div style={{ padding: '0.75rem', background: '#F8FAFC', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)' }}>
+                <strong>Cancelled{selectedJob.visitOutcome === 'client_blocked' ? ' (client blocked access)' : ''}:</strong> {selectedJob.cancellationReason}
+              </div>
+            )}
+            {selectedJob.preCheck && (
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                ✓ Pre-check by {selectedJob.preCheck.confirmedByName} ({formatDate(selectedJob.preCheck.confirmedAt)}): uniform, safety gear, chemicals issued
+                {selectedJob.preCheck.chemicalsIssuedNote ? ` — ${selectedJob.preCheck.chemicalsIssuedNote}` : ''}
+              </div>
+            )}
 
             {selectedJob.customerSignOff && (
               <div style={{ padding: '0.75rem', backgroundColor: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: 'var(--radius-sm)' }}>
@@ -1223,12 +1493,12 @@ export const JobsListPage: React.FC = () => {
           </div>
         </Modal>
       )}
-      {/* Modal: Submit Service Report (Team Leader submits after visit) */}
+      {/* Modal: Submit Service Report (Supervisor submits after visit) */}
       {showReportModal && (
         <Modal
           isOpen
           onClose={() => setShowReportModal(null)}
-          title={`Submit Service Report: ${showReportModal.id}`}
+          title={`Close Out Visit: ${showReportModal.id}`}
           subtitle={`${showReportModal.customerName} · ${showReportModal.siteName} · ${formatDate(showReportModal.scheduledDate)} (${showReportModal.timeSlot})`}
           maxWidth="720px"
           footer={
@@ -1236,48 +1506,96 @@ export const JobsListPage: React.FC = () => {
               <button className="btn btn-secondary" onClick={() => setShowReportModal(null)}>Cancel</button>
               <button className="btn btn-primary" onClick={handleSubmitReport}>
                 <FileCheck2 size={15} />
-                <span>Submit Report & Complete Job</span>
+                <span>
+                  {reportVisitOutcome === 'postponed' ? 'Reschedule visit'
+                    : reportVisitOutcome === 'client_blocked' ? 'Record & close visit'
+                    : 'Submit report for QC'}
+                </span>
               </button>
             </>
           }
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {showReportModal.qcReturn && (
+              <div style={{ padding: '0.65rem 0.85rem', background: '#FFF7ED', border: '1px solid #FDBA74', borderRadius: 6, fontSize: '0.8rem' }}>
+                <strong>QC sent this back:</strong> {showReportModal.qcReturn.reason}
+              </div>
+            )}
+
+            {/* Step 1: what happened */}
             <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label">Team Leader (responsible)</label>
-              <input className="form-input" value={showReportModal.leadPcoName} disabled />
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">PCO who performed this visit</label>
-                <select
-                  className="form-select"
-                  value={reportPcoId}
-                  onChange={(e) => setReportPcoId(e.target.value)}
-                >
-                  <option value="">— Team Leader did it personally —</option>
-                  {dataService.getStaff(['technician']).map((t) => (
-                    <option key={t.uid} value={t.uid}>{t.displayName}</option>
-                  ))}
-                </select>
-                <div className="form-hint">Leave blank if the Team Leader went on site personally.</div>
-              </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Visit outcome</label>
-                <select
-                  className="form-select"
-                  value={reportVisitOutcome}
-                  onChange={(e) => setReportVisitOutcome(e.target.value as typeof reportVisitOutcome)}
-                >
-                  <option value="completed">Completed — full service done</option>
-                  <option value="partial">Partial — some areas done</option>
-                  <option value="client_blocked">Client blocked access</option>
-                  <option value="postponed">Postponed on site</option>
-                </select>
+              <label className="form-label">What happened on this visit? <span className="required">*</span></label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.4rem' }}>
+                {([
+                  ['completed', 'Completed', 'Full service done'],
+                  ['partial', 'Partial', 'Some areas done'],
+                  ['client_blocked', 'Client blocked', 'No access to site'],
+                  ['postponed', 'Postponed', 'Do it another day'],
+                ] as const).map(([val, label, hint]) => (
+                  <label key={val} className="doc-check" style={{ border: `1px solid ${reportVisitOutcome === val ? 'var(--ikpm-emerald-600)' : 'var(--border-subtle)'}`, background: reportVisitOutcome === val ? 'var(--ikpm-emerald-50)' : undefined }}>
+                    <input type="radio" name="visitOutcome" checked={reportVisitOutcome === val} onChange={() => setReportVisitOutcome(val)} />
+                    <span style={{ fontSize: '0.82rem' }}><strong>{label}</strong><br /><span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>{hint}</span></span>
+                  </label>
+                ))}
               </div>
             </div>
 
-            <div>
+            {(reportVisitOutcome === 'client_blocked' || reportVisitOutcome === 'postponed') && (
+              <div style={{ display: 'grid', gridTemplateColumns: reportVisitOutcome === 'postponed' ? '1fr 2fr' : '1fr', gap: '0.75rem' }}>
+                {reportVisitOutcome === 'postponed' && (
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">New visit date <span className="required">*</span></label>
+                    <input type="date" className="form-input" min={todayStr} value={reportNewDate} onChange={(e) => setReportNewDate(e.target.value)} />
+                  </div>
+                )}
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">{reportVisitOutcome === 'postponed' ? 'Reason for postponing' : 'What happened on site'} <span className="required">*</span></label>
+                  <input
+                    className="form-input"
+                    value={reportOutcomeReason}
+                    onChange={(e) => setReportOutcomeReason(e.target.value)}
+                    placeholder={reportVisitOutcome === 'postponed' ? 'e.g. Client asked to come after stock-taking' : 'e.g. Gate locked, manager not reachable'}
+                  />
+                </div>
+                {reportVisitOutcome === 'client_blocked' && (
+                  <div className="form-hint">Add a photo below as proof (e.g. the closed gate). No challan is needed.</div>
+                )}
+              </div>
+            )}
+
+            {/* Step 2: who did the work (PCOs have no login, the Supervisor ticks them) */}
+            {(reportVisitOutcome === 'completed' || reportVisitOutcome === 'partial') && (
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">
+                  Who did the work? <span className="required">*</span>
+                  <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>
+                    Supervisor: {showReportModal.assignedTeamLeaderName || showReportModal.leadPcoName}
+                  </span>
+                </label>
+                <PcoTicks
+                  pcos={dataService.getTeamPcos(showReportModal.assignedTeamLeaderId || showReportModal.leadPcoId)}
+                  selected={reportPcoIds}
+                  onChange={setReportPcoIds}
+                  otherPcos={allPcos}
+                />
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', marginTop: 6, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={reportTlOnSite} onChange={(e) => setReportTlOnSite(e.target.checked)} />
+                  <span>I (Supervisor) was on site / did it myself</span>
+                </label>
+                {reportPcoIds.some((id) => !dataService.getTeamPcos(showReportModal.assignedTeamLeaderId || showReportModal.leadPcoId).some((e) => e.id === id)) && (
+                  <input
+                    className="form-input"
+                    style={{ marginTop: 6 }}
+                    value={reportBorrowReason}
+                    onChange={(e) => setReportBorrowReason(e.target.value)}
+                    placeholder="Why a PCO from another team was used (required)"
+                  />
+                )}
+                <div className="form-hint">Every ticked PCO gets credit for this visit in payroll once QC verifies it.</div>
+              </div>
+            )}
+
+            {(reportVisitOutcome === 'completed' || reportVisitOutcome === 'partial') && <div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
                 <label className="form-label" style={{ marginBottom: 0 }}>Items / products used <span className="required">*</span></label>
                 <button
@@ -1328,12 +1646,12 @@ export const JobsListPage: React.FC = () => {
                       onClick={() => setReportItems((prev) => prev.length > 1 ? prev.filter((_, i) => i !== idx) : prev)}
                       title="Remove"
                     >
-                      <AlertTriangle size={13} style={{ color: 'var(--ikpm-rose-500)' }} />
+                      <X size={13} style={{ color: 'var(--ikpm-rose-500)' }} />
                     </button>
                   </div>
                 ))}
               </div>
-            </div>
+            </div>}
 
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Findings / execution notes</label>
@@ -1389,12 +1707,13 @@ export const JobsListPage: React.FC = () => {
               )}
             </div>
 
+            {(reportVisitOutcome === 'completed' || reportVisitOutcome === 'partial') && <>
             {/* Final report photos */}
             <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
                 <label className="form-label" style={{ marginBottom: 0 }}>
                   <Camera size={14} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-                  Final report photos <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.75rem' }}>(after treatment)</span>
+                  After photos <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.75rem' }}>(same areas, after treatment)</span>
                 </label>
                 <label className="btn btn-sm btn-secondary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
                   <Camera size={13} /> Add photo
@@ -1432,73 +1751,58 @@ export const JobsListPage: React.FC = () => {
               )}
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.75rem', alignItems: 'flex-end' }}>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Client representative name (optional sign-off)</label>
-                <input
-                  className="form-input"
-                  value={reportClientName}
-                  onChange={(e) => setReportClientName(e.target.value)}
-                  placeholder="Name of client contact who acknowledged the visit"
-                />
+            {/* Delivery & Service Challan Section (Change 39: Mandatory) */}
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem', background: '#F8FAFC', padding: '0.85rem', borderRadius: 8, border: '1px solid #E2E8F0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <h4 style={{ fontSize: '0.875rem', fontWeight: 700, margin: 0, color: '#0F5132', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <span>Delivery & Service Challan (Physical Signed Copy)</span>
+                  <span style={{ color: '#DC2626', fontSize: '0.9rem' }}>*</span>
+                </h4>
+                <span className="badge badge-amber" style={{ fontSize: '0.7rem', fontWeight: 700 }}>
+                  Mandatory (Not Optional)
+                </span>
               </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Satisfaction rating</label>
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  {([1, 2, 3, 4, 5] as const).map((star) => (
-                    <button
-                      key={star}
-                      type="button"
-                      onClick={() => setReportRating(star)}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        fontSize: '1.4rem',
-                        lineHeight: 1,
-                        color: star <= reportRating ? '#F59E0B' : 'var(--border-subtle)',
-                        padding: '0 2px',
-                      }}
-                      aria-label={`${star} star`}
-                    >★</button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Delivery & Service Challan Section (Change 39) */}
-            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem', background: '#F8FAFC', padding: '0.75rem', borderRadius: 6 }}>
-              <h4 style={{ fontSize: '0.85rem', fontWeight: 700, margin: '0 0 0.5rem 0', color: '#0F5132' }}>
-                Delivery & Service Challan (Physical Signed Copy)
-              </h4>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.5rem' }}>
+              <p style={{ margin: '0 0 0.65rem 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                Field protocol requires a physical copy of the delivery &amp; service challan with client signature. Both challan number and signed document copy are required before completing the job.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.65rem' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Physical Challan #</label>
+                  <label className="form-label">
+                    Physical Challan # <span className="required" style={{ color: '#DC2626' }}>*</span>
+                  </label>
                   <input
                     type="text"
                     className="form-input"
                     value={reportChallanNumber}
                     onChange={(e) => setReportChallanNumber(e.target.value)}
                     placeholder="e.g. CHL-2026-0042"
+                    required
                   />
                   <div className="form-hint">Physical signed delivery/service challan number</div>
                 </div>
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Challan Date</label>
+                  <label className="form-label">
+                    Challan Date <span className="required" style={{ color: '#DC2626' }}>*</span>
+                  </label>
                   <input
                     type="date"
                     className="form-input"
                     value={reportChallanDate}
                     onChange={(e) => setReportChallanDate(e.target.value)}
+                    required
                   />
                 </div>
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Upload Signed Challan Picture / Document</label>
+                <label className="form-label">
+                  Upload Signed Challan Picture / Document <span className="required" style={{ color: '#DC2626' }}>*</span>
+                </label>
                 <input
                   type="file"
                   accept="image/*,application/pdf"
+                  capture="environment"
                   className="form-input"
+                  required
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) {
@@ -1511,16 +1815,104 @@ export const JobsListPage: React.FC = () => {
                     }
                   }}
                 />
-                {reportChallanFileUrl && (
-                  <div style={{ marginTop: '0.35rem', fontSize: '0.75rem', color: '#0F5132', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                    <span>✓ Challan picture ready to save into client Challans folder</span>
+                {reportChallanFileUrl ? (
+                  <div style={{ marginTop: '0.4rem', fontSize: '0.75rem', color: '#0F5132', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <span>✓ Physical signed challan copy attached and ready to archive in client Challans folder</span>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: '0.4rem', fontSize: '0.75rem', color: '#DC2626', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <span>⚠️ Physical signed challan copy is mandatory to submit this service report</span>
                   </div>
                 )}
               </div>
             </div>
+            </>}
           </div>
         </Modal>
       )}
+      {/* Modal: Start Visit — pre-check + before photos (SRS 5.5 start gate) */}
+      {startJob && (
+        <Modal
+          isOpen
+          onClose={() => setStartJob(null)}
+          title={`Start Visit: ${startJob.id}`}
+          subtitle={`${startJob.customerName} · ${startJob.siteName} · Supervisor: ${startJob.assignedTeamLeaderName || startJob.leadPcoName}`}
+          maxWidth="560px"
+          footer={
+            <>
+              <button className="btn btn-secondary" onClick={() => setStartJob(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleStartJob}>
+                <ArrowRight size={15} /> <span>Start visit</span>
+              </button>
+            </>
+          }
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <div>
+              <label className="form-label">Before starting, confirm for the whole team <span className="required">*</span></label>
+              {([
+                ['uniform', 'Everyone is in uniform'],
+                ['safetyGear', 'Safety gear (mask, gloves, goggles) checked'],
+                ['chemicalsIssued', 'Chemicals issued from store and logged'],
+              ] as const).map(([key, label]) => (
+                <label key={key} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', padding: '0.3rem 0', cursor: 'pointer', fontSize: '0.85rem' }}>
+                  <input type="checkbox" checked={preCheck[key]} onChange={(e) => setPreCheck({ ...preCheck, [key]: e.target.checked })} />
+                  <span>{label}</span>
+                </label>
+              ))}
+              <input
+                className="form-input"
+                style={{ marginTop: 4 }}
+                value={preCheck.note}
+                onChange={(e) => setPreCheck({ ...preCheck, note: e.target.value })}
+                placeholder="What was issued (optional), e.g. Maxforce gel 2 tubes, Premise 200 ml"
+              />
+            </div>
+
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <label className="form-label" style={{ marginBottom: 0 }}>
+                  <Camera size={14} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                  Before photos <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.75rem' }}>(optional)</span>
+                </label>
+                <label className="btn btn-sm btn-secondary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Camera size={13} /> Add photo
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    multiple
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      Array.from(e.target.files || []).forEach((file) => {
+                        const reader = new FileReader();
+                        reader.onload = () => setBeforePhotos((p) => [...p, { id: `bp_${Date.now()}_${Math.random()}`, url: reader.result as string }]);
+                        reader.readAsDataURL(file);
+                      });
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+              <div className="form-hint">Photograph the problem areas before treatment. Take the after photos of the same areas.</div>
+              {beforePhotos.length > 0 && (
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: 6 }}>
+                  {beforePhotos.map((p) => (
+                    <div key={p.id} style={{ position: 'relative' }}>
+                      <img src={p.url} alt="" style={{ width: 80, height: 60, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border-subtle)' }} />
+                      <button type="button" onClick={() => setBeforePhotos((prev) => prev.filter((x) => x.id !== p.id))}
+                        style={{ position: 'absolute', top: 2, right: 2, background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: '50%', cursor: 'pointer', padding: 2, display: 'flex' }}>
+                        <X size={10} color="white" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {/* Modal: Edit Schedule & Time Slot */}
       {showEditScheduleJob && (
         <Modal
@@ -1611,7 +2003,7 @@ export const JobsListPage: React.FC = () => {
               </div>
             </div>
             <div className="form-group">
-              <label className="form-label">Assigned Team Leader / PCO</label>
+              <label className="form-label">Assigned Supervisor / PCO</label>
               <select
                 className="form-select"
                 value={scheduleForm.leadPcoId}

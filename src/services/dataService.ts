@@ -21,6 +21,7 @@ import {
 import { db } from '../lib/firebase';
 import {
   accessLevel,
+  baseRoleOf,
   canAccessModule,
   DEFAULT_ROLES,
   getRole,
@@ -56,6 +57,7 @@ import {
   syncLeadFields,
 } from '../lib/leadWorkflow';
 import { deleteFromCloudinary } from '../lib/cloudinary';
+import { pcoEmployeeConflicts } from '../lib/visitSchedule';
 import {
   clientInfoFrom,
   documentLink,
@@ -149,11 +151,12 @@ const COLLECTIONS: Record<StateKey, string> = {
   complaints: 'complaints',
   approvals: 'approvals',
   challans: 'challans',
-  employees: 'hr',
-  employeePrivate: 'hr',
-  employeePay: 'payroll',
+  // Must match the collections the save* methods write to and the firestore.rules blocks
+  employees: 'employees',
+  employeePrivate: 'employee_private',
+  employeePay: 'employee_pay',
   attendance: 'attendance',
-  salaryCycles: 'payroll',
+  salaryCycles: 'salary_cycles',
 };
 
 /** Document owner kinds that are client files; 'library' is the Company (IKPM) area (mirrors firestore.rules). */
@@ -331,6 +334,8 @@ class DataService {
   private partials = new Map<StateKey, Map<string, Map<string, unknown>>>();
   private cloud: CloudState = { status: 'signed_out', pendingWrites: 0, blocked: [] };
   private loadedKeys = new Set<StateKey>();
+  /** Collections whose current list came from the server, not only the offline cache. */
+  private serverLoadedKeys = new Set<StateKey>();
 
   // --- Store plumbing ---
 
@@ -361,6 +366,8 @@ class DataService {
     this.closeScoped();
     this.partials.clear();
     this.loadedKeys.clear();
+    this.serverLoadedKeys.clear();
+    this.autoUploadStarted = false;
     this.s = emptyState();
     this.session = session;
 
@@ -452,7 +459,11 @@ class DataService {
       if (can('jobs')) qs.push(...(all ? [col] : ownAndTeam()));
       // Field app: jobs assigned to this person. CRM roles (CRO) are never field workers and skip
       // this query — their pco access is only for meeting reports, not service jobs.
-      if (can('pco') && !can('crm') && !(can('jobs') && all)) qs.push(query(col, where('assignedTechnicianIds', 'array-contains', se.uid)));
+      if (can('pco') && !can('crm') && !(can('jobs') && all)) {
+        qs.push(query(col, where('assignedTechnicianIds', 'array-contains', se.uid)));
+        // Supervisor named on the job (PCOs have no login; the TL runs and submits it)
+        qs.push(query(col, where('assignedTeamLeaderId', '==', se.uid)));
+      }
       return qs;
     }
 
@@ -486,6 +497,11 @@ class DataService {
       return all ? [col] : ownAndTeam();
     }
 
+    // HR employee directory: every active person may read it (PCO roster for supervisors).
+    if (key === 'employees') return [col];
+    // CNIC / bank / witnesses: HR and super admin only (checked by role in firestore.rules).
+    if (key === 'employeePrivate') return se.role === 'super_admin' || se.role === 'hr' ? [col] : [];
+
     // Approvals: managers (edit) may list all; view-only roles (CRO, operations) may only read
     // their own requests. A bare collection query fails the Firestore rule for non-editors.
     if (key === 'approvals') {
@@ -514,10 +530,12 @@ class DataService {
         this.partials.get(key)!.set(queryKey, docs);
         this.rebuild(key);
         this.loadedKeys.add(key);
+        if (!snap.metadata.fromCache) this.serverLoadedKeys.add(key);
         if (this.cloud.status === 'connecting') this.cloud = { ...this.cloud, status: 'live' };
         if (key === 'roles') this.onRolesUpdated();
         this.commit();
         this.maybeSeedDefaults(key, snap.empty && !snap.metadata.fromCache);
+        this.maybeAutoUploadLocal();
       },
       (err) => {
         console.error(`[Firestore] subscription to "${COLLECTIONS[key]}" failed:`, err);
@@ -676,6 +694,38 @@ class DataService {
     return [...this.s.teams].sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  /** Field Supervisors: active logins whose role is (or is based on) Supervisor / Operations Coordinator. */
+  public getTeamLeaders(): UserProfile[] {
+    return this.getStaff().filter((u) => baseRoleOf(u.role) === 'team_leader');
+  }
+
+  /** Active PCOs (HR employees; PCOs have no portal login). */
+  public getActivePcos(): Employee[] {
+    return this.getEmployees().filter((e) => e.role === 'pco' && e.status !== 'inactive');
+  }
+
+  /**
+   * PCOs in a Supervisor's team: employees whose "Supervisor" (reportingCoordinatorId) is the
+   * TL's login uid, or the TL's own employee record when the HR page stored that instead.
+   */
+  public getTeamPcos(teamLeaderUid?: string): Employee[] {
+    if (!teamLeaderUid) return [];
+    const tlIds = new Set([teamLeaderUid, ...this.getEmployees().filter((e) => e.uid === teamLeaderUid).map((e) => e.id)]);
+    return this.getActivePcos().filter((e) => !!e.reportingCoordinatorId && tlIds.has(e.reportingCoordinatorId));
+  }
+
+  /** Display names for PCO employee ids (falls back to the id). */
+  public pcoNames(employeeIds?: string[]): string[] {
+    return (employeeIds ?? []).map((id) => this.getEmployeeById(id)?.name || id);
+  }
+
+  /** "Imran Hussain (Supervisor) · Usman, Bilal": who worked (or is planned) on a job, for traceability. */
+  public jobTeamText(job: ServiceJob): string {
+    const tl = job.assignedTeamLeaderName || (job.leadPcoName && job.leadPcoName !== 'Unassigned' ? job.leadPcoName : '');
+    const pcos = this.pcoNames(job.performedByPcoIds?.length ? job.performedByPcoIds : job.assignedPcoEmployeeIds);
+    return [tl ? `${tl} (Supervisor)` : '', pcos.join(', ')].filter(Boolean).join(' · ') || 'Unassigned';
+  }
+
   // --- One-time upload of data that was only saved in this browser ---
   private readLegacy(): Partial<DbState> | null {
     try {
@@ -704,7 +754,30 @@ class DataService {
     }).filter((g) => g.items.length > 0);
   }
 
-  public async uploadLocalRecords(includeSamples = false): Promise<number> {
+  /**
+   * Automatic version of the one-time upload: runs once per browser when the super admin is signed
+   * in and the server copy of the affected collections has loaded. Adds only records the cloud
+   * doesn't have yet, so a stale browser can never overwrite newer cloud data. Demo records are
+   * never uploaded automatically.
+   */
+  private autoUploadStarted = false;
+  private maybeAutoUploadLocal() {
+    const se = this.session;
+    if (this.autoUploadStarted || !se || se.role !== 'super_admin') return;
+    const groups = this.localGroups(false);
+    if (!groups.length) return;
+    if (!groups.every((g) => this.serverLoadedKeys.has(g.key))) return; // wait for the real cloud list
+    this.autoUploadStarted = true;
+    this.uploadLocalRecords(false, true)
+      .then((n) => n && console.info(`[dataService] Auto-uploaded ${n} record(s) saved only in this browser.`))
+      .catch((err) => console.warn('[dataService] Automatic upload of browser-only records failed; it can be retried from Settings → Cloud database.', err));
+  }
+
+  /**
+   * Uploads records that were saved only in this browser.
+   * `onlyNew`: skip records whose id already exists in the cloud (cloud copy wins).
+   */
+  public async uploadLocalRecords(includeSamples = false, onlyNew = false): Promise<number> {
     if (!this.session) throw new Error('Sign in first.');
     const groups = this.localGroups(includeSamples);
     const owner = this.ownership();
@@ -712,7 +785,9 @@ class DataService {
     let batch = writeBatch(db);
     let inBatch = 0;
     for (const g of groups) {
+      const inCloud = new Set(((this.s[g.key] ?? []) as { id: string }[]).map((x) => x.id));
       for (const item of g.items) {
+        if (onlyNew && inCloud.has(item.id)) continue;
         const data = SCOPED.includes(g.key) || g.key === 'documents' ? { ...owner, ...item } : item;
         batch.set(doc(db, g.collection, item.id), toFirestore(data) as Record<string, unknown>, { merge: true });
         count++;
@@ -737,8 +812,9 @@ class DataService {
       entityType: 'user',
       entityId: this.session.uid,
       entityTitle: 'Local data upload',
-      details: `Uploaded ${count} record(s) saved in this browser to Cloud Firestore`,
+      details: `${onlyNew ? 'Automatically uploaded' : 'Uploaded'} ${count} record(s) saved in this browser to Cloud Firestore`,
     });
+    this.commit();
     return count;
   }
 
@@ -1077,6 +1153,8 @@ class DataService {
       meetingAddress?: string;
       instructions?: string;
       meetingType?: import('../types/crm').MeetingType;
+      /** PCOs (HR employee ids) going along — they have no login. */
+      pcoEmployeeIds?: string[];
     },
     userEmail = 'admin'
   ): Lead | undefined {
@@ -1114,6 +1192,8 @@ class DataService {
       inspectorNames: people.map((p) => p.displayName),
       inspectorId: leader?.uid || people[0]?.uid || '',
       inspectorName: leader?.displayName || people.map((p) => p.displayName).join(', ') || team?.name || 'Unassigned',
+      pcoEmployeeIds: plan.pcoEmployeeIds ?? [],
+      pcoEmployeeNames: this.pcoNames(plan.pcoEmployeeIds),
       instructions: plan.instructions,
       meetingAddress: plan.meetingAddress,
       meetingType: plan.meetingType || lead.inspection?.meetingType || 'first_meeting',
@@ -1135,7 +1215,7 @@ class DataService {
         this.activity({
           kind: 'inspection',
           channel: 'visit',
-          note: `${rescheduled ? `${meetingLabel} rescheduled` : `${meetingLabel} scheduled`} for ${formatDate(plan.date)} (${plan.timeSlot})${team ? ` · ${team.name}` : ''}${leader ? ` · Leader: ${leader.displayName}` : people.length ? ` · ${inspection.inspectorName}` : ''}${plan.meetingAddress ? ` @ ${plan.meetingAddress}` : ''}`,
+          note: `${rescheduled ? `${meetingLabel} rescheduled` : `${meetingLabel} scheduled`} for ${formatDate(plan.date)} (${plan.timeSlot})${team ? ` · ${team.name}` : ''}${leader ? ` · Leader: ${leader.displayName}` : people.length ? ` · ${inspection.inspectorName}` : ''}${people.filter((p) => p.uid !== leader?.uid).length ? ` · With: ${people.filter((p) => p.uid !== leader?.uid).map((p) => p.displayName).join(', ')}` : ''}${plan.pcoEmployeeIds?.length ? ` · PCOs: ${this.pcoNames(plan.pcoEmployeeIds).join(', ')}` : ''}${plan.meetingAddress ? ` @ ${plan.meetingAddress}` : ''}`,
         }),
         ...(lead.activities ?? []),
       ],
@@ -1196,14 +1276,16 @@ class DataService {
     return this.saveLead(updated, userEmail, 'Meeting / Inspection findings recorded');
   }
 
-  /** Saves the meeting report from the Team Leader. Advances to meeting_done unless it's a negotiation/renewal meeting. */
+  /** Saves the meeting report from the Supervisor. Advances to meeting_done unless it's a negotiation/renewal meeting. */
   public recordMeetingReport(
     leadId: string,
     report: Partial<Pick<InspectionAssessment,
       | 'teamLeaderNotes' | 'clientRequest' | 'meetingFollowUps' | 'meetingReportNote' | 'tlStatus'
       | 'reportTitle' | 'siteName' | 'observedBy' | 'meetingType' | 'inspectionHandling'
       | 'schedulingNote' | 'preferredInspectionDate' | 'assignedTeamLeaderId' | 'assignedTeamLeaderName'
-      | 'negotiationTermsNote'
+      | 'negotiationTermsNote' | 'findingsBy'
+      // Who actually attended (inspection-level only; the lead's access list stays as scheduled)
+      | 'inspectorIds' | 'inspectorNames' | 'pcoEmployeeIds' | 'pcoEmployeeNames'
       // Inline inspection fields (when inspectionHandling === 'done_inline')
       | 'pestTypesFound' | 'infestationSeverity' | 'areaSqFt' | 'criticalFindings' | 'recommendedTreatment'
       | 'photos' | 'photoEvidenceUrls'
@@ -1246,7 +1328,7 @@ class DataService {
       // When switching away from done_inline, clear pest fields so the proposal gate isn't tripped by stale data
       ...(report.inspectionHandling && !isDoneInline ? { pestTypesFound: [], criticalFindings: '', recommendedTreatment: '' } : {}),
       completedDate: base?.completedDate || now().slice(0, 10),
-      findingsBy: base?.findingsBy || this.session?.name,
+      findingsBy: report.findingsBy || base?.findingsBy || this.session?.name,
       status: 'completed',
     };
     const mergedBranches = branches?.length
@@ -1635,7 +1717,7 @@ class DataService {
       proposal.status = 'pending_approval';
       proposal.approval = {
         ruleId: 'AP-01',
-        ruleDescription: `Discount ${proposal.discountPercent}% exceeds standard authority threshold (10%). Requires Sales Manager / CEO Approval.`,
+        ruleDescription: `Discount ${proposal.discountPercent}% exceeds standard authority threshold (10%). Requires CRO Manager / CEO Approval.`,
         requiredRole: proposal.discountPercent > 20 ? 'ceo' : 'sales_manager',
         status: 'pending',
         requestedAt: ts,
@@ -1890,21 +1972,21 @@ class DataService {
 
   /**
    * Creates the reviewed visit schedule (src/lib/visitSchedule.ts) as service_jobs: one job per
-   * visit, service and follow-up linked through pairedJobId. Refuses PCO double-bookings.
+   * visit, service and follow-up linked through pairedJobId.
+   * Each visit has a Supervisor (login: pcoId/pcoName) and optional planned PCOs (HR employee ids).
+   * Refuses PCO double-bookings; a Supervisor may run several visits in the same slot.
    */
   public createScheduledJobs(
     contract: Contract,
-    visits: { key: string; branchId: string; branchName: string; date: string; kind: 'service' | 'follow_up'; pairKey?: string; timeSlot: ServiceJob['timeSlot']; windowStart?: string; windowEnd?: string; pcoId?: string; pcoName?: string; services?: string[] }[],
+    visits: { key: string; branchId: string; branchName: string; date: string; kind: 'service' | 'follow_up'; pairKey?: string; timeSlot: ServiceJob['timeSlot']; windowStart?: string; windowEnd?: string; pcoId?: string; pcoName?: string; pcoEmployeeIds?: string[]; services?: string[] }[],
     userEmail = 'admin'
   ): ServiceJob[] {
-    const booked = new Set<string>();
-    this.s.jobs.filter((j) => j.status !== 'cancelled').forEach((j) => j.assignedTechnicianIds.forEach((u) => booked.add(`${u}|${j.scheduledDate.slice(0, 10)}|${j.timeSlot}`)));
-    visits.forEach((v) => {
-      if (!v.pcoId) return;
-      const k = `${v.pcoId}|${v.date}|${v.timeSlot}`;
-      if (booked.has(k)) throw new Error(`${v.pcoName || 'The PCO'} is already booked on ${v.date} (${v.timeSlot.replace('_', ' ')}).`);
-      booked.add(k);
-    });
+    const clashes = pcoEmployeeConflicts(visits, this.s.jobs.filter((j) => j.contractId !== contract.id));
+    if (clashes.size) {
+      const [key, emps] = clashes.entries().next().value as [string, string[]];
+      const v = visits.find((x) => x.key === key)!;
+      throw new Error(`${this.pcoNames(emps).join(', ')} already booked on ${v.date} (${v.timeSlot.replace('_', ' ')}). Pick another PCO or date.`);
+    }
 
     const stamp = Date.now().toString(36).toUpperCase();
     const idOf = new Map(visits.map((v, i) => [v.key, `JOB-${stamp}-${String(i + 1).padStart(3, '0')}`]));
@@ -1935,16 +2017,14 @@ class DataService {
         windowEnd: v.windowEnd,
         visitKind: v.kind,
         pairedJobId: v.pairKey ? idOf.get(v.pairKey) : undefined,
-        assignedTechnicianIds: v.pcoId ? [v.pcoId] : [],
-        assignedTechnicianNames: v.pcoName ? [v.pcoName] : [],
-        leadPcoId: v.pcoId || '',
-        leadPcoName: v.pcoName || 'Unassigned',
+        ...this.teamFields(v.pcoId || contract.assignedTeamLeaderId, v.pcoId ? v.pcoName : contract.assignedTeamLeaderName, v.pcoEmployeeIds),
         status: 'scheduled',
         checklists: [],
         chemicalsUsed: [],
         photoEvidence: [],
         createdAt: now(),
         updatedAt: now(),
+        ...this.ownership(),
       };
       this.saveJob(job, userEmail);
       return job;
@@ -1952,6 +2032,24 @@ class DataService {
     this.saveContract({ ...contract, totalJobsScheduled: (contract.totalJobsScheduled || 0) + created.length }, userEmail);
     this.audit(userEmail, 'create', 'contract', contract.id, contract.customerName, `Scheduled ${created.length} visits (${created.filter((j) => j.visitKind === 'service').length} service, ${created.filter((j) => j.visitKind === 'follow_up').length} follow-up)`);
     return created;
+  }
+
+  /**
+   * Who is on a job. The Supervisor is the only login (assignedTechnicianIds drives who can open
+   * it); PCOs are HR employee ids. Names list TL first, then PCOs, for cards and reports.
+   */
+  public teamFields(teamLeaderUid?: string, teamLeaderName?: string, pcoEmployeeIds: string[] = []) {
+    const tlName = teamLeaderName || this.getUsers().find((u) => u.uid === teamLeaderUid)?.displayName || '';
+    const pcos = Array.from(new Set(pcoEmployeeIds.filter(Boolean)));
+    return {
+      assignedTeamLeaderId: teamLeaderUid || undefined,
+      assignedTeamLeaderName: teamLeaderUid ? tlName : undefined,
+      assignedTechnicianIds: teamLeaderUid ? [teamLeaderUid] : [],
+      assignedTechnicianNames: [...(teamLeaderUid ? [tlName] : []), ...this.pcoNames(pcos)],
+      leadPcoId: teamLeaderUid || '',
+      leadPcoName: teamLeaderUid ? tlName : 'Unassigned',
+      assignedPcoEmployeeIds: pcos,
+    } satisfies Partial<ServiceJob>;
   }
 
   // --- Service Jobs & PCO Operations ---
@@ -1972,6 +2070,9 @@ class DataService {
   }
 
   public saveJob(job: ServiceJob, userEmail = 'admin'): ServiceJob {
+    if (!job.ownerUid && this.session?.uid) {
+      Object.assign(job, this.ownership());
+    }
     this.fileRecord(job, {
       customerId: job.customerId,
       customerType: job.customerType,
@@ -2162,7 +2263,7 @@ class DataService {
       cycle.title,
       created ? 'Generated payroll cycle ' + cycle.title : 'Updated payroll cycle ' + cycle.title + ' -> ' + cycle.status
     );
-    this.write('salaryCycles', cycle.id, cycle);
+    this.write(COLLECTIONS.salaryCycles, cycle.id, cycle);
     return cycle;
   }
 
