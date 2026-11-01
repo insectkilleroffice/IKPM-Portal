@@ -60,7 +60,7 @@
           ? {'dashboard':'view','jobs':'view','pco':'edit','attendance':'view'}
           : r == 'finance'
           ? {'dashboard':'view','invoices':'edit','tax':'view','payroll':'edit',
-            'challans':'view','search':'edit','documents':'view','contracts':'view','customers':'view','complaints':'view'}
+            'challans':'view','search':'edit','documents':'view','contracts':'view','customers':'view','complaints':'view','jobs':'view'}
           : r == 'auditor'
           ? {'dashboard':'view','audit_logs':'view','complaints':'view'}
           : r == 'hr'
@@ -83,8 +83,11 @@
           : defaultModulesFor(role());
       }
 
+      // A module the saved role document doesn't list falls back to the built-in default, exactly as
+      // the portal does (setRoleDefinitions merges defaults under the saved levels). Without this, an
+      // old role document made the portal show a button that the server then refused.
       function access(module) {
-        return roleModules().get(module, 'none');
+        return roleModules().get(module, defaultModulesFor(role()).get(module, 'none'));
       }
 
       // Role documents saved before a module existed have no entry for it: fall back to the access
@@ -343,19 +346,31 @@
       // in the field and submits the report. PCOs have no login; they are HR employee ids on the job.
       function onMyJob() {
         return request.auth.uid in resource.data.get('assignedTechnicianIds', [])
-          || resource.data.get('assignedTeamLeaderId', '') == request.auth.uid;
+          || resource.data.get('assignedTeamLeaderId', '') == request.auth.uid
+          // Older jobs named the field lead only here
+          || resource.data.get('leadPcoId', '') == request.auth.uid;
+      }
+
+      // Field steps: starting a visit (scheduled → in progress) and closing it out (in progress →
+      // completed). Only the Supervisor on the job does these. QC sending a completed report back
+      // (completed → in progress) is not a field step, so the Operations Manager can still do it.
+      function isFieldStep() {
+        return request.resource.data.get('status', '') != resource.data.get('status', '')
+          && resource.data.get('status', '') in ['scheduled', 'en_route', 'in_progress']
+          && request.resource.data.get('status', '') in ['in_progress', 'completed'];
       }
 
       match /service_jobs/{id} {
         allow read: if readMod('jobs') || (canView('pco') && onMyJob());
         // Contracts generate their visit schedule, so contract editors may create jobs too
         allow create: if (canEdit('jobs') || canEdit('contracts')) && ownsNew();
-        allow update: if updateMod('jobs')
+        allow update: if (!isFieldStep() || onMyJob()) && (
+          updateMod('jobs')
           || ((canEdit('jobs') || canEdit('contracts')) && filingOnly())
           || ((canEdit('pco') || canEdit('jobs')) && onMyJob()
               && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
                 ['ownerUid', 'teamId', 'assignedTechnicianIds', 'assignedTeamLeaderId', 'customerId', 'contractId',
-                'ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory']));
+                'ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory'])));
         allow delete: if isSuperAdmin();
       }
 
