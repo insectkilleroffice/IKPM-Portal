@@ -7,6 +7,10 @@ export interface PayrollRules {
   lateDeductionFixed: number;
   absenceDeductionRatio: number;
   jobIncentivePerUnit: number;
+  /** Normal working hours in a day; the hourly rate is salary ÷ days in cycle ÷ these hours. */
+  standardHoursPerDay: number;
+  /** Overtime pays this many times the normal hourly rate (Pakistani labour law: 2× for factories / shops). */
+  overtimeMultiplier: number;
 }
 
 export const DEFAULT_PAYROLL_RULES: PayrollRules = {
@@ -15,7 +19,27 @@ export const DEFAULT_PAYROLL_RULES: PayrollRules = {
   lateDeductionFixed: 0,
   absenceDeductionRatio: 1.0,
   jobIncentivePerUnit: 100, // PKR per verified job
+  standardHoursPerDay: 8,
+  overtimeMultiplier: 2,
 };
+
+/** The payroll rules in use: Settings → Payroll values over the built-in defaults. */
+export function payrollRulesFrom(saved?: Partial<PayrollRules>): PayrollRules {
+  const r = { ...DEFAULT_PAYROLL_RULES };
+  (Object.keys(r) as (keyof PayrollRules)[]).forEach((k) => {
+    const v = Number(saved?.[k]);
+    if (saved?.[k] !== undefined && saved?.[k] !== null && Number.isFinite(v) && v >= 0) r[k] = v;
+  });
+  return r;
+}
+
+/** Normal hourly rate from salary, and the overtime rate (a fixed rate on the pay record wins). */
+export function overtimeRateFor(pay: EmployeePay | undefined, rules: PayrollRules = DEFAULT_PAYROLL_RULES): number {
+  if (pay?.overtimeHourlyRate) return pay.overtimeHourlyRate;
+  const base = pay?.basicSalary || 0;
+  if (!base || rules.daysInCycle <= 0 || rules.standardHoursPerDay <= 0) return 0;
+  return Math.round((base / rules.daysInCycle / rules.standardHoursPerDay) * rules.overtimeMultiplier);
+}
 
 /**
  * Calculates a single employee's salary line for a 30-day cycle.
@@ -34,12 +58,18 @@ export function calculateSalaryLine(
 
   // Filter attendance for this employee in the cycle
   const empAttendance = attendanceRecords.filter((a) => a.employeeId === employee.id);
-  const presentDays = empAttendance.filter((a) => a.status === 'present').length;
   const halfDays = empAttendance.filter((a) => a.status === 'half_day').length;
   const lateMarks = empAttendance.filter((a) => a.status === 'late').length;
   const absentDays = empAttendance.filter((a) => a.status === 'absent').length;
 
-  const totalAttendanceDays = presentDays + lateMarks + halfDays * 0.5;
+  // Attendance is automatic: a day nobody marked counts as present. Only absences and half days
+  // reduce the days worked (leave and off days are paid).
+  const totalAttendanceDays = Math.max(0, rules.daysInCycle - absentDays - halfDays * 0.5);
+
+  // Overtime, from the hours entered on the daily sheet
+  const overtimeHours = empAttendance.reduce((sum, a) => sum + (Number(a.overtimeHours) || 0), 0);
+  const overtimeRate = overtimeRateFor(pay, rules);
+  const overtimePay = Math.round(overtimeHours * overtimeRate);
 
   // Count verified jobs where employee was assigned or performed
   const verifiedJobs = jobs.filter((j) => {
@@ -97,7 +127,7 @@ export function calculateSalaryLine(
 
   // Net payable calculation
   const grossPay = baseSalary + allowances;
-  const netPayable = Math.max(0, grossPay + incentive - totalDeductions);
+  const netPayable = Math.max(0, grossPay + incentive + overtimePay - totalDeductions);
 
   return {
     employeeId: employee.id,
@@ -108,6 +138,9 @@ export function calculateSalaryLine(
     attendanceDays: totalAttendanceDays,
     lateMarks,
     verifiedJobs,
+    overtimeHours,
+    overtimeRate,
+    overtimePay,
     approvedExpenses: 0,
     performanceScore: 100,
     deductions,

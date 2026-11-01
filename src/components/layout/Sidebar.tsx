@@ -184,6 +184,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onNavigate }) => {
                   end={it.end}
                   onClick={onNavigate}
                   className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                  title={it.label}
                 >
                   <it.icon size={18} />
                   <span>{it.label}</span>

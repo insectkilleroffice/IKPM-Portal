@@ -900,7 +900,7 @@ code, pre, .font-mono {
 
 /* Wide lists with many columns keep a usable width and scroll sideways instead */
 .table-container > .data-table.is-wide {
-  min-width: 1040px;
+  min-width: 900px;
 }
 
 .nowrap {
@@ -2500,4 +2500,39 @@ code, pre, .font-mono {
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
   }
   .modal-footer { padding-bottom: calc(0.75rem + env(safe-area-inset-bottom)); }
+}
+
+
+/* ==========================================================================
+   Laptop screens (1025–1440px): more room for the page, no sideways scrolling
+   The sidebar becomes an icon rail that opens over the page on hover / focus.
+   ========================================================================== */
+@media (min-width: 1025px) and (max-width: 1440px) {
+  :root { --sidebar-width: 72px; }
+
+  .sidebar {
+    width: var(--sidebar-width);
+    overflow-x: hidden;
+    transition: width 0.15s ease, box-shadow 0.15s ease;
+  }
+  .sidebar:hover,
+  .sidebar:focus-within {
+    width: 256px;
+    box-shadow: var(--shadow-xl);
+    background: var(--bg-surface);
+  }
+  .sidebar-header { padding: 0 0.75rem; justify-content: center; }
+  .sidebar:not(:hover):not(:focus-within) .brand-logo-wrap img { height: 30px; max-width: 46px; object-fit: contain; object-position: left; }
+  .sidebar:not(:hover):not(:focus-within) .sidebar-new-btn { margin: 0.25rem 0.6rem 0.75rem; padding: 0; width: 52px; justify-content: center; }
+  .sidebar:not(:hover):not(:focus-within) .sidebar-new-btn span,
+  .sidebar:not(:hover):not(:focus-within) .nav-item span,
+  .sidebar:not(:hover):not(:focus-within) .sidebar-footer { display: none; }
+  .sidebar:not(:hover):not(:focus-within) .nav-section-title { font-size: 0; padding: 0.5rem 0 0.25rem; border-top: 1px solid var(--border-subtle); margin: 0.35rem 0.5rem 0; }
+  .sidebar:not(:hover):not(:focus-within) .sidebar-nav { padding: 0.25rem 0.5rem 1rem; }
+  .sidebar:not(:hover):not(:focus-within) .nav-item { justify-content: center; padding: 0; }
+
+  .content-area { padding: 1.1rem 1.15rem 2.5rem; margin-right: 0.6rem; }
+  .data-table th { padding: 0 0.6rem; }
+  .data-table td { padding: 0.6rem 0.6rem; }
+  .page-header { flex-wrap: wrap; gap: 0.75rem; }
 }

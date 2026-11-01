@@ -17,6 +17,8 @@ import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { CompanyMaster, IndividualClient } from '../../types/customer';
 import { useDataStore } from '../../hooks/useDataStore';
+import { FieldError } from '../../components/common/FieldError';
+import { cnicProblem, emailProblem, mobileProblem, ntnProblem, phoneProblem, problemsOf, strnProblem } from '../../lib/validation';
 
 export const CustomerListPage: React.FC = () => {
   useDataStore(); // re-render when Firestore data arrives
@@ -64,6 +66,21 @@ export const CustomerListPage: React.FC = () => {
     taxStatus: 'active_filer' as const,
   });
 
+  // Optional fields may stay empty, but anything typed must be valid (shown under each field)
+  const companyErrors = {
+    ntn: ntnProblem(newCompany.ntn),
+    strn: strnProblem(newCompany.strn),
+    phone: mobileProblem(newCompany.contactPhone, { required: true, label: 'Mobile phone' }),
+    email: emailProblem(newCompany.contactEmail, { label: 'Official email' }),
+  };
+  const individualErrors = {
+    cnic: cnicProblem(newIndividual.cnic),
+    phone: mobileProblem(newIndividual.primaryPhone, { required: true, label: 'Primary mobile phone' }),
+    phone2: phoneProblem(newIndividual.secondaryPhone, { label: 'Secondary phone' }),
+    email: emailProblem(newIndividual.email, { label: 'Email address' }),
+  };
+  const [saving, setSaving] = useState(false);
+
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
   const allContracts = dataService.getContracts();
@@ -107,14 +124,20 @@ export const CustomerListPage: React.FC = () => {
   }, [clients, searchQuery, selectedCity]);
 
   // Handle Company Submission
-  const handleCreateCompany = (e: React.FormEvent) => {
+  const handleCreateCompany = async (e: React.FormEvent) => {
     e.preventDefault();
+    const problems = problemsOf(...Object.values(companyErrors));
+    if (problems.length) return warning('Please correct the form', problems.join(' '));
+    if (saving) return;
     const dups = dataService.checkDuplicates(newCompany.contactPhone, newCompany.contactEmail, newCompany.ntn);
     if (dups.length > 0) {
       warning('Potential Duplicate Customer Detected', dups[0]);
     }
 
-    const nextId = generatePermanentId('CO', companies.length + 1);
+    setSaving(true);
+    // Safe counter: two people saving at once never get the same id
+    const nextId = generatePermanentId('CO', await dataService.nextSequence('company', dataService.maxSeqOf(companies.map((c) => c.id))));
+    setSaving(false);
     const created: CompanyMaster = {
       id: nextId,
       type: 'company',
@@ -153,14 +176,19 @@ export const CustomerListPage: React.FC = () => {
   };
 
   // Handle Individual Client Submission
-  const handleCreateIndividual = (e: React.FormEvent) => {
+  const handleCreateIndividual = async (e: React.FormEvent) => {
     e.preventDefault();
+    const problems = problemsOf(...Object.values(individualErrors));
+    if (problems.length) return warning('Please correct the form', problems.join(' '));
+    if (saving) return;
     const dups = dataService.checkDuplicates(newIndividual.primaryPhone, newIndividual.email, newIndividual.cnic);
     if (dups.length > 0) {
       warning('Potential Duplicate Client Detected', dups[0]);
     }
 
-    const nextId = generatePermanentId('CL', clients.length + 1);
+    setSaving(true);
+    const nextId = generatePermanentId('CL', await dataService.nextSequence('client', dataService.maxSeqOf(clients.map((c) => c.id))));
+    setSaving(false);
     const created: IndividualClient = {
       id: nextId,
       type: 'individual',
@@ -515,6 +543,7 @@ export const CustomerListPage: React.FC = () => {
                 value={newCompany.ntn}
                 onChange={(e) => setNewCompany({ ...newCompany, ntn: e.target.value })}
               />
+              <FieldError message={companyErrors.ntn} />
             </div>
 
             <div className="form-group">
@@ -522,10 +551,11 @@ export const CustomerListPage: React.FC = () => {
               <input
                 type="text"
                 className="form-input"
-                placeholder="e.g. 17-00-9822-001"
+                placeholder="e.g. 17-00-1234-567-89"
                 value={newCompany.strn}
                 onChange={(e) => setNewCompany({ ...newCompany, strn: e.target.value })}
               />
+              <FieldError message={companyErrors.strn} />
             </div>
           </div>
 
@@ -616,6 +646,7 @@ export const CustomerListPage: React.FC = () => {
                   value={newCompany.contactPhone}
                   onChange={(e) => setNewCompany({ ...newCompany, contactPhone: e.target.value })}
                 />
+                {newCompany.contactPhone && <FieldError message={companyErrors.phone} />}
               </div>
 
               <div className="form-group">
@@ -627,6 +658,7 @@ export const CustomerListPage: React.FC = () => {
                   value={newCompany.contactEmail}
                   onChange={(e) => setNewCompany({ ...newCompany, contactEmail: e.target.value })}
                 />
+                <FieldError message={companyErrors.email} />
               </div>
             </div>
           </div>
@@ -635,7 +667,7 @@ export const CustomerListPage: React.FC = () => {
             <button type="button" className="btn btn-secondary" onClick={() => setShowCompanyModal(false)}>
               Cancel
             </button>
-            <button type="submit" className="btn btn-primary">
+            <button type="submit" className="btn btn-primary" disabled={saving}>
               Save Company Master Profile
             </button>
           </div>
@@ -673,6 +705,7 @@ export const CustomerListPage: React.FC = () => {
                 value={newIndividual.cnic}
                 onChange={(e) => setNewIndividual({ ...newIndividual, cnic: e.target.value })}
               />
+              <FieldError message={individualErrors.cnic} />
             </div>
           </div>
 
@@ -687,6 +720,7 @@ export const CustomerListPage: React.FC = () => {
                 value={newIndividual.primaryPhone}
                 onChange={(e) => setNewIndividual({ ...newIndividual, primaryPhone: e.target.value })}
               />
+              {newIndividual.primaryPhone && <FieldError message={individualErrors.phone} />}
             </div>
 
             <div className="form-group">
@@ -698,6 +732,7 @@ export const CustomerListPage: React.FC = () => {
                 value={newIndividual.secondaryPhone}
                 onChange={(e) => setNewIndividual({ ...newIndividual, secondaryPhone: e.target.value })}
               />
+              <FieldError message={individualErrors.phone2} />
             </div>
           </div>
 
@@ -711,6 +746,7 @@ export const CustomerListPage: React.FC = () => {
                 value={newIndividual.email}
                 onChange={(e) => setNewIndividual({ ...newIndividual, email: e.target.value })}
               />
+              <FieldError message={individualErrors.email} />
             </div>
 
             <div className="form-group">

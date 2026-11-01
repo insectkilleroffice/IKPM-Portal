@@ -41,10 +41,22 @@ export interface CustomerWithholdingTax {
   notes?: string;
 }
 
+/**
+ * Which of the company's two accounts bills the work:
+ * 'tax'  = Sales Tax Invoice (our NTN / STRN, provincial sales tax, tax bank account), mostly corporate;
+ * 'cash' = Cash Memo (no tax lines, cash / second bank account), mostly residential.
+ * Older invoices have no value and count as 'tax'.
+ */
+export type BillingAccount = 'tax' | 'cash';
+
+export const billingAccountOf = (inv: Pick<Invoice, 'billingAccount' | 'invoiceType'>): BillingAccount =>
+  inv.billingAccount || (inv.invoiceType === 'cash_memo' ? 'cash' : 'tax');
+
 export interface Invoice extends FolderMeta {
   id: string;
   invoiceNumber: string;
-  invoiceType: 'standard_service' | 'statutory_sales_tax_invoice';
+  invoiceType: 'standard_service' | 'statutory_sales_tax_invoice' | 'cash_memo';
+  billingAccount?: BillingAccount;
   jobId?: string;
   contractId?: string;
   customerType: CustomerType;

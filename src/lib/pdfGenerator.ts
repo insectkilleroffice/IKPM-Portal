@@ -9,7 +9,7 @@ import QRCode from 'qrcode';
 import { autoTable, type UserOptions } from 'jspdf-autotable';
 import type { Proposal } from '../types/proposal';
 import type { ServiceJob, SitePhoto } from '../types/operations';
-import type { Invoice, PaymentReceipt, TaxJurisdiction } from '../types/finance';
+import { billingAccountOf, type Invoice, type PaymentReceipt, type TaxJurisdiction } from '../types/finance';
 import type { Lead } from '../types/crm';
 import { formatDate } from './formatters';
 import { companyProfile, DEFAULT_ACCENT_COLOR, DEFAULT_BRAND_COLOR, type CompanyProfile } from '../services/companyProfile';
@@ -689,8 +689,12 @@ async function verificationQr(profile: CompanyProfile, title: string, ref: strin
   }
 }
 
-async function builder(title: string, ref: string, watermark?: string, override?: CompanyProfile, verify?: VerifyInput) {
-  const profile = override ?? companyProfile.get();
+async function builder(title: string, ref: string, watermark?: string, override?: CompanyProfile, verify?: VerifyInput, cashAccount = false) {
+  const base = override ?? companyProfile.get();
+  // Cash memos come from the second (cash) account: its trade name, no tax registration numbers
+  const profile: CompanyProfile = cashAccount
+    ? { ...base, legalName: base.cashAccount?.tradeName || base.legalName, ntn: undefined, strn: undefined, provincialTaxNo: undefined }
+    : base;
   const [logo, qr] = await Promise.all([loadLogo(profile), verify && !override ? verificationQr(profile, title, ref, verify) : null]);
   const b = new DocBuilder({ profile, logo, title, ref, watermark, qr });
   b.letterhead();
@@ -1000,16 +1004,17 @@ async function buildProposal(proposal: Proposal): Promise<jsPDF> {
 }
 
 async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
-  const isTax = invoice.invoiceType === 'statutory_sales_tax_invoice' || invoice.taxTotal > 0;
+  const isCash = billingAccountOf(invoice) === 'cash';
+  const isTax = !isCash && (invoice.invoiceType === 'statutory_sales_tax_invoice' || invoice.taxTotal > 0);
   const watermark = invoice.status === 'void_reversed' ? 'VOID' : invoice.status === 'draft' ? 'DRAFT' : invoice.status === 'paid' ? 'PAID' : undefined;
-  const { b, profile } = await builder(isTax ? 'Sales Tax Invoice' : 'Invoice', invoice.invoiceNumber, watermark, undefined, {
+  const { b, profile } = await builder(isCash ? 'Cash Memo' : isTax ? 'Sales Tax Invoice' : 'Invoice', invoice.invoiceNumber, watermark, undefined, {
     type: 'invoice', issued: invoice.issueDate, client: invoice.customerName, clientIsPerson: invoice.customerType !== 'company', amount: invoice.grossPayable, status: invoice.status,
-  });
+  }, isCash);
 
   b.titleBand(
     [
-      { label: 'Invoice No.', value: invoice.invoiceNumber },
-      { label: 'Invoice date', value: formatDate(invoice.issueDate) },
+      { label: isCash ? 'Memo No.' : 'Invoice No.', value: invoice.invoiceNumber },
+      { label: isCash ? 'Date' : 'Invoice date', value: formatDate(invoice.issueDate) },
       { label: 'Due date', value: formatDate(invoice.dueDate) },
       { label: 'Status', value: statusLabel(invoice.status) },
     ],
@@ -1019,7 +1024,9 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
   const bill = clientParty(invoice.customerType, invoice.customerId, invoice.customerName, invoice.branchId, 'Bill to');
   // clientParty lines: [branch, address, city, attn, phone/email, tax numbers]
   if (invoice.billingAddress) bill.lines[1] = invoice.billingAddress;
-  if (invoice.customerNtn || invoice.customerStrn) {
+  if (isCash) {
+    bill.lines[5] = false; // no tax numbers on a cash memo
+  } else if (invoice.customerNtn || invoice.customerStrn) {
     // The invoice's own tax numbers win over the customer profile's
     bill.lines[5] = [invoice.customerNtn && `NTN: ${invoice.customerNtn}`, invoice.customerStrn && `STRN: ${invoice.customerStrn}`].filter(Boolean).join('  ·  ');
   }
@@ -1031,7 +1038,7 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
       job && `Service job: ${job.id} (${formatDate(job.scheduledDate)})`,
       job?.siteAddress,
       invoice.contractId && `Contract: ${invoice.contractId}`,
-      [profile.ntn && `Our NTN: ${profile.ntn}`, profile.strn && `Our STRN: ${profile.strn}`].filter(Boolean).join('  ·  '),
+      !isCash && [profile.ntn && `Our NTN: ${profile.ntn}`, profile.strn && `Our STRN: ${profile.strn}`].filter(Boolean).join('  ·  '),
     ],
   });
 
@@ -1052,9 +1059,9 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
     }
   );
 
-  const rows: [string, string][] = [['Value excluding tax', pkr(invoice.subtotal)]];
-  if (invoice.taxTotal) rows.push(['Sales tax', pkr(invoice.taxTotal)]);
-  rows.push(['Gross payable', pkr(invoice.grossPayable)]);
+  const rows: [string, string][] = isCash ? [] : [['Value excluding tax', pkr(invoice.subtotal)]];
+  if (!isCash && invoice.taxTotal) rows.push(['Sales tax', pkr(invoice.taxTotal)]);
+  rows.push([isCash ? 'Total amount' : 'Gross payable', pkr(invoice.grossPayable)]);
   if (invoice.amountPaid) rows.push(['Received', `- ${pkr(invoice.amountPaid)}`]);
   if (invoice.customerWhtTotal) rows.push(['Withholding tax deducted', `- ${pkr(invoice.customerWhtTotal)}`]);
   b.totals(rows, [invoice.balanceDue < invoice.grossPayable ? 'Balance due' : 'Total payable', invoice.balanceDue]);
@@ -1063,13 +1070,18 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
     b.noteBox('Reversed by credit note', [`${invoice.creditNoteId ? `${invoice.creditNoteId}: ` : ''}${invoice.creditNoteReason}`], [254, 242, 242]);
   }
 
-  b.noteBox('Payment details', [
-    profile.bankAccountTitle && `Account title: ${profile.bankAccountTitle}`,
-    [profile.bankName, profile.bankBranch].filter(Boolean).join(', '),
-    profile.bankAccountNo && `Account no.: ${profile.bankAccountNo}`,
-    profile.bankIban && `IBAN: ${profile.bankIban}`,
-    profile.invoiceNotes || '',
-  ].filter(Boolean) as string[]);
+  // Tax invoices show the tax account; cash memos the cash account (or "paid in cash")
+  const acct = isCash
+    ? profile.cashAccount ?? {}
+    : { bankName: profile.bankName, bankAccountTitle: profile.bankAccountTitle, bankAccountNo: profile.bankAccountNo, bankIban: profile.bankIban, bankBranch: profile.bankBranch, notes: profile.invoiceNotes };
+  const payLines = [
+    acct.bankAccountTitle && `Account title: ${acct.bankAccountTitle}`,
+    [acct.bankName, acct.bankBranch].filter(Boolean).join(', '),
+    acct.bankAccountNo && `Account no.: ${acct.bankAccountNo}`,
+    acct.bankIban && `IBAN: ${acct.bankIban}`,
+    acct.notes || '',
+  ].filter(Boolean) as string[];
+  b.noteBox('Payment details', payLines.length ? payLines : ['Payable in cash to our authorised representative against this memo.']);
 
   const invStamp = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
   b.stampBlock(invStamp);

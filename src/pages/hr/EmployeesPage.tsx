@@ -1,3 +1,5 @@
+import { FieldError } from '../../components/common/FieldError';
+import { emailProblem, mobileProblem } from '../../lib/validation';
 import React, { useState } from 'react';
 import {
   Plus, Search, UserCog, Phone, Mail, Calendar,
@@ -220,7 +222,10 @@ export const EmployeesPage: React.FC = () => {
 
   const handleSave = async () => {
     if (!form.name.trim()) { error('Validation error', 'Name is required.'); return; }
-    if (!form.phone.trim()) { error('Validation error', 'Phone is required.'); return; }
+    const phoneErr = mobileProblem(form.phone, { required: true, label: 'Phone' });
+    if (phoneErr) { error('Validation error', phoneErr); return; }
+    const emailErr = emailProblem(form.email, { label: 'Email' });
+    if (emailErr) { error('Validation error', emailErr); return; }
     if (!form.joiningDate) { error('Validation error', 'Joining date is required.'); return; }
     if (form.role === 'pco' && !form.reportingCoordinatorId) {
       error('Supervisor required', 'Choose this PCO’s Supervisor. PCOs have no login, so their Supervisor assigns them to jobs and records their work.');
@@ -567,11 +572,13 @@ export const EmployeesPage: React.FC = () => {
             </div>
             <div className="form-group">
               <label className="form-label">Phone *</label>
-              <input className="form-input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="03xx-xxxxxxx" />
+              <input className="form-input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="03xx-xxxxxxx" inputMode="tel" />
+              {form.phone && <FieldError message={mobileProblem(form.phone)} />}
             </div>
             <div className="form-group">
               <label className="form-label">Email</label>
-              <input className="form-input" value={form.email ?? ''} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="Optional" />
+              <input className="form-input" type="email" value={form.email ?? ''} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="Optional" />
+              <FieldError message={emailProblem(form.email)} />
             </div>
             <div className="form-group">
               <label className="form-label">Role *</label>

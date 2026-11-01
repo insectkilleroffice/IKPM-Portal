@@ -112,7 +112,8 @@ export const TeamAccessPage: React.FC = () => {
   store.getRoles(); // keep role list reactive
   const roles = getRoleDefinitions();
   // Only the super admin can hand out the Super Admin role
-  const assignableRoles = roles.filter((r) => isSuperAdmin || (r.id !== 'super_admin' && !r.isHidden));
+  // PCOs have no portal login (they are HR employees), so the Technician role isn't offered to new people
+  const assignableRoles = roles.filter((r) => (isSuperAdmin || (r.id !== 'super_admin' && !r.isHidden)) && r.id !== 'technician');
 
   const visibleUsers = useMemo(() => {
     const q = query.toLowerCase().trim();
@@ -631,7 +632,8 @@ export const TeamAccessPage: React.FC = () => {
             <div className="form-group">
               <label className="form-label">Role <span className="required">*</span></label>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '0.5rem' }}>
-                {assignableRoles.map((r) => (
+                {/* Someone who already has the Technician role keeps seeing it while being edited */}
+                {[...assignableRoles, ...roles.filter((r) => r.id === 'technician' && person.role === 'technician')].map((r) => (
                   <label
                     key={r.id}
                     className="doc-check"

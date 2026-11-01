@@ -1,3 +1,4 @@
+import { emailProblem, phoneProblem } from '../../lib/validation';
 import React, { useEffect, useState } from 'react';
 import { Plus, Star, Trash2 } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
@@ -5,7 +6,6 @@ import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { dataService } from '../../services/dataService';
 import { blankLeadBranch, contactsOf, INDUSTRIES, SOURCES, syncLeadFields } from '../../lib/leadWorkflow';
-import { normalizePakistaniPhone } from '../../lib/formatters';
 import type { Lead, LeadBranch, LeadContact, LeadSource } from '../../types/crm';
 
 interface Props {
@@ -65,8 +65,9 @@ const fromLead = (lead?: Lead | null): FormState => ({
   branches: lead?.branches?.length ? lead.branches.map((b) => ({ ...b })) : [],
 });
 
-const validEmail = (e?: string) => !e || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-const validPhone = (p: string) => normalizePakistaniPhone(p).replace(/\D/g, '').length >= 10;
+// Same checks as every other form (src/lib/validation.ts)
+const validEmail = (e?: string) => !emailProblem(e);
+const validPhone = (p: string) => !phoneProblem(p);
 
 export const LeadFormModal: React.FC<Props> = ({ isOpen, onClose, lead, onSaved }) => {
   const { success, warning } = useNotification();

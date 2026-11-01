@@ -117,3 +117,34 @@ describe('Payroll Calculation (Change 44)', () => {
     expect(line.incentive).toBe(300); // 2 * 150
   });
 });
+
+describe('Automatic attendance and overtime', () => {
+  const emp: Employee = {
+    id: 'EMP-0009', name: 'Usman', phone: '03001234567', role: 'pco', department: 'Operations',
+    joiningDate: '2026-01-01', status: 'permanent', createdAt: '', updatedAt: '',
+  };
+  const pay: EmployeePay = { id: 'EMP-0009', basicSalary: 24000, attendanceAllowance: 0, mobilePackage: 0, bikeMaintenance: 0, totalGross: 24000, updatedAt: '' };
+  const rec = (date: string, status: AttendanceRecord['status'], overtimeHours?: number): AttendanceRecord => ({
+    id: `EMP-0009_${date}`, employeeId: 'EMP-0009', employeeName: 'Usman', date, status, overtimeHours, markedBy: 'tl', markedByName: 'TL', markedAt: '',
+  });
+
+  it('counts days nobody marked as present', () => {
+    const line = calculateSalaryLine(emp, pay, [rec('2026-10-05', 'absent')], []);
+    expect(line.attendanceDays).toBe(29);
+    expect(line.totalDeductions).toBe(800); // 24000 / 30
+  });
+
+  it('pays overtime from salary: salary ÷ 30 ÷ 8 × multiplier per hour', () => {
+    // 24000 / 30 / 8 = 100 PKR/hour; × 2 = 200 PKR per overtime hour
+    const line = calculateSalaryLine(emp, pay, [rec('2026-10-01', 'present', 3), rec('2026-10-02', 'late', 1.5)], []);
+    expect(line.overtimeHours).toBe(4.5);
+    expect(line.overtimeRate).toBe(200);
+    expect(line.overtimePay).toBe(900);
+    expect(line.netPayable).toBe(24000 + 900);
+  });
+
+  it('uses a fixed overtime rate from the pay record when set', () => {
+    const line = calculateSalaryLine(emp, { ...pay, overtimeHourlyRate: 150 }, [rec('2026-10-01', 'present', 2)], []);
+    expect(line.overtimePay).toBe(300);
+  });
+});

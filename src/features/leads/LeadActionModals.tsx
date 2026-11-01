@@ -14,6 +14,8 @@ import { SinglePhotoField } from '../field/SinglePhotoField';
 import { FINDING_SUGGESTIONS, findingFilled, findingsSummary, newFinding, recommendedTreatmentOf } from '../../lib/riskAssessment';
 import { fileInspectionReport, fileMeetingReport } from './inspectionFiles';
 import { PcoTicks } from '../schedule/PcoTicks';
+import { FieldError } from '../../components/common/FieldError';
+import { emailProblem, phoneProblem, problemsOf } from '../../lib/validation';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -81,6 +83,13 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
     setEditBranches((prev) => prev.filter((b) => b.id !== id));
 
   const save = () => {
+    if (showExtra) {
+      const problems = problemsOf(...editContacts.flatMap((c, i) => [
+        phoneProblem(c.phone, { label: `Contact ${i + 1} phone` }),
+        emailProblem(c.email, { label: `Contact ${i + 1} email` }),
+      ]));
+      if (problems.length) return warning('Please correct the contacts', problems.join(' '));
+    }
     let updated: Lead | undefined;
     try {
       // Patch contacts/branches first if the extra panel was opened
@@ -234,10 +243,12 @@ export const LogContactModal: React.FC<{ lead: Lead | null; onClose: () => void;
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label" style={{ fontSize: '0.78rem' }}>Phone</label>
                     <input className="form-input" value={c.phone} onChange={(e) => setContact(c.id, { phone: e.target.value })} placeholder="03XX XXXXXXX" inputMode="tel" />
+                    <FieldError message={phoneProblem(c.phone)} />
                   </div>
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label" style={{ fontSize: '0.78rem' }}>Email</label>
                     <input className="form-input" type="email" value={c.email || ''} onChange={(e) => setContact(c.id, { email: e.target.value })} placeholder="name@company.com" />
+                    <FieldError message={emailProblem(c.email)} />
                   </div>
                 </div>
               </div>
@@ -878,7 +889,7 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
             </label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
               {([
-                { value: 'done_inline', label: 'Done during this meeting', hint: 'Inspection was completed on site — choose who did it and fill in pest findings below' },
+                { value: 'done_inline', label: 'Done during this meeting', hint: 'Inspection was completed on site — fill in who did it and the pest findings at the end of this form' },
                 { value: 'tl_schedule', label: 'Separate inspection visit', hint: 'Assign yourself or any operations staff now, or leave it for the Operations Manager' },
               ] as const).map((opt) => {
                 const isActive = inspectionHandling === opt.value
@@ -894,8 +905,121 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
               })}
             </div>
 
-            {/* Inline inspection findings — same pattern as SiteInspectionFindingsModal */}
-            {inspectionHandling === 'done_inline' && (() => {
+            {/* Schedule-later: date, assign to Ops, CRO notes */}
+            {(inspectionHandling === 'tl_schedule' || inspectionHandling === 'separate_visit') && (
+              <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid #BFDBFE', display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+                <div className="form-grid-2">
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>
+                      Inspection date {scheduleAssigneeId ? <span className="required">*</span> : <span style={{ fontWeight: 400 }}>(optional)</span>}
+                    </label>
+                    <input type="date" className="form-input" value={preferredInspectionDate} min={today()} onChange={(e) => setPreferredInspectionDate(e.target.value)} />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>Who will do the inspection?</label>
+                    <select className="form-select" value={scheduleAssigneeId} onChange={(e) => setScheduleAssigneeId(e.target.value)}>
+                      <option value="">— Leave for Operations Manager —</option>
+                      {opsStaff.map((u) => <option key={u.uid} value={u.uid}>{staffLabel(u)}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="cell-sub">
+                  {scheduleAssigneeId
+                    ? 'The site inspection is booked as soon as you save, and the person gets a notification.'
+                    : 'The Operations Manager will see this inspection request and assign someone.'}
+                </div>
+                <div>
+                  <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600, marginBottom: '0.2rem', display: 'block' }}>Notes for the inspection team</label>
+                  <textarea className="form-textarea" rows={3} value={schedulingNote} onChange={(e) => setSchedulingNote(e.target.value)} placeholder="What did the client say? Special requirements, restricted areas, preferred timing, who to contact on site, areas to focus on…" />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Meeting outcome checklist */}
+          <div className="form-group" style={{ background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
+            <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.5rem', display: 'block' }}>
+              What did the client ask for? <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--ikpm-emerald-700)' }}>tick all that apply{canSetTlDecision ? ' · mark done when delivered' : ''}</span>
+            </label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.75rem' }}>
+              {([
+                { type: 'company_profile' as MeetingFollowUpType, label: 'Company Profile', hint: 'Send IKPM company profile / brochure' },
+                { type: 'proposal' as MeetingFollowUpType, label: 'Proposal / Quote', hint: 'Prepare a service proposal with pricing' },
+                { type: 'other_documents' as MeetingFollowUpType, label: 'Other documents', hint: 'Specify what documents the client needs' },
+                { type: 'contract_ready' as MeetingFollowUpType, label: 'Ready to sign', hint: 'Client is ready to proceed to a contract' },
+                { type: 'not_interested' as MeetingFollowUpType, label: 'Not interested', hint: 'Client declined' },
+              ]).map((opt) => {
+                const fu = followUps.find((f) => f.type === opt.type);
+                const checked = Boolean(fu);
+                const isNegative = opt.type === 'not_interested';
+                const borderC = checked ? (isNegative ? 'var(--color-error, #DC2626)' : 'var(--ikpm-emerald-400)') : 'var(--border-subtle)';
+                const bgC = checked ? (isNegative ? '#FEF2F2' : 'var(--ikpm-emerald-100)') : 'var(--surface-card)';
+                return (
+                  <div key={opt.type} style={{ border: `1px solid ${borderC}`, borderRadius: '0.4rem', background: bgC }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.65rem' }}>
+                      <input type="checkbox" checked={checked} onChange={(e) => toggleFollowUp(opt.type, e.target.checked)} style={{ flexShrink: 0 }} />
+                      <span style={{ flex: 1, fontSize: '0.875rem', fontWeight: checked ? 600 : undefined }} title={opt.hint}>{opt.label}</span>
+                      {opt.type === 'other_documents' && checked && (
+                        <input type="text" className="form-input" style={{ flex: 2, minWidth: 0, padding: '0.2rem 0.5rem', fontSize: '0.8rem' }} value={fu?.note || ''} onChange={(e) => updateFollowUp('other_documents', { note: e.target.value })} placeholder="What documents?" />
+                      )}
+                      {/* Only the CRO / admin delivers these, so only they can mark them done */}
+                      {checked && !isNegative && canSetTlDecision && (
+                        <button type="button" className={`btn btn-xs ${fu?.doneAt ? 'btn-primary' : 'btn-ghost'}`} style={{ flexShrink: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }} onClick={() => toggleDone(opt.type)} title={fu?.doneAt ? `Done on ${new Date(fu.doneAt).toLocaleDateString('en-GB')}` : 'Mark as done when delivered'}>
+                          {fu?.doneAt ? '✓ Done' : 'Mark done'}
+                        </button>
+                      )}
+                      {checked && !isNegative && !canSetTlDecision && fu?.doneAt && (
+                        <span className="badge-status badge-emerald" style={{ flexShrink: 0, fontSize: '0.72rem' }}>✓ Done</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <textarea className="form-textarea" rows={2} value={meetingReportNote} onChange={(e) => setMeetingReportNote(e.target.value)} placeholder="Meeting outcome note — anything else discussed, follow-up points…" />
+            {/* TL decision gate — CRO / admin only */}
+            {canSetTlDecision && (
+              <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--ikpm-emerald-200)' }}>
+                <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.4rem', display: 'block' }}>
+                  Decision <span style={{ fontWeight: 400, fontSize: '0.8rem' }}>— required before a proposal can be created</span>
+                </label>
+                <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+                  {([
+                    { value: 'send_proposal', label: '✓ Ready — send proposal', activeColor: 'var(--ikpm-emerald-600)', activeText: '#fff', activeBg: 'var(--ikpm-emerald-600)' },
+                    { value: 'waiting', label: '⏳ Hold — need inspection / more steps', activeColor: '#D97706', activeText: '#92400E', activeBg: '#FFFBEB' },
+                  ] as const).map((opt) => (
+                    <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600, border: `1px solid ${tlStatus === opt.value ? opt.activeColor : 'var(--border-subtle)'}`, background: tlStatus === opt.value ? opt.activeBg : 'var(--surface-card)', color: tlStatus === opt.value ? opt.activeText : 'var(--text-primary)' }}>
+                      <input type="radio" name="tlStatusMR" style={{ display: 'none' }} checked={tlStatus === opt.value} onChange={() => setTlStatus(opt.value)} />
+                      {opt.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Branches / sites */}
+          <div className="form-group" style={{ marginTop: '0.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+              <label className="form-label" style={{ margin: 0 }}>Branches / sites</label>
+              <button type="button" className="btn btn-xs btn-ghost" onClick={addBranch}><Plus size={13} /> Add branch</button>
+            </div>
+            {branches.length === 0 ? (
+              <div className="cell-sub">No branches recorded — add one if you discovered a new site.</div>
+            ) : branches.map((b, idx) => (
+              <div key={b.id} style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                <input className="form-input" placeholder="Branch name" value={b.name} onChange={(e) => updateBranch(idx, { name: e.target.value })} style={{ flex: '1 1 150px' }} />
+                <input className="form-input" placeholder="Address" value={b.address} onChange={(e) => updateBranch(idx, { address: e.target.value })} style={{ flex: '2 1 200px' }} />
+                <input className="form-input" placeholder="City" value={b.city || ''} onChange={(e) => updateBranch(idx, { city: e.target.value })} style={{ flex: '1 1 100px' }} />
+                <button type="button" className="icon-btn" onClick={() => removeBranch(idx)} title="Remove"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+
+          {/* Inspection findings come last: meeting → client request → sites → inspection details */}
+          {inspectionHandling === 'done_inline' && (
+          <div className="form-group" style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
+            {(() => {
               const scope = { ownerScope: 'client' as const, clientId: lead.existingCustomerId || lead.id, category: 'risk_assessment' as const };
               const setInlineRow = (id: string, patch: Partial<RiskFinding>) => setInlineFindings((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
               const offlineCount = inlineFindings.filter((r) => r.photo?.imageUrl?.startsWith('data:')).length;
@@ -1014,117 +1138,8 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
                 </div>
               );
             })()}
-
-            {/* Schedule-later: date, assign to Ops, CRO notes */}
-            {(inspectionHandling === 'tl_schedule' || inspectionHandling === 'separate_visit') && (
-              <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid #BFDBFE', display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
-                <div className="form-grid-2">
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>
-                      Inspection date {scheduleAssigneeId ? <span className="required">*</span> : <span style={{ fontWeight: 400 }}>(optional)</span>}
-                    </label>
-                    <input type="date" className="form-input" value={preferredInspectionDate} min={today()} onChange={(e) => setPreferredInspectionDate(e.target.value)} />
-                  </div>
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600 }}>Who will do the inspection?</label>
-                    <select className="form-select" value={scheduleAssigneeId} onChange={(e) => setScheduleAssigneeId(e.target.value)}>
-                      <option value="">— Leave for Operations Manager —</option>
-                      {opsStaff.map((u) => <option key={u.uid} value={u.uid}>{staffLabel(u)}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div className="cell-sub">
-                  {scheduleAssigneeId
-                    ? 'The site inspection is booked as soon as you save, and the person gets a notification.'
-                    : 'The Operations Manager will see this inspection request and assign someone.'}
-                </div>
-                <div>
-                  <label className="form-label" style={{ color: '#1D4ED8', fontWeight: 600, marginBottom: '0.2rem', display: 'block' }}>Notes for the inspection team</label>
-                  <textarea className="form-textarea" rows={3} value={schedulingNote} onChange={(e) => setSchedulingNote(e.target.value)} placeholder="What did the client say? Special requirements, restricted areas, preferred timing, who to contact on site, areas to focus on…" />
-                </div>
-              </div>
-            )}
           </div>
-
-          {/* Meeting outcome checklist */}
-          <div className="form-group" style={{ background: 'var(--ikpm-emerald-50)', border: '1px solid var(--ikpm-emerald-200)', borderRadius: '0.5rem', padding: '0.85rem 1rem' }}>
-            <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.5rem', display: 'block' }}>
-              What did the client ask for? <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--ikpm-emerald-700)' }}>tick all that apply{canSetTlDecision ? ' · mark done when delivered' : ''}</span>
-            </label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.75rem' }}>
-              {([
-                { type: 'company_profile' as MeetingFollowUpType, label: 'Company Profile', hint: 'Send IKPM company profile / brochure' },
-                { type: 'proposal' as MeetingFollowUpType, label: 'Proposal / Quote', hint: 'Prepare a service proposal with pricing' },
-                { type: 'other_documents' as MeetingFollowUpType, label: 'Other documents', hint: 'Specify what documents the client needs' },
-                { type: 'contract_ready' as MeetingFollowUpType, label: 'Ready to sign', hint: 'Client is ready to proceed to a contract' },
-                { type: 'not_interested' as MeetingFollowUpType, label: 'Not interested', hint: 'Client declined' },
-              ]).map((opt) => {
-                const fu = followUps.find((f) => f.type === opt.type);
-                const checked = Boolean(fu);
-                const isNegative = opt.type === 'not_interested';
-                const borderC = checked ? (isNegative ? 'var(--color-error, #DC2626)' : 'var(--ikpm-emerald-400)') : 'var(--border-subtle)';
-                const bgC = checked ? (isNegative ? '#FEF2F2' : 'var(--ikpm-emerald-100)') : 'var(--surface-card)';
-                return (
-                  <div key={opt.type} style={{ border: `1px solid ${borderC}`, borderRadius: '0.4rem', background: bgC }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.4rem 0.65rem' }}>
-                      <input type="checkbox" checked={checked} onChange={(e) => toggleFollowUp(opt.type, e.target.checked)} style={{ flexShrink: 0 }} />
-                      <span style={{ flex: 1, fontSize: '0.875rem', fontWeight: checked ? 600 : undefined }} title={opt.hint}>{opt.label}</span>
-                      {opt.type === 'other_documents' && checked && (
-                        <input type="text" className="form-input" style={{ flex: 2, minWidth: 0, padding: '0.2rem 0.5rem', fontSize: '0.8rem' }} value={fu?.note || ''} onChange={(e) => updateFollowUp('other_documents', { note: e.target.value })} placeholder="What documents?" />
-                      )}
-                      {/* Only the CRO / admin delivers these, so only they can mark them done */}
-                      {checked && !isNegative && canSetTlDecision && (
-                        <button type="button" className={`btn btn-xs ${fu?.doneAt ? 'btn-primary' : 'btn-ghost'}`} style={{ flexShrink: 0, padding: '0.2rem 0.6rem', fontSize: '0.75rem' }} onClick={() => toggleDone(opt.type)} title={fu?.doneAt ? `Done on ${new Date(fu.doneAt).toLocaleDateString('en-GB')}` : 'Mark as done when delivered'}>
-                          {fu?.doneAt ? '✓ Done' : 'Mark done'}
-                        </button>
-                      )}
-                      {checked && !isNegative && !canSetTlDecision && fu?.doneAt && (
-                        <span className="badge-status badge-emerald" style={{ flexShrink: 0, fontSize: '0.72rem' }}>✓ Done</span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <textarea className="form-textarea" rows={2} value={meetingReportNote} onChange={(e) => setMeetingReportNote(e.target.value)} placeholder="Meeting outcome note — anything else discussed, follow-up points…" />
-            {/* TL decision gate — CRO / admin only */}
-            {canSetTlDecision && (
-              <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--ikpm-emerald-200)' }}>
-                <label className="form-label" style={{ color: 'var(--ikpm-emerald-800)', fontWeight: 700, marginBottom: '0.4rem', display: 'block' }}>
-                  Decision <span style={{ fontWeight: 400, fontSize: '0.8rem' }}>— required before a proposal can be created</span>
-                </label>
-                <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-                  {([
-                    { value: 'send_proposal', label: '✓ Ready — send proposal', activeColor: 'var(--ikpm-emerald-600)', activeText: '#fff', activeBg: 'var(--ikpm-emerald-600)' },
-                    { value: 'waiting', label: '⏳ Hold — need inspection / more steps', activeColor: '#D97706', activeText: '#92400E', activeBg: '#FFFBEB' },
-                  ] as const).map((opt) => (
-                    <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', padding: '0.4rem 0.75rem', borderRadius: '0.4rem', fontSize: '0.875rem', fontWeight: 600, border: `1px solid ${tlStatus === opt.value ? opt.activeColor : 'var(--border-subtle)'}`, background: tlStatus === opt.value ? opt.activeBg : 'var(--surface-card)', color: tlStatus === opt.value ? opt.activeText : 'var(--text-primary)' }}>
-                      <input type="radio" name="tlStatusMR" style={{ display: 'none' }} checked={tlStatus === opt.value} onChange={() => setTlStatus(opt.value)} />
-                      {opt.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Branches / sites */}
-          <div className="form-group" style={{ marginTop: '0.5rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-              <label className="form-label" style={{ margin: 0 }}>Branches / sites</label>
-              <button type="button" className="btn btn-xs btn-ghost" onClick={addBranch}><Plus size={13} /> Add branch</button>
-            </div>
-            {branches.length === 0 ? (
-              <div className="cell-sub">No branches recorded — add one if you discovered a new site.</div>
-            ) : branches.map((b, idx) => (
-              <div key={b.id} style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                <input className="form-input" placeholder="Branch name" value={b.name} onChange={(e) => updateBranch(idx, { name: e.target.value })} style={{ flex: '1 1 150px' }} />
-                <input className="form-input" placeholder="Address" value={b.address} onChange={(e) => updateBranch(idx, { address: e.target.value })} style={{ flex: '2 1 200px' }} />
-                <input className="form-input" placeholder="City" value={b.city || ''} onChange={(e) => updateBranch(idx, { city: e.target.value })} style={{ flex: '1 1 100px' }} />
-                <button type="button" className="icon-btn" onClick={() => removeBranch(idx)} title="Remove"><Trash2 size={14} /></button>
-              </div>
-            ))}
-          </div>
+          )}
         </>
       )}
     </Modal>

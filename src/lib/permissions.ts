@@ -195,6 +195,9 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
       documents: 'view',
       contracts: 'view',
       customers: 'view',
+      complaints: 'view',
+      // Sees verified jobs to invoice, and cash Supervisors collected on site
+      jobs: 'view',
     },
   },
   {

@@ -301,12 +301,13 @@ class DataService {
    * Reads and increments id_counters/{key} within a Firestore transaction so two simultaneous
    * operations never generate the same sequence number.
    */
-  async nextSequence(key: string): Promise<number> {
+  async nextSequence(key: string, floor = 0): Promise<number> {
     try {
       const counterRef = doc(db, 'id_counters', key);
       const nextSeq = await runTransaction(db, async (txn) => {
         const snap = await txn.get(counterRef);
-        let current = 0;
+        // A new counter continues after the highest number already in use (records made before it existed)
+        let current = floor;
         if (snap.exists()) {
           current = Number(snap.data().seq || 0);
         }
@@ -319,6 +320,11 @@ class DataService {
       console.warn('[dataService] Transaction failed for counter ' + key + ', fallback to local time offset', err);
       return Math.floor(Date.now() % 100000);
     }
+  }
+
+  /** Highest trailing number in ids / numbers like "CO-2026-0012" (0 when none). */
+  public maxSeqOf(values: (string | undefined)[]): number {
+    return values.reduce((m, v) => Math.max(m, Number(/(\d+)\s*$/.exec(v || '')?.[1] || 0)), 0);
   }
 
   private s: DbState = emptyState();
@@ -463,6 +469,7 @@ class DataService {
         qs.push(query(col, where('assignedTechnicianIds', 'array-contains', se.uid)));
         // Supervisor named on the job (PCOs have no login; the TL runs and submits it)
         qs.push(query(col, where('assignedTeamLeaderId', '==', se.uid)));
+        qs.push(query(col, where('leadPcoId', '==', se.uid)));
       }
       return qs;
     }
@@ -2070,17 +2077,24 @@ class DataService {
   }
 
   public saveJob(job: ServiceJob, userEmail = 'admin'): ServiceJob {
-    if (!job.ownerUid && this.session?.uid) {
+    // Owner and folder fields are set when a job is created, or by someone with company-wide access.
+    // A Supervisor updating an older job must not add them: firestore.rules forbids field staff from
+    // changing those fields, so the whole save (Start Visit, Close Out) would be refused.
+    const isNew = !this.getJobById(job.id);
+    const mayRefile = isNew || (this.session ? seesAllRecords(this.session.role, this.session.dataScope) : true);
+    if (mayRefile && !job.ownerUid && this.session?.uid) {
       Object.assign(job, this.ownership());
     }
-    this.fileRecord(job, {
-      customerId: job.customerId,
-      customerType: job.customerType,
-      customerName: job.customerName,
-      branchId: job.branchId,
-      category: 'service_report',
-      date: job.scheduledDate,
-    });
+    if (mayRefile) {
+      this.fileRecord(job, {
+        customerId: job.customerId,
+        customerType: job.customerType,
+        customerName: job.customerName,
+        branchId: job.branchId,
+        category: 'service_report',
+        date: job.scheduledDate,
+      });
+    }
     const created = this.upsert(this.s.jobs, job);
     this.audit(userEmail, created ? 'create' : 'update', 'job', job.id, job.serviceType,
       created ? `Scheduled service job ${job.id} for ${job.customerName}` : `Updated job ${job.id} status to ${job.status}`);
@@ -2091,9 +2105,12 @@ class DataService {
       if (contract) {
         const contractJobs = this.s.jobs.filter((j) => j.contractId === job.contractId && j.status !== 'cancelled');
         const completedCount = contractJobs.filter((j) => j.status === 'completed').length;
+        // Only write when the count really changed (starting a visit doesn't touch the contract)
+        if (completedCount !== contract.totalJobsCompleted) {
         const updatedContract = { ...contract, totalJobsCompleted: completedCount, updatedAt: now() };
         this.upsert(this.s.contracts, updatedContract);
         this.write('contracts', contract.id, { totalJobsCompleted: completedCount, updatedAt: now() });
+        }
       }
     }
     return job;
@@ -2320,12 +2337,7 @@ class DataService {
     const invoice = this.getInvoiceById(payment.invoiceId);
     if (!invoice) throw new Error('Associated invoice not found.');
 
-    // 1. One receipt per invoice restriction
-    const existingPaymentForInvoice = this.s.payments.find((p) => p.invoiceId === payment.invoiceId);
-    if (existingPaymentForInvoice) {
-      throw new Error(`A payment receipt (${existingPaymentForInvoice.receiptNumber}) has already been recorded for invoice ${invoice.invoiceNumber}. Only 1 receipt can be recorded per invoice.`);
-    }
-
+    // 1. Several receipts per invoice are allowed (instalments / part payments) until the balance is 0.
     // 2. Settle status check
     if (invoice.status === 'paid' || invoice.balanceDue <= 0) {
       throw new Error(`Invoice ${invoice.invoiceNumber} is already fully paid and settled.`);

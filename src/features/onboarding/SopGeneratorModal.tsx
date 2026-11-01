@@ -1,3 +1,4 @@
+import { emailProblem, phoneProblem } from '../../lib/validation';
 import React, { useState } from 'react';
 import { Plus, Trash2, Download, Loader2 } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
@@ -70,6 +71,15 @@ export const SopGeneratorModal: React.FC<Props> = ({ clientId, clientType, clien
   if (!sop.documentNo.trim()) problems.push('Enter a document number.');
   if (!sop.authorizedPersons.some((a) => a.name.trim())) problems.push('Add at least one authorised person.');
   if (!sop.preparedBy.trim()) problems.push('Enter who prepared it.');
+  // Contact phone / email are optional, but must be valid when filled in
+  sop.contacts.forEach((c, i) => {
+    const label = c.name.trim() || `Contact ${i + 1}`;
+    const ph = phoneProblem(c.phone, { label: `${label}: phone` });
+    const em = emailProblem(c.email, { label: `${label}: email` });
+    if (ph) problems.push(ph);
+    if (em) problems.push(em);
+  });
+const BAD = { borderColor: 'var(--ikpm-rose-500, #F43F5E)' };
 
   const clean = (): SopInput => ({
     ...sop,
@@ -185,8 +195,8 @@ export const SopGeneratorModal: React.FC<Props> = ({ clientId, clientType, clien
         <div key={i} className="sop-row sop-row-4">
           <input className="form-input" placeholder="Name" value={c.name} onChange={(e) => set({ contacts: sop.contacts.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)) })} />
           <input className="form-input" placeholder="Role" value={c.role ?? ''} onChange={(e) => set({ contacts: sop.contacts.map((x, j) => (j === i ? { ...x, role: e.target.value } : x)) })} />
-          <input className="form-input" placeholder="Phone" value={c.phone ?? ''} onChange={(e) => set({ contacts: sop.contacts.map((x, j) => (j === i ? { ...x, phone: e.target.value } : x)) })} />
-          <input className="form-input" placeholder="Email" value={c.email ?? ''} onChange={(e) => set({ contacts: sop.contacts.map((x, j) => (j === i ? { ...x, email: e.target.value } : x)) })} />
+          <input className="form-input" style={phoneProblem(c.phone) ? BAD : undefined} title={phoneProblem(c.phone)} placeholder="Phone" value={c.phone ?? ''} onChange={(e) => set({ contacts: sop.contacts.map((x, j) => (j === i ? { ...x, phone: e.target.value } : x)) })} />
+          <input className="form-input" type="email" style={emailProblem(c.email) ? BAD : undefined} title={emailProblem(c.email)} placeholder="Email" value={c.email ?? ''} onChange={(e) => set({ contacts: sop.contacts.map((x, j) => (j === i ? { ...x, email: e.target.value } : x)) })} />
           <button type="button" className="icon-btn" onClick={() => set({ contacts: sop.contacts.filter((_, j) => j !== i) })} aria-label="Remove"><Trash2 size={14} /></button>
         </div>
       ))}

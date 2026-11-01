@@ -37,6 +37,30 @@ export interface CompanyProfile {
   bankAccountNo?: string;
   bankIban?: string;
   bankBranch?: string;
+  /**
+   * Second account used for Cash Memos (no-tax billing, mostly residential). The fields above are
+   * the tax account. Empty = cash memos say "Paid in cash" and print no bank details.
+   */
+  cashAccount?: {
+    /** Business name printed on cash memos (empty = the company name). */
+    tradeName?: string;
+    bankName?: string;
+    bankAccountTitle?: string;
+    bankAccountNo?: string;
+    bankIban?: string;
+    bankBranch?: string;
+    notes?: string;
+  };
+  /** Payroll rules set in Settings → Payroll (missing values use the built-in defaults). */
+  payrollRules?: {
+    lateMarksPerAbsence?: number;
+    absenceDeductionRatio?: number;
+    jobIncentivePerUnit?: number;
+    standardHoursPerDay?: number;
+    overtimeMultiplier?: number;
+    /** Official start time used to mark people late (HH:mm). */
+    workStartTime?: string;
+  };
   /** Custom logo (PNG/JPG URL). Empty = the portal's built-in logo. */
   logoUrl?: string;
   /**

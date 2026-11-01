@@ -1,3 +1,6 @@
+import { blobToDataUrl, compressImage } from '../../lib/imageUtils';
+import { uploadFile } from '../../lib/cloudinary';
+import { integrations } from '../../config/env';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -45,6 +48,47 @@ export const JobsListPage: React.FC = () => {
 
   const canInvoice = canEditModule(effectiveRole, 'invoices');
   const canDispatch = canEditModule(effectiveRole, 'jobs');
+  // Start Visit and Close Out are field steps: only the Supervisor on the job does them (in person,
+  // with the PCOs). The Operations Manager assigns, reschedules and does the QC check instead.
+  const isFieldStep = (a: string) => a === 'start_job' || a === 'complete_job';
+  // The signed-in person is this job's Supervisor if any team field names them: by login, or by their
+  // HR employee record (older jobs and the old PCO picker stored those in different fields).
+  const isMyFieldJob = (j: ServiceJob) => {
+    const uid = userProfile?.uid;
+    if (!uid) return false;
+    const me = new Set([uid, ...dataService.getEmployees().filter((e) => e.uid === uid).map((e) => e.id)]);
+    return [j.assignedTeamLeaderId, j.leadPcoId, ...(j.assignedTechnicianIds ?? [])].some((id) => !!id && me.has(id));
+  };
+
+  /**
+   * Field photos and challan scans. Phone photos are several MB, and a job record may not exceed
+   * 1 MB in the database, so a full-size photo made the whole report fail to save. Images are shrunk
+   * first, then uploaded to file storage (Cloudinary) when it is set up; otherwise kept small inline.
+   */
+  const fieldFileToUrl = async (file: File, job: ServiceJob | null, label: string): Promise<string> => {
+    const isImage = file.type.startsWith('image/');
+    const blob: Blob = isImage ? await compressImage(file, 1280, 0.62) : file;
+    if (integrations.cloudinary && job) {
+      try {
+        const stored = await uploadFile(blob, {
+          scope: dataService.uploadScopeFor({ kind: 'job', id: job.id }, 'service_report'),
+          subPath: job.id,
+          fileName: `${job.id}_${label}_${Date.now()}.${isImage ? 'jpg' : (file.name.split('.').pop() || 'pdf')}`,
+        });
+        return stored.url;
+      } catch (err) {
+        console.warn('Upload failed, keeping the file inline', err);
+      }
+    }
+    if (!isImage && blob.size > 350_000) {
+      throw new Error('This PDF is too large to attach without file storage. Take a photo of the signed challan instead.');
+    }
+    return blobToDataUrl(isImage ? await compressImage(file, 1000, 0.55) : blob);
+  };
+  const fileError = (err: unknown) => error('File not added', err instanceof Error ? err.message : String(err));
+  /** Rough size of a job record; the database refuses anything over 1 MB. */
+  const tooBig = (j: ServiceJob) => new Blob([JSON.stringify(j)]).size > 950_000;
+  const supervisorOf = (j: ServiceJob) => j.assignedTeamLeaderName || (j.leadPcoName !== 'Unassigned' ? j.leadPcoName : '') || 'the Supervisor';
 
   const todayStr = new Date().toISOString().split('T')[0];
   const tomorrowStr = new Date(Date.now() + 86400000).toISOString().split('T')[0];
@@ -139,6 +183,9 @@ export const JobsListPage: React.FC = () => {
   const [reportChallanNumber, setReportChallanNumber] = useState('');
   const [reportChallanFileUrl, setReportChallanFileUrl] = useState('');
   const [reportChallanDate, setReportChallanDate] = useState(todayStr);
+  // Cash the client paid the Supervisor on site (residential); Finance confirms it later
+  const [reportCashAmount, setReportCashAmount] = useState('');
+  const [reportCashPhoto, setReportCashPhoto] = useState('');
 
   // Edit schedule / time slot modal state
   const [showEditScheduleJob, setShowEditScheduleJob] = useState<ServiceJob | null>(null);
@@ -176,6 +223,8 @@ export const JobsListPage: React.FC = () => {
     setReportChallanNumber(showReportModal.challanNumber || '');
     setReportChallanFileUrl(showReportModal.challanFileUrl || '');
     setReportChallanDate(todayStr);
+    setReportCashAmount(showReportModal.cashCollection?.amount ? String(showReportModal.cashCollection.amount) : '');
+    setReportCashPhoto(showReportModal.cashCollection?.receiptPhotoUrl || '');
   }, [showReportModal?.id]);
   // QC: starts empty every time — the supervisor is the logged-in person
   const [verifyForm, setVerifyForm] = useState({
@@ -497,6 +546,10 @@ export const JobsListPage: React.FC = () => {
       if (nextAct.actionType === 'start_job' && canDispatch) { setAssignTlJob(job); setAssignTlId(''); }
       return;
     }
+    if (isFieldStep(nextAct.actionType) && !isMyFieldJob(job)) {
+      warning('Supervisor only', `${nextAct.label} is done by ${supervisorOf(job)}, the Supervisor on this visit.`);
+      return;
+    }
     if (nextAct.actionType === 'start_job') {
       setStartJob(job);
     } else if (nextAct.actionType === 'complete_job') {
@@ -550,6 +603,7 @@ export const JobsListPage: React.FC = () => {
       ],
       updatedAt: now,
     };
+    if (tooBig(updated)) return error('Photos too large', 'Remove a few before photos and try again.');
     dataService.saveJob(updated, userProfile?.email);
     success('Visit started', `${updated.id}: pre-check done. Close out the visit when the service is finished.`);
     if (selectedJob?.id === updated.id) setSelectedJob(updated);
@@ -590,6 +644,7 @@ export const JobsListPage: React.FC = () => {
       if (!chemicalsUsed.length) missing.push('at least one chemical / item used');
       if (!reportChallanNumber.trim()) missing.push('physical challan #');
       if (!reportChallanFileUrl.trim()) missing.push('photo of the signed challan');
+      if (job.customerType !== 'company' && reportCashAmount.trim() && !(Number(reportCashAmount) > 0)) missing.push('a valid cash amount (or leave it empty)');
     } else if (outcome === 'client_blocked') {
       if (!reportOutcomeReason.trim()) missing.push('what happened on site');
       if (!reportFindingPhotos.length && !reportFinalPhotos.length) missing.push('a photo as proof (e.g. closed gate)');
@@ -666,12 +721,27 @@ export const JobsListPage: React.FC = () => {
       leadPcoEmployeeId: reportPcoIds[0],
       teamLeaderOnSite: reportTlOnSite,
       borrowedPcoReason: borrowed.length ? reportBorrowReason.trim() : undefined,
+      // Cash on site is residential only; company (B2B) work is always invoiced
+      cashCollection: job.customerType !== 'company' && Number(reportCashAmount) > 0
+        ? {
+            ...job.cashCollection,
+            amount: Number(reportCashAmount),
+            collectedAt: job.cashCollection?.collectedAt || now,
+            collectedByUid: userProfile?.uid,
+            collectedByName: userProfile?.displayName || 'Supervisor',
+            receiptPhotoUrl: reportCashPhoto || undefined,
+          }
+        : job.cashCollection,
       ...submittedBy,
       lateSubmission: isLate,
       lateDays: isLate ? lateDays : undefined,
       lateReason: isLate ? `Submitted ${lateDays} day(s) after the service date` : undefined,
       updatedAt: now,
     };
+    if (tooBig({ ...updatedJob, challanFileUrl: reportChallanFileUrl })) {
+      error('Photos too large', 'The report is too big to save. Remove a few photos (they are optional) and submit again.');
+      return;
+    }
     if (reportChallanNumber.trim()) {
       const cNo = reportChallanNumber.trim();
       updatedJob.challanNumber = cNo;
@@ -923,13 +993,17 @@ export const JobsListPage: React.FC = () => {
                         <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '0.25rem 0.6rem', border: '1px solid var(--border-subtle)', borderRadius: '0.35rem', whiteSpace: 'nowrap' }}>
                           Invoice — Finance
                         </span>
+                      ) : isFieldStep(nextAct.actionType) && !isMyFieldJob(j) && !(nextAct.isBlocked && canDispatch) ? (
+                        <span title={`${nextAct.label} is done by the Supervisor on this visit`} style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '0.25rem 0.6rem', border: '1px solid var(--border-subtle)', borderRadius: '0.35rem', whiteSpace: 'nowrap' }}>
+                          {nextAct.actionType === 'start_job' ? 'To start' : 'In progress'}: {supervisorOf(j)}
+                        </span>
                       ) : (
                         <button
                           className={`btn ${nextAct.actionType === 'verify_report' ? 'btn-outline-emerald' : 'btn-primary'}`}
                           style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
                           onClick={() => handleExecuteJobAction(j)}
                         >
-                          <span>{nextAct.label}</span>
+                          <span>{nextAct.isBlocked && nextAct.actionType === 'start_job' && canDispatch && !isMyFieldJob(j) ? 'Assign Supervisor' : nextAct.label}</span>
                           <ArrowRight size={11} />
                         </button>
                       )}
@@ -1358,6 +1432,10 @@ export const JobsListPage: React.FC = () => {
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.4rem 0.8rem', border: '1px solid var(--border-subtle)', borderRadius: '0.4rem' }}>
                     Awaiting Finance to issue invoice
                   </span>
+                ) : isFieldStep(getJobNextAction(selectedJob).actionType) && !isMyFieldJob(selectedJob) ? (
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.4rem 0.8rem', border: '1px solid var(--border-subtle)', borderRadius: '0.4rem' }}>
+                    Waiting for {supervisorOf(selectedJob)} (Supervisor) to {getJobNextAction(selectedJob).actionType === 'start_job' ? 'start' : 'close out'} the visit
+                  </span>
                 ) : (
                   <button
                     className="btn btn-primary"
@@ -1380,7 +1458,7 @@ export const JobsListPage: React.FC = () => {
               job={selectedJob}
               invoice={dataService.getInvoiceForJob(selectedJob.id)}
               nextAction={getJobNextAction(selectedJob, dataService.getInvoiceForJob(selectedJob.id))}
-              onExecuteNextAction={() => {
+              onExecuteNextAction={isFieldStep(getJobNextAction(selectedJob).actionType) && !isMyFieldJob(selectedJob) ? undefined : () => {
                 handleExecuteJobAction(selectedJob);
                 setSelectedJob(null);
               }}
@@ -1681,9 +1759,9 @@ export const JobsListPage: React.FC = () => {
                     multiple
                     onChange={(e) => {
                       Array.from(e.target.files || []).forEach((file) => {
-                        const reader = new FileReader();
-                        reader.onload = () => setReportFindingPhotos((p) => [...p, { id: `fp_${Date.now()}_${Math.random()}`, url: reader.result as string, caption: '' }]);
-                        reader.readAsDataURL(file);
+                        fieldFileToUrl(file, showReportModal, 'finding')
+                          .then((url) => setReportFindingPhotos((p) => [...p, { id: `fp_${Date.now()}_${Math.random()}`, url, caption: '' }]))
+                          .catch(fileError);
                       });
                       e.target.value = '';
                     }}
@@ -1725,9 +1803,9 @@ export const JobsListPage: React.FC = () => {
                     multiple
                     onChange={(e) => {
                       Array.from(e.target.files || []).forEach((file) => {
-                        const reader = new FileReader();
-                        reader.onload = () => setReportFinalPhotos((p) => [...p, { id: `rp_${Date.now()}_${Math.random()}`, url: reader.result as string, caption: '' }]);
-                        reader.readAsDataURL(file);
+                        fieldFileToUrl(file, showReportModal, 'after')
+                          .then((url) => setReportFinalPhotos((p) => [...p, { id: `rp_${Date.now()}_${Math.random()}`, url, caption: '' }]))
+                          .catch(fileError);
                       });
                       e.target.value = '';
                     }}
@@ -1750,6 +1828,49 @@ export const JobsListPage: React.FC = () => {
                 </div>
               )}
             </div>
+
+            {/* Cash collected on site: residential (B2C) clients only. Company (B2B) work is always invoiced.
+                Finance confirms receiving the cash and issues the Cash Memo. */}
+            {showReportModal.customerType !== 'company' && (
+            <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '0.75rem' }}>
+              <label className="form-label">
+                Cash collected from the client <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: '0.75rem' }}>(residential only · optional — only if the client paid you on site)</span>
+              </label>
+              <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="number"
+                  min={1}
+                  className="form-input"
+                  style={{ maxWidth: 180 }}
+                  placeholder="Amount (PKR)"
+                  value={reportCashAmount}
+                  onChange={(e) => setReportCashAmount(e.target.value)}
+                />
+                <label className="btn btn-sm btn-secondary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Camera size={13} /> {reportCashPhoto ? 'Change receipt photo' : 'Receipt / slip photo'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      // Shrunk so the job record stays well under Firestore's 1 MB document limit
+                      if (file) compressImage(file, 1000, 0.6).then(blobToDataUrl).then(setReportCashPhoto).catch(() => error('Photo not added', 'Could not read that image.'));
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+                {reportCashPhoto && <img src={reportCashPhoto} alt="Cash receipt" style={{ width: 54, height: 40, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border-subtle)' }} />}
+              </div>
+              {reportCashAmount.trim() !== '' && !(Number(reportCashAmount) > 0) && (
+                <div style={{ color: '#DC2626', fontSize: '0.74rem', marginTop: 4 }}>Enter an amount more than 0, or leave it empty.</div>
+              )}
+              {Number(reportCashAmount) > 0 && (
+                <div className="cell-sub" style={{ marginTop: 4 }}>Hand this cash to Finance. It appears on their Invoices page until they confirm receiving it.</div>
+              )}
+            </div>
+            )}
 
             {/* Delivery & Service Challan Section (Change 39: Mandatory) */}
             <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem', background: '#F8FAFC', padding: '0.85rem', borderRadius: 8, border: '1px solid #E2E8F0' }}>
@@ -1806,12 +1927,9 @@ export const JobsListPage: React.FC = () => {
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) {
-                      const reader = new FileReader();
-                      reader.onload = () => {
-                        setReportChallanFileUrl(reader.result as string);
-                        success('Challan Attached', file.name + ' uploaded.');
-                      };
-                      reader.readAsDataURL(file);
+                      fieldFileToUrl(file, showReportModal, 'challan')
+                        .then((url) => { setReportChallanFileUrl(url); success('Challan attached', file.name); })
+                        .catch(fileError);
                     }
                   }}
                 />
@@ -1885,9 +2003,9 @@ export const JobsListPage: React.FC = () => {
                     style={{ display: 'none' }}
                     onChange={(e) => {
                       Array.from(e.target.files || []).forEach((file) => {
-                        const reader = new FileReader();
-                        reader.onload = () => setBeforePhotos((p) => [...p, { id: `bp_${Date.now()}_${Math.random()}`, url: reader.result as string }]);
-                        reader.readAsDataURL(file);
+                        fieldFileToUrl(file, startJob, 'before')
+                          .then((url) => setBeforePhotos((p) => [...p, { id: `bp_${Date.now()}_${Math.random()}`, url }]))
+                          .catch(fileError);
                       });
                       e.target.value = '';
                     }}
@@ -2127,12 +2245,9 @@ export const JobsListPage: React.FC = () => {
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) {
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                      setAttachChallanFileUrl(reader.result as string);
-                      success('Challan Loaded', file.name + ' ready to save.');
-                    };
-                    reader.readAsDataURL(file);
+                    fieldFileToUrl(file, showAttachChallanJob, 'challan')
+                      .then((url) => { setAttachChallanFileUrl(url); success('Challan loaded', `${file.name} ready to save.`); })
+                      .catch(fileError);
                   }
                 }}
               />

@@ -127,10 +127,26 @@ export interface QcChemicalCheck {
   checkedAt: string;
 }
 
+/** Cash the Supervisor collected from the client at the visit (residential jobs). */
+export interface JobCashCollection {
+  amount: number;
+  collectedAt: string;
+  collectedByUid?: string;
+  collectedByName?: string;
+  /** Photo of the handwritten receipt / cash slip given to the client. */
+  receiptPhotoUrl?: string;
+  note?: string;
+  /** Set when Finance confirms receiving the cash and the Cash Memo is created. */
+  receivedByFinanceAt?: string;
+  receivedByFinanceName?: string;
+  invoiceId?: string;
+}
+
 export interface ServiceJob extends FolderMeta, Partial<RecordOwnership> {
   id: string;
   contractId?: string;
   proposalId?: string;
+  cashCollection?: JobCashCollection;
   customerType: CustomerType;
   customerId: string;
   customerName: string;

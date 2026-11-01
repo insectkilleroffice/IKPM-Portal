@@ -8,7 +8,7 @@
 //                            the message then goes out "Name via IKPM" with Reply-To set to the staff member.
 //      FIREBASE_PROJECT_ID   (or VITE_FIREBASE_PROJECT_ID) to look up the sender's profile.
 
-import { env, handle, HttpError, requirePortalUser, getPortalProfile, assertOwnCloudinaryUrl } from './_lib/shared';
+import { env, handle, HttpError, requirePortalUser, getPortalProfile, getRoleModules, assertOwnCloudinaryUrl } from './_lib/shared';
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
@@ -20,8 +20,13 @@ const addressOf = (from: string) => (from.match(/<([^>]+)>/)?.[1] || from).trim(
 export default handle(async (req, res) => {
   const user = await requirePortalUser(req);
   const profile = await getPortalProfile(req, user.uid, user.email);
-  if (!['super_admin', 'management', 'sales', 'operations', 'finance'].includes(profile.role)) {
-    throw new HttpError(403, 'Your role is not allowed to email clients.');
+  // Built-in roles (and their older ids) that talk to clients; any other role (custom roles too)
+  // may email when it can edit leads, proposals or invoices.
+  const CLIENT_FACING = ['super_admin', 'admin', 'management', 'sales', 'operations', 'operations_manager', 'finance'];
+  if (!CLIENT_FACING.includes(profile.role)) {
+    const modules = await getRoleModules(req, profile.role).catch(() => ({} as Record<string, string>));
+    const canEmail = modules === 'all' || ['crm', 'proposals', 'invoices'].some((m) => modules[m] === 'edit');
+    if (!canEmail) throw new HttpError(403, 'Your role is not allowed to email clients.');
   }
   if (!env('RESEND_API_KEY')) throw new HttpError(501, 'Email is not configured on the server.');
 

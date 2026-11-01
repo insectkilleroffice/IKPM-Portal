@@ -137,9 +137,12 @@ describe('firestore.rules: complaints', () => {
   });
 
   it('new module rules: coordinator cannot read employee_private; finance can read employee_pay; technician cannot read other attendance', () => {
+    // CNIC / bank data: HR and the CEO only, checked by role so an 'hr' module grant never exposes it
     const privBlock = block('employee_private');
-    expect(privBlock).toMatch(/canEdit\('hr'\) \|\| isSuperAdmin\(\)/);
-    expect(privBlock).not.toMatch(/operations/);
+    expect(privBlock).toMatch(/allow read: if isHrOrCeo\(\)/);
+    expect(privBlock).toMatch(/allow create, update: if isHrOrCeo\(\)/);
+    expect(privBlock).not.toMatch(/canEdit\('hr'\)|operations/);
+    expect(rules).toMatch(/function isHrOrCeo\(\) \{\s*return isSuperAdmin\(\) \|\| \(active\(\) && role\(\) == 'hr'\);/);
 
     const payBlock = block('employee_pay');
     expect(payBlock).toMatch(/canView\('payroll'\) \|\| canEdit\('payroll'\)/);

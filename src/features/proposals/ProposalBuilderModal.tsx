@@ -1,3 +1,5 @@
+import { FieldError } from '../../components/common/FieldError';
+import { emailProblem, phoneProblem } from '../../lib/validation';
 import React, { useState } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
@@ -182,6 +184,13 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
 
   const problems: string[] = [];
   if (!customerId) problems.push('Choose the client.');
+  // "Attention" contact: optional, but must be valid when filled in (the proposal is sent to this email)
+  {
+    const em = emailProblem(attention.email, { label: 'Contact email' });
+    const ph = phoneProblem(attention.phone, { label: 'Contact phone' });
+    if (em) problems.push(em);
+    if (ph) problems.push(ph);
+  }
   if (mode === 'plan') {
     if (!plan.some((r) => r.service.trim())) problems.push('Add at least one row to the service plan.');
     if (!(effectiveRate > 0)) problems.push('Enter the monthly charges (or add branch breakdown with amounts).');
@@ -703,10 +712,12 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                 <div className="form-group">
                   <label className="form-label">Contact email <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(for sending proposal)</span></label>
                   <input className="form-input" type="email" placeholder="procurement@client.com" value={attention.email ?? ''} onChange={(e) => setAttention({ ...attention, email: e.target.value || undefined })} />
+                  <FieldError message={emailProblem(attention.email)} />
                 </div>
                 <div className="form-group">
                   <label className="form-label">Contact phone <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(WhatsApp)</span></label>
                   <input className="form-input" placeholder="03001234567" value={attention.phone ?? ''} onChange={(e) => setAttention({ ...attention, phone: e.target.value || undefined })} />
+                  <FieldError message={phoneProblem(attention.phone)} />
                 </div>
               </div>
               <div className="form-grid-2">

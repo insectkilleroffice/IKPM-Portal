@@ -50,6 +50,17 @@ export const CompanyProfileForm: React.FC = () => {
     <input className="form-input" value={(form[k] as string) || ''} onChange={(e) => set(k, e.target.value)} placeholder={placeholder} disabled={!isSuperAdmin} />
   );
 
+  type CashKey = keyof NonNullable<CompanyProfile['cashAccount']>;
+  const cashInput = (k: CashKey, placeholder = '') => (
+    <input
+      className="form-input"
+      value={form.cashAccount?.[k] || ''}
+      onChange={(e) => set('cashAccount', { ...(form.cashAccount ?? {}), [k]: e.target.value })}
+      placeholder={placeholder}
+      disabled={!isSuperAdmin}
+    />
+  );
+
   const save = async () => {
     if (!form.legalName.trim()) return error('Company name required', 'Enter the legal company name.');
     setSaving(true);
@@ -283,8 +294,8 @@ export const CompanyProfileForm: React.FC = () => {
       <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1rem' }}>
           <Landmark size={20} color="var(--ikpm-navy-700)" />
-          <div className="card-title">Bank details</div>
-          <span className="cell-sub" style={{ marginLeft: 'auto' }}>Shown on invoices</span>
+          <div className="card-title">Tax account — bank details</div>
+          <span className="cell-sub" style={{ marginLeft: 'auto' }}>Shown on Sales Tax Invoices</span>
         </div>
         <div className="form-grid-2">
           <Field label="Account title">{input('bankAccountTitle', 'Insect Killer Pest Management')}</Field>
@@ -292,6 +303,28 @@ export const CompanyProfileForm: React.FC = () => {
           <Field label="Branch">{input('bankBranch', 'Shahrah-e-Faisal, Karachi')}</Field>
           <Field label="Account number">{input('bankAccountNo')}</Field>
           <Field label="IBAN" span>{input('bankIban', 'PK00 XXXX 0000 0000 0000 0000')}</Field>
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.5rem' }}>
+          <Landmark size={20} color="var(--ikpm-amber-600, #D97706)" />
+          <div className="card-title">Cash account — Cash Memos</div>
+          <span className="cell-sub" style={{ marginLeft: 'auto' }}>No-tax billing, mostly residential</span>
+        </div>
+        <div className="info-hint" style={{ marginBottom: '0.9rem' }}>
+          Cash memos print no NTN / STRN and no tax lines. If the company is registered for sales tax, confirm with your tax
+          accountant that this account may bill without tax (often it is a separate, unregistered business name).
+          Leave the bank fields empty to print “Payable in cash” instead.
+        </div>
+        <div className="form-grid-2">
+          <Field label="Business name on cash memos" hint="Empty = the company name">{cashInput('tradeName', form.legalName)}</Field>
+          <Field label="Account title">{cashInput('bankAccountTitle')}</Field>
+          <Field label="Bank">{cashInput('bankName')}</Field>
+          <Field label="Branch">{cashInput('bankBranch')}</Field>
+          <Field label="Account number">{cashInput('bankAccountNo')}</Field>
+          <Field label="IBAN">{cashInput('bankIban', 'PK00 XXXX 0000 0000 0000 0000')}</Field>
+          <Field label="Note printed on cash memos" span>{cashInput('notes', 'e.g. Cash received by our Supervisor against a signed slip.')}</Field>
         </div>
       </div>
 

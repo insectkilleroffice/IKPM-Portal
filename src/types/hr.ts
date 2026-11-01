@@ -80,6 +80,8 @@ export interface AttendanceRecord {
   status: AttendanceStatus;
   arrivalTime?: string; // HH:mm
   lateMinutes?: number;
+  /** Extra hours worked beyond the normal day; paid from the person's salary (see payroll rules). */
+  overtimeHours?: number;
   remarks?: string;
   markedBy: string;
   markedByName: string;
@@ -104,6 +106,10 @@ export interface SalaryLine {
   attendanceDays: number;
   lateMarks: number;
   verifiedJobs: number;
+  /** Overtime in the cycle and what it pays (hourly rate from salary × overtime multiplier). */
+  overtimeHours?: number;
+  overtimeRate?: number;
+  overtimePay?: number;
   approvedExpenses: number;
   performanceScore?: number;
   deductions: SalaryDeductionItem[];

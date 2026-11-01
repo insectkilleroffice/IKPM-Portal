@@ -12,7 +12,8 @@ import { useNotification } from '../../contexts/NotificationContext';
 import { canEditModule } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
-import { calculateSalaryLine, DEFAULT_PAYROLL_RULES } from '../../lib/payroll';
+import { calculateSalaryLine, payrollRulesFrom } from '../../lib/payroll';
+import { companyProfile } from '../../services/companyProfile';
 import type { SalaryCycle, SalaryCycleStatus, SalaryLine, Employee, EmployeePay, AttendanceRecord } from '../../types/hr';
 
 const STATUS_BADGE: Record<SalaryCycleStatus, string> = {
@@ -79,10 +80,10 @@ export const PayrollPage: React.FC = () => {
         // Find pay structure if exists
         const payList = (store as unknown as { s?: { employeePay?: EmployeePay[] } })?.s?.employeePay || [];
         const empPay = payList.find((p) => p.id === emp.id);
-        return calculateSalaryLine(emp, empPay, attendance, jobs, DEFAULT_PAYROLL_RULES);
+        return calculateSalaryLine(emp, empPay, attendance, jobs, payrollRulesFrom(companyProfile.get().payrollRules));
       });
 
-      const totalGross = lines.reduce((sum, l) => sum + l.baseSalary + l.allowances + l.incentive, 0);
+      const totalGross = lines.reduce((sum, l) => sum + l.baseSalary + l.allowances + l.incentive + (l.overtimePay || 0), 0);
       const totalDeductions = lines.reduce((sum, l) => sum + l.totalDeductions, 0);
       const totalNet = lines.reduce((sum, l) => sum + l.netPayable, 0);
 
@@ -320,6 +321,7 @@ export const PayrollPage: React.FC = () => {
                   <th>Att. Days</th>
                   <th>Lates</th>
                   <th>Deductions</th>
+                  <th>Overtime</th>
                   <th>Incentives</th>
                   <th style={{ textAlign: 'right' }}>Net Payable</th>
                 </tr>
@@ -344,6 +346,9 @@ export const PayrollPage: React.FC = () => {
                     </td>
                     <td style={{ color: line.totalDeductions > 0 ? 'var(--ikpm-rose-600)' : 'inherit' }}>
                       {line.totalDeductions > 0 ? `-PKR ${line.totalDeductions.toLocaleString()}` : '0'}
+                    </td>
+                    <td style={{ color: (line.overtimePay || 0) > 0 ? 'var(--ikpm-teal-600)' : 'inherit' }} title={line.overtimeRate ? `PKR ${line.overtimeRate}/hour` : undefined}>
+                      {(line.overtimePay || 0) > 0 ? <>+PKR {line.overtimePay!.toLocaleString()}<div className="cell-sub">{line.overtimeHours} h</div></> : '0'}
                     </td>
                     <td style={{ color: line.incentive > 0 ? 'var(--ikpm-teal-600)' : 'inherit' }}>
                       {line.incentive > 0 ? `+PKR ${line.incentive.toLocaleString()}` : '0'}

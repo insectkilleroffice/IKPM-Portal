@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { CompanyProfileForm } from '../../features/settings/CompanyProfileForm';
 import { TemplatesForm } from '../../features/settings/TemplatesForm';
+import { PayrollRulesCard } from '../../features/settings/PayrollRulesCard';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
@@ -426,8 +427,8 @@ export const SettingsPage: React.FC = () => {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
               <div className="form-group">
                 <label className="form-label">Official Start Time (PCO Reporting)</label>
-                <input className="form-input" defaultValue="08:30" disabled={!isSuperAdmin} />
-                <span className="cell-sub">PCOs arriving after this time are marked Late on muster roll.</span>
+                <input className="form-input" value="Set under Settings → Payroll" disabled />
+                <span className="cell-sub">Staff arriving after the work start time are marked Late on the attendance sheet.</span>
               </div>
               <div className="form-group">
                 <label className="form-label">Late Arrival Threshold (Grace Period)</label>
@@ -463,37 +464,7 @@ export const SettingsPage: React.FC = () => {
       {/* Tab: Payroll Rules (Change 44) */}
       {activeTab === 'payroll' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div className="card">
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--ikpm-navy-900)', marginBottom: '0.5rem' }}>
-              30-Day Payroll & Deduction Governance
-            </h3>
-            <p className="cell-sub" style={{ marginBottom: '1.25rem' }}>
-              Automated salary computation rules, attendance penalties, and job incentives. Super Admin exclusive.
-            </p>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div className="form-group">
-                <label className="form-label">Payroll Cycle Period</label>
-                <input className="form-input" defaultValue="30 Days" disabled />
-                <span className="cell-sub">Standard payroll distribution cycle.</span>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Late Marks per Absence Deduction</label>
-                <input className="form-input" defaultValue="3" disabled={!isSuperAdmin} />
-                <span className="cell-sub">Every 3 late arrivals trigger a 1-day daily wage deduction.</span>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Absence Deduction Ratio</label>
-                <input className="form-input" defaultValue="1.0 (100% of Daily Wage)" disabled={!isSuperAdmin} />
-                <span className="cell-sub">Deduction applied per unexcused absence (Base Salary / 30).</span>
-              </div>
-              <div className="form-group">
-                <label className="form-label">PCO Verified Job Completion Incentive</label>
-                <input className="form-input" defaultValue="PKR 100 per verified job" disabled={!isSuperAdmin} />
-                <span className="cell-sub">Bonus added for each QC-confirmed service report.</span>
-              </div>
-            </div>
-          </div>
+          <PayrollRulesCard />
         </div>
       )}
     </div>
