@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { treatmentTypeLabel } from '../../lib/treatments';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   MapPin,
@@ -404,7 +405,7 @@ export const IndividualDetailPage: React.FC = () => {
                       <div style={{ fontSize: '0.75rem', color: 'var(--ikpm-emerald-600)' }}>Revision: R{p.revisionNumber}</div>
                     </td>
                     <td>
-                      <div style={{ fontWeight: 600 }}>{p.templateType.replace('_', ' ')}</div>
+                      <div style={{ fontWeight: 600 }}>{(p.templateTypes?.length ? p.templateTypes : [p.templateType]).map(treatmentTypeLabel).join(', ')}</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{p.lineItems.length} Service Items</div>
                     </td>
                     <td>{p.preparedByName}</td>

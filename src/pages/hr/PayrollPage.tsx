@@ -76,14 +76,19 @@ export const PayrollPage: React.FC = () => {
 
       // Calculate line for each active employee
       const activeEmployees = employees.filter((e) => e.status !== 'inactive');
+      // Only this cycle's visits count (job incentive and fuel)
+      const cycleJobs = jobs.filter((j) => {
+        const d = (j.scheduledDate || '').slice(0, 10);
+        return d >= startDate && d <= endDate;
+      });
       const lines: SalaryLine[] = activeEmployees.map((emp) => {
         // Find pay structure if exists
         const payList = (store as unknown as { s?: { employeePay?: EmployeePay[] } })?.s?.employeePay || [];
         const empPay = payList.find((p) => p.id === emp.id);
-        return calculateSalaryLine(emp, empPay, attendance, jobs, payrollRulesFrom(companyProfile.get().payrollRules));
+        return calculateSalaryLine(emp, empPay, attendance, cycleJobs, payrollRulesFrom(companyProfile.get().payrollRules));
       });
 
-      const totalGross = lines.reduce((sum, l) => sum + l.baseSalary + l.allowances + l.incentive + (l.overtimePay || 0), 0);
+      const totalGross = lines.reduce((sum, l) => sum + l.baseSalary + l.allowances + l.incentive + (l.overtimePay || 0) + (l.fuelAllowance || 0), 0);
       const totalDeductions = lines.reduce((sum, l) => sum + l.totalDeductions, 0);
       const totalNet = lines.reduce((sum, l) => sum + l.netPayable, 0);
 
@@ -323,6 +328,7 @@ export const PayrollPage: React.FC = () => {
                   <th>Deductions</th>
                   <th>Overtime</th>
                   <th>Incentives</th>
+                  <th>Fuel</th>
                   <th style={{ textAlign: 'right' }}>Net Payable</th>
                 </tr>
               </thead>
@@ -352,6 +358,9 @@ export const PayrollPage: React.FC = () => {
                     </td>
                     <td style={{ color: line.incentive > 0 ? 'var(--ikpm-teal-600)' : 'inherit' }}>
                       {line.incentive > 0 ? `+PKR ${line.incentive.toLocaleString()}` : '0'}
+                    </td>
+                    <td style={{ color: (line.fuelAllowance || 0) > 0 ? 'var(--ikpm-teal-600)' : 'inherit' }} title="km ÷ 36 km/L × petrol price on each visit report">
+                      {(line.fuelAllowance || 0) > 0 ? <>+PKR {line.fuelAllowance!.toLocaleString()}<div className="cell-sub">{line.fuelKm} km</div></> : '0'}
                     </td>
                     <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--ikpm-navy-900)' }}>
                       PKR {line.netPayable.toLocaleString()}

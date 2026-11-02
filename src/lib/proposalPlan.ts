@@ -9,6 +9,16 @@ export interface ServicePlanItem {
   id: string;
   service: string;
   frequency: string;
+  /** The formulas as one line of text, e.g. "Fipronil (Termidor), Imidacloprid" (kept for PDFs and older screens). */
+  formula?: string;
+  /** Formulas used for this service: formula required, brand optional. */
+  formulas?: FormulaLine[];
+}
+
+/** One formula used in a service: the formula (active ingredient) and, optionally, the brand. */
+export interface FormulaLine {
+  formula: string;
+  brand?: string;
 }
 
 export type ServicePlanPreset = 'commercial_kitchen' | 'factory' | 'general_ipm';

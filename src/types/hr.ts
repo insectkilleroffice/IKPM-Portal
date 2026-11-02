@@ -110,6 +110,9 @@ export interface SalaryLine {
   overtimeHours?: number;
   overtimeRate?: number;
   overtimePay?: number;
+  /** Fuel for field trips in the cycle (km ÷ 36 km/L × petrol price on the report). */
+  fuelKm?: number;
+  fuelAllowance?: number;
   approvedExpenses: number;
   performanceScore?: number;
   deductions: SalaryDeductionItem[];

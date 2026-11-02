@@ -10,6 +10,7 @@ vi.mock('firebase/firestore', () => ({
   where: vi.fn(),
   onSnapshot: vi.fn(() => () => {}),
   setDoc: vi.fn(() => Promise.resolve()),
+  getDocFromServer: vi.fn(() => Promise.resolve({ exists: () => false })),
   writeBatch: vi.fn(() => ({ set: vi.fn(), update: vi.fn(), commit: vi.fn(() => Promise.resolve()) })),
 }));
 vi.mock('../lib/firebase', () => ({ db: {} }));
@@ -62,7 +63,7 @@ describe('auto-filing', () => {
     expect(d.clientId).toBeUndefined();
   });
 
-  it("files a lead's documents and outreach under the lead until it becomes a customer", () => {
+  it("files a lead's documents and outreach under the lead until it becomes a customer", async () => {
     const lead = newLead();
     const d = dataService.saveDocument(doc({ kind: 'lead', id: lead.id }, { fileCategory: 'risk_assessment' }), EMAIL);
     expect(d).toMatchObject({ ownerScope: 'client', clientId: lead.id, folderPath: `/Clients/${lead.companyName}__${lead.id}/Leads & Inspections` });
@@ -75,7 +76,7 @@ describe('auto-filing', () => {
     expect(log).toMatchObject({ ownerScope: 'client', clientId: lead.id, fileCategory: 'correspondence' });
 
     // Becoming a customer moves both, without changing the files themselves
-    const { customerId } = dataService.ensureLeadCustomer(lead.id, EMAIL);
+    const { customerId } = await dataService.ensureLeadCustomer(lead.id, EMAIL);
     const movedDoc = dataService.getDocumentById(d.id)!;
     expect(movedDoc.clientId).toBe(customerId);
     expect(movedDoc.folderPath).toBe(`/Clients/${lead.companyName}__${customerId}/Leads & Inspections`);
@@ -88,10 +89,10 @@ describe('auto-filing', () => {
     expect(later.folderPath).toBe(`/Clients/${lead.companyName}__${customerId}/Documents`);
   });
 
-  it('files invoices by year and keeps folder fields on later edits', () => {
-    const company = dataService.getCompanies()[0] ?? (() => {
+  it('files invoices by year and keeps folder fields on later edits', async () => {
+    const company = dataService.getCompanies()[0] ?? await (async () => {
       const l = newLead();
-      const { customerId } = dataService.ensureLeadCustomer(l.id, EMAIL);
+      const { customerId } = await dataService.ensureLeadCustomer(l.id, EMAIL);
       return dataService.getCompanyById(customerId)!;
     })();
     const inv = {
@@ -111,11 +112,29 @@ describe('auto-filing', () => {
     expect(dataService.getInvoiceById(inv.id)!.folderPath).toBe(saved.folderPath);
   });
 
-  it('moveDocument changes the subfolder but never the client', () => {
+  it('a new customer account never reuses an id already in use', async () => {
+    const before = new Set(dataService.getCompanies().map((c) => c.id));
+    const { customerId } = await dataService.ensureLeadCustomer(newLead().id, EMAIL);
+    expect(before.has(customerId)).toBe(false);
+    const id = await dataService.newRecordId('CT', 'contract', ['CT-2026-0001', 'CT-2026-0002']);
+    expect(['CT-2026-0001', 'CT-2026-0002']).not.toContain(id);
+  });
+
+  it("skips a number already used by a record this user can't see", async () => {
+    const fs = await import('firebase/firestore');
+    const seq = vi.spyOn(dataService, 'nextSequence').mockResolvedValueOnce(5).mockResolvedValueOnce(6);
+    // CO-…-0005 belongs to another CRO: the database refuses to show it
+    vi.mocked(fs.getDocFromServer).mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'permission-denied' }));
+    const id = await dataService.newRecordId('CO', 'company', [], 'companies');
+    expect(id).toMatch(/-0006$/);
+    seq.mockRestore();
+  });
+
+  it('moveDocument changes the subfolder but never the client', async () => {
     const a = newLead();
     const b = newLead();
-    const { customerId: ca } = dataService.ensureLeadCustomer(a.id, EMAIL);
-    const { customerId: cb } = dataService.ensureLeadCustomer(b.id, EMAIL);
+    const { customerId: ca } = await dataService.ensureLeadCustomer(a.id, EMAIL);
+    const { customerId: cb } = await dataService.ensureLeadCustomer(b.id, EMAIL);
     const d = dataService.saveDocument(doc({ kind: 'company', id: ca }), EMAIL);
     expect(d.folderPath).toMatch(/\/Documents$/);
 

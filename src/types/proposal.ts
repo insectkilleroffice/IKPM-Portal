@@ -3,9 +3,9 @@
 import type { CustomerType } from './customer';
 import type { PestType } from './crm';
 import type { FolderMeta, TemplateStamp } from './folders';
-import type { ScopeSection, ServicePlanItem, ServicePlanPreset } from '../lib/proposalPlan';
+import type { FormulaLine, ScopeSection, ServicePlanItem, ServicePlanPreset } from '../lib/proposalPlan';
 
-export type { ScopeSection, ServicePlanItem, ServicePlanPreset };
+export type { FormulaLine, ScopeSection, ServicePlanItem, ServicePlanPreset };
 
 export type ProposalStatus =
   | 'draft'
@@ -33,6 +33,10 @@ export interface BranchServiceLine {
   pestType?: string;
   /** How often this service is done, e.g. "Twice per month", "Once per month". */
   frequency?: string;
+  /** The formulas as one line of text (kept for PDFs and older screens). */
+  formula?: string;
+  /** Formulas used: formula required, brand optional. */
+  formulas?: FormulaLine[];
 }
 
 /** Per-branch service breakdown inside a multi-site proposal. */
@@ -55,7 +59,10 @@ export interface ProposalLineItem {
   id: string;
   serviceName: string;
   targetPest: PestType;
+  /** The formulas as one line of text, e.g. "Fipronil (Termidor), Imidacloprid". */
   chemicalsSuggested: string;
+  /** Formulas used: formula required, brand optional. */
+  formulas?: FormulaLine[];
   treatmentMethod: string;
   areaCoveredSqFt?: number;
   frequency: string;
@@ -95,6 +102,8 @@ export interface Proposal extends FolderMeta, TemplateStamp {
   revisionNumber: number;
   parentProposalId?: string;
   templateType: TemplateType;
+  /** One-time treatments may combine several treatment types; templateType is the first of them. */
+  templateTypes?: TemplateType[];
   customerType: CustomerType;
   customerId: string;
   customerName: string;

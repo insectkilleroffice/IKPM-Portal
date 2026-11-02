@@ -105,7 +105,9 @@ export type PestType =
   | 'stored_grain_pests'
   | 'general_fumigation'
   | 'snake_reptile'
-  | 'other';
+  | 'other'
+  // Any other pest typed in by the inspector (stored as written, e.g. "Pigeons")
+  | (string & {});
 
 export type MeetingType = 'first_meeting' | 'negotiation' | 'renewal';
 export type InspectionHandling = 'done_inline' | 'tl_schedule' | 'separate_visit';

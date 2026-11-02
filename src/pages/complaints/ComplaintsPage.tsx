@@ -8,7 +8,7 @@ import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { canEditModule, baseRoleOf } from '../../lib/permissions';
-import { formatDate, generatePermanentId } from '../../lib/formatters';
+import { formatDate } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
 import type { Complaint, ComplaintCategory, ComplaintPriority, ComplaintSource, ComplaintStatus } from '../../types/complaints';
 import {
@@ -147,12 +147,13 @@ export const ComplaintsPage: React.FC = () => {
   // ---- Actions ----
   const now = () => new Date().toISOString();
 
-  function handleCreate() {
+  async function handleCreate() {
     if (!form.customerId || !form.subject.trim() || !form.description.trim()) {
       error('Missing fields', 'Customer, subject and description are required.');
       return;
     }
-    const id = generatePermanentId('CMP', allComplaints.length + 1);
+    // Shared counter + database check: never another person's complaint number
+    const id = await dataService.newRecordId('CMP', 'complaint', allComplaints.map((c) => c.id), 'complaints');
     // Change 18: Auto-assign new complaints to the Operations Manager role
     const defaultOps = opsStaff.find((u) => baseRoleOf(u.role) === 'operations') || opsStaff.find((u) => baseRoleOf(u.role) === 'team_leader') || opsStaff[0];
     const initialStatus: ComplaintStatus = defaultOps ? 'assigned' : 'new';
@@ -206,7 +207,7 @@ export const ComplaintsPage: React.FC = () => {
   function handleCreateReService(c: Complaint) {
     if (!reServiceDate) { error('Date required', 'Pick a re-service visit date.'); return; }
     const jobs = dataService.getJobs();
-    const jobId = generatePermanentId('JOB', jobs.length + 1);
+    const jobId = `JOB-${Date.now().toString(36).toUpperCase()}-RS`;
     const job = {
       id: jobId,
       contractId: c.contractId,

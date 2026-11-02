@@ -142,6 +142,19 @@ export interface JobCashCollection {
   invoiceId?: string;
 }
 
+/** One person's trip to a visit and back, for the fuel paid with salary. */
+export interface FuelClaim {
+  /** HR employee id (PCO or the Supervisor's own record); no id = not paid through payroll. */
+  employeeId?: string;
+  name: string;
+  role: 'pco' | 'supervisor';
+  kmGoing: number;
+  kmReturn: number;
+  litres: number;
+  /** PKR = (kmGoing + kmReturn) ÷ 36 × petrol price */
+  amount: number;
+}
+
 export interface ServiceJob extends FolderMeta, Partial<RecordOwnership> {
   id: string;
   contractId?: string;
@@ -199,6 +212,10 @@ export interface ServiceJob extends FolderMeta, Partial<RecordOwnership> {
   teamLeaderOnSite?: boolean;
   /** Why a PCO from another team was used. */
   borrowedPcoReason?: string;
+  /** Petrol price (PKR per litre) on the day, entered by the Supervisor on the report. */
+  petrolPricePerLitre?: number;
+  /** Travel by each person on site; paid with their salary (km ÷ 36 km/L × petrol price). */
+  fuelClaims?: FuelClaim[];
   // Supervisor submission on behalf of PCOs (Change 49)
   submittedByUid?: string;
   submittedByName?: string;

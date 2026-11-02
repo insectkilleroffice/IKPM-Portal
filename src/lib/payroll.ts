@@ -1,5 +1,6 @@
 import type { AttendanceRecord, Employee, EmployeePay, SalaryDeductionItem, SalaryLine } from '../types/hr';
 import type { ServiceJob } from '../types/operations';
+import { fuelForEmployee } from './fuel';
 
 export interface PayrollRules {
   daysInCycle: number;
@@ -126,8 +127,11 @@ export function calculateSalaryLine(
   const incentive = employee.role === 'pco' ? verifiedJobs * rules.jobIncentivePerUnit : 0;
 
   // Net payable calculation
+  // Fuel for field trips (PCOs and Supervisors), from the close-out reports
+  const fuel = fuelForEmployee(employee.id, jobs);
+
   const grossPay = baseSalary + allowances;
-  const netPayable = Math.max(0, grossPay + incentive + overtimePay - totalDeductions);
+  const netPayable = Math.max(0, grossPay + incentive + overtimePay + fuel.amount - totalDeductions);
 
   return {
     employeeId: employee.id,
@@ -141,6 +145,8 @@ export function calculateSalaryLine(
     overtimeHours,
     overtimeRate,
     overtimePay,
+    fuelKm: fuel.km,
+    fuelAllowance: fuel.amount,
     approvedExpenses: 0,
     performanceScore: 100,
     deductions,

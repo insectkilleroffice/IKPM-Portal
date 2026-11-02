@@ -15,6 +15,7 @@ import { FINDING_SUGGESTIONS, findingFilled, findingsSummary, newFinding, recomm
 import { fileInspectionReport, fileMeetingReport } from './inspectionFiles';
 import { PcoTicks } from '../schedule/PcoTicks';
 import { FieldError } from '../../components/common/FieldError';
+import { PestPicker } from '../../components/common/PestPicker';
 import { emailProblem, phoneProblem, problemsOf } from '../../lib/validation';
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -1049,16 +1050,7 @@ export const MeetingReportModal: React.FC<{ lead: Lead | null; onClose: () => vo
 
                   <div className="form-group">
                     <label className="form-label">Pests found <span className="required">*</span></label>
-                    <div className="chip-row" style={{ marginBottom: 0 }}>
-                      {PEST_OPTIONS.map((p) => {
-                        const on = inlinePestTypes.includes(p.value);
-                        return (
-                          <button key={p.value} type="button" className={`chip ${on ? 'chip-on' : ''}`} onClick={() => setInlinePestTypes((prev) => on ? prev.filter((x) => x !== p.value) : [...prev, p.value])}>
-                            {on && <Check size={14} />} {p.label}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <PestPicker value={inlinePestTypes} onChange={setInlinePestTypes} options={PEST_SUGGESTIONS} />
                   </div>
 
                   <div className="form-grid-2">
@@ -1209,11 +1201,13 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
   const branches = lead.branches ?? [];
   const headOffice = lead.headquarterAddress || lead.propertyAddress || [lead.area, lead.city].filter(Boolean).join(', ');
 
+  const headOfficeChoice = { name: lead.companyName || lead.title || lead.contactName || 'Head office', address: headOffice };
   const resolvedBranch = (): { id?: string; name: string; address: string } => {
-    if (branchChoice === 'headquarter') return { name: lead.companyName || lead.title, address: headOffice };
+    if (branchChoice === 'headquarter' || !branchChoice) return headOfficeChoice;
     if (branchChoice === 'new') return { name: newBranchName.trim(), address: [newBranchAddress.trim(), newBranchCity.trim()].filter(Boolean).join(', ') };
     const b = branches.find((x) => x.id === branchChoice);
-    return b ? { id: b.id, name: b.name, address: b.address || b.city || '' } : { name: '', address: '' };
+    // A saved choice that is no longer in the list shows as "Head office" in the picker, so use it
+    return b ? { id: b.id, name: b.name || 'Branch', address: b.address || b.city || '' } : headOfficeChoice;
   };
 
   const save = () => {
@@ -1478,16 +1472,7 @@ export const SiteInspectionFindingsModal: React.FC<{ lead: Lead | null; onClose:
 
       <div className="form-group">
         <label className="form-label">Pests found <span className="required">*</span></label>
-        <div className="chip-row" style={{ marginBottom: 0 }}>
-          {PEST_OPTIONS.map((p) => {
-            const on = pests.includes(p.value);
-            return (
-              <button key={p.value} type="button" className={`chip ${on ? 'chip-on' : ''}`} onClick={() => setPests(on ? pests.filter((x) => x !== p.value) : [...pests, p.value])}>
-                {on && <Check size={14} />} {p.label}
-              </button>
-            );
-          })}
-        </div>
+        <PestPicker value={pests} onChange={setPests} options={PEST_SUGGESTIONS} />
       </div>
 
       <div className="form-grid-2">
@@ -1606,6 +1591,8 @@ export const PEST_OPTIONS: { value: PestType; label: string }[] = [
   { value: 'general_fumigation', label: 'General fumigation' },
   { value: 'other', label: 'Other' },
 ];
+/** Suggestions in the pest picker: "Other" is replaced by typing the pest's own name. */
+const PEST_SUGGESTIONS = PEST_OPTIONS.filter((o) => o.value !== 'other');
 
 export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () => void; onDone?: (lead: Lead) => void }> = ({ lead, onClose, onDone }) => {
   const store = useDataStore();
@@ -1928,16 +1915,7 @@ export const InspectionFindingsModal: React.FC<{ lead: Lead | null; onClose: () 
       {didInspection && <>
       <div className="form-group">
         <label className="form-label">Pests found <span className="required">*</span></label>
-        <div className="chip-row" style={{ marginBottom: 0 }}>
-          {PEST_OPTIONS.map((p) => {
-            const on = pests.includes(p.value);
-            return (
-              <button key={p.value} type="button" className={`chip ${on ? 'chip-on' : ''}`} onClick={() => setPests(on ? pests.filter((x) => x !== p.value) : [...pests, p.value])}>
-                {on && <Check size={14} />} {p.label}
-              </button>
-            );
-          })}
-        </div>
+        <PestPicker value={pests} onChange={setPests} options={PEST_SUGGESTIONS} />
       </div>
 
       <div className="form-grid-2">

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
+import { treatmentTypeLabel } from '../../lib/treatments';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Search, Download, Send, FileSignature, RotateCw, CheckCircle2, CalendarClock, Paperclip, Calendar, Truck } from 'lucide-react';
+import { Plus, Search, Download, Send, FileSignature, RotateCw, CheckCircle2, CalendarClock, Paperclip, Calendar, Truck, Pencil } from 'lucide-react';
 import { useDataStore } from '../../hooks/useDataStore';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import { ProposalBuilderModal, type ProposalPrefill } from '../../features/proposals/ProposalBuilderModal';
@@ -60,6 +61,10 @@ export const ProposalsListPage: React.FC = () => {
   const [showChangesDialog, setShowChangesDialog] = useState(false);
   const [sendTarget, setSendTarget] = useState<Proposal | null>(null);
   const [reviseTarget, setReviseTarget] = useState<Proposal | null>(null);
+  // Draft being edited in place (e.g. after the approver asked for changes)
+  const [editTarget, setEditTarget] = useState<Proposal | null>(null);
+  // CRO and admins edit draft proposals (same id, same revision)
+  const canEditDraft = (p: Proposal) => canAccept && p.status === 'draft';
 
   const proposals = dataService.getProposals();
   const contracts = dataService.getContracts();
@@ -251,7 +256,7 @@ export const ProposalsListPage: React.FC = () => {
                 <td>
                   {p.servicePlan?.length
                     ? <span className="badge-status badge-emerald">Monthly plan · {p.tenureMonths} mo</span>
-                    : <span className="badge-status badge-slate">{p.templateType.replace(/_/g, ' ')}</span>}
+                    : <span className="badge-status badge-slate">{(p.templateTypes?.length ? p.templateTypes : [p.templateType]).map(treatmentTypeLabel).join(', ')}</span>}
                 </td>
                 <td className="cell-sub">{p.preparedByName}</td>
                 <td>
@@ -269,6 +274,8 @@ export const ProposalsListPage: React.FC = () => {
                     {p.status === 'accepted' && (() => {
                       const linked = contracts.find((c) => c.proposalId === p.id && c.status !== 'cancelled');
                       if (!linked) {
+                        // Contracts are made by the CRO or an admin
+                        if (!canAccept) return null;
                         return (
                           <button className="btn btn-sm btn-primary" title="Create the contract from this proposal" onClick={() => navigate(`/contracts?action=new_contract&fromProposal=${p.id}`)}>
                             <FileSignature size={12} /> <span>Contract</span>
@@ -289,7 +296,15 @@ export const ProposalsListPage: React.FC = () => {
                         </button>
                       );
                     })()}
-                    {['sent_to_client', 'declined', 'rejected', 'expired', 'accepted', 'negotiation'].includes(p.status) && (
+                    {canEditDraft(p) && (
+                      <button className={`btn btn-sm ${p.approval?.status === 'changes_requested' ? 'btn-primary' : 'btn-secondary'}`}
+                        title={p.approval?.status === 'changes_requested' ? `Changes requested${p.approval.decisionByName ? ` by ${p.approval.decisionByName}` : ''}: ${p.approval.comments ?? ''}` : 'Edit this draft'}
+                        onClick={() => setEditTarget(p)}>
+                        <Pencil size={12} /> <span>Edit</span>
+                      </button>
+                    )}
+                    {/* Revisions: CRO and admins only */}
+                    {canAccept && ['sent_to_client', 'declined', 'rejected', 'expired', 'accepted', 'negotiation'].includes(p.status) && (
                       <button className="btn btn-sm btn-secondary" title="Create a revised version of this proposal" onClick={() => reviseProposal(p)}>
                         <RotateCw size={12} /> <span>Revise</span>
                       </button>
@@ -319,6 +334,15 @@ export const ProposalsListPage: React.FC = () => {
         />
       )}
 
+      {editTarget && (
+        <ReviseProposalModal
+          mode="edit"
+          proposal={editTarget}
+          onClose={() => setEditTarget(null)}
+          onRevised={(edited) => { setEditTarget(null); setSelectedId(edited.id); }}
+        />
+      )}
+
       {selected && (
         <ProposalDetailModal
           proposal={selected}
@@ -344,6 +368,7 @@ export const ProposalsListPage: React.FC = () => {
           }}
           onDecline={() => save({ ...selected, status: 'declined' }, () => warning('Declined', selected.leadId ? `Lead ${selected.leadId} moved to Negotiation. Schedule a negotiation meeting as the next step.` : 'Proposal declined by the client.'))}
           onSend={canSend(selected) ? () => setSendTarget(selected) : undefined}
+          onEdit={canEditDraft(selected) ? () => { setEditTarget(selected); setSelectedId(null); } : undefined}
         />
       )}
 

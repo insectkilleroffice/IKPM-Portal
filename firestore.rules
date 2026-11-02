@@ -248,6 +248,8 @@ service cloud.firestore {
 
     // ---------- Customers ----------
     match /companies/{id} {
+      // Anyone signed in may look up an id that doesn't exist yet (new-number check, reveals nothing)
+      allow get: if signedIn() && resource == null;
       allow read: if readMod(who(), 'customers');
       allow create: if createMod(who(), 'customers');
       allow update: if updateMod(who(), 'customers');
@@ -262,6 +264,8 @@ service cloud.firestore {
     }
 
     match /clients/{id} {
+      // Anyone signed in may look up an id that doesn't exist yet (new-number check, reveals nothing)
+      allow get: if signedIn() && resource == null;
       allow read: if readMod(who(), 'customers');
       allow create: if createMod(who(), 'customers');
       allow update: if updateMod(who(), 'customers');
@@ -323,6 +327,8 @@ service cloud.firestore {
     }
 
     match /proposals/{id} {
+      // Anyone signed in may look up an id that doesn't exist yet (new-number check, reveals nothing)
+      allow get: if signedIn() && resource == null;
       allow read: if readMod(who(), 'proposals');
       allow create: if createMod(who(), 'proposals');
       allow update: if updateMod(who(), 'proposals') || (canE(who(), 'proposals') && filingOnly(who()));
@@ -343,6 +349,8 @@ service cloud.firestore {
     }
 
     match /contracts/{id} {
+      // Anyone signed in may look up an id that doesn't exist yet (new-number check, reveals nothing)
+      allow get: if signedIn() && resource == null;
       // Assigned Supervisors may read their own contracts even if company scope is restricted
       allow read: if readMod(who(), 'contracts')
         || ((canV(who(), 'pco') || isSupervisor(who())) && resource.data.assignedTeamLeaderId == request.auth.uid);
@@ -429,6 +437,8 @@ service cloud.firestore {
     }
 
     match /invoices/{id} {
+      // Anyone signed in may look up an id that doesn't exist yet (new-number check, reveals nothing)
+      allow get: if signedIn() && resource == null;
       allow read: if canV(who(), 'invoices');
       allow create: if canE(who(), 'invoices') || isBase(who(), 'admin');
       allow update: if invoiceUpdate(who());
@@ -436,6 +446,8 @@ service cloud.firestore {
     }
 
     match /payments/{id} {
+      // Anyone signed in may look up an id that doesn't exist yet (new-number check, reveals nothing)
+      allow get: if signedIn() && resource == null;
       allow read: if canV(who(), 'invoices');
       allow create: if canE(who(), 'invoices') || isBase(who(), 'admin');
       // Receipts never change, apart from being filed into their client's folder
@@ -538,6 +550,8 @@ service cloud.firestore {
 
     // ---------- Complaints ----------
     match /complaints/{id} {
+      // Anyone signed in may look up an id that doesn't exist yet (new-number check, reveals nothing)
+      allow get: if signedIn() && resource == null;
       allow read: if readMod(who(), 'complaints');
       allow create: if createMod(who(), 'complaints');
       allow update: if canE(who(), 'complaints') && inScope(who(), resource.data) && keepsOwner(who());
@@ -633,14 +647,15 @@ service cloud.firestore {
     match /id_counters/{key} {
       allow read: if who().active;
       allow create: if who().active;
-      allow update: if who().active && request.resource.data.seq == resource.data.seq + 1;
+      // Counters only move forward (they may jump to catch up with numbers already in use)
+      allow update: if who().active && request.resource.data.seq is int && request.resource.data.seq > resource.data.seq;
       allow delete: if isSA(who());
     }
 
     // Lets the portal check which rules are live (dataService.rulesAreCurrent). Change this id
     // together with RULES_VERSION in src/services/dataService.ts whenever the rules change.
     match /rules_probe/{version} {
-      allow get: if version == '2026-11-02-l';
+      allow get: if version == '2026-11-02-n';
     }
 
     match /audit_logs/{id} {

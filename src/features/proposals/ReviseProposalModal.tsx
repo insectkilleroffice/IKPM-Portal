@@ -1,37 +1,33 @@
 import React, { useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { dataService } from '../../services/dataService';
-import { formatPKR, generatePermanentId } from '../../lib/formatters';
+import { formatPKR } from '../../lib/formatters';
 import { planPricing, tenureEnd } from '../../lib/proposalPlan';
 import { fileProposalPdf } from './proposalFiles';
-import type { Proposal, ProposalLineItem, ProposalBranchBreakdown } from '../../types/proposal';
+import type { Proposal, ProposalLineItem, ProposalBranchBreakdown, TemplateType } from '../../types/proposal';
 import type { ServicePlanItem } from '../../lib/proposalPlan';
 import type { PestType } from '../../types/crm';
+import { mergeRatsAndMice, servicesMissingFormula, TREATMENT_TYPES, withCleanFormulas, treatmentLabel } from '../../lib/treatments';
+import { Check } from 'lucide-react';
+import { TreatmentDatalists } from './TreatmentDatalists';
+import { SiteTreatments } from './SiteTreatments';
+import { ServiceSelection } from './ServiceSelection';
 
 interface Props {
   proposal: Proposal;
   onClose: () => void;
   onRevised: (revised: Proposal) => void;
+  /**
+   * 'revise' (default): a new revision R+1 with its own id, for a proposal already sent.
+   * 'edit': change this draft in place (e.g. after "Changes requested") — same id and revision.
+   */
+  mode?: 'revise' | 'edit';
 }
 
-const SERVICE_OPTIONS = [
-  { value: 'general_fumigation', label: 'General fumigation' },
-  { value: 'cockroach_gel', label: 'Cockroach gel treatment' },
-  { value: 'rodent_control', label: 'Rodent control (bait stations)' },
-  { value: 'termite_treatment', label: 'Termite treatment' },
-  { value: 'bedbug_treatment', label: 'Bedbug treatment' },
-  { value: 'mosquito_fogging', label: 'Mosquito / fly fogging' },
-  { value: 'ant_treatment', label: 'Ant treatment' },
-  { value: 'stored_grain_pest', label: 'Stored grain pest control' },
-  { value: 'snake_reptile', label: 'Snake / reptile control' },
-  { value: 'monitoring_visit', label: 'Monitoring visit' },
-  { value: 'other', label: 'Other (specify)' },
-];
-
-export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onRevised }) => {
+export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onRevised, mode = 'revise' }) => {
+  const editing = mode === 'edit';
   const { userProfile } = useAuth();
   const { success, error, warning } = useNotification();
 
@@ -45,15 +41,25 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
   const [tenureStart, setTenureStart] = useState(p.tenureStart || new Date().toISOString().split('T')[0]);
   const [tenureMonths, setTenureMonths] = useState(p.tenureMonths ?? 12);
   const [monthlyRate, setMonthlyRate] = useState(p.monthlyRate ?? 0);
-  const [plan, setPlan] = useState<ServicePlanItem[]>(p.servicePlan ? p.servicePlan.map((r) => ({ ...r })) : []);
+  const [plan, setPlanRaw] = useState<ServicePlanItem[]>(p.servicePlan ? p.servicePlan.map((r) => ({ ...r })) : []);
+  // Rats control + Mice control -> one "Rats & mice control" row
+  const setPlan = (update: (prev: ServicePlanItem[]) => ServicePlanItem[]) =>
+    setPlanRaw((prev) => mergeRatsAndMice(update(prev), (r) => r.service, (r, service) => ({ ...r, service })));
   const [branchBreakdowns, setBranchBreakdowns] = useState<ProposalBranchBreakdown[]>(
     p.branchBreakdowns ? p.branchBreakdowns.map((b) => ({ ...b })) : []
   );
 
   // --- One-time fields ---
-  const [lineItems, setLineItems] = useState<ProposalLineItem[]>(
+  const [lineItems, setLineItemsRaw] = useState<ProposalLineItem[]>(
     p.lineItems.map((li) => ({ ...li }))
   );
+  const setLineItems = (update: (prev: ProposalLineItem[]) => ProposalLineItem[]) =>
+    setLineItemsRaw((prev) => mergeRatsAndMice(update(prev), (li) => li.serviceName, (li, serviceName) => ({ ...li, serviceName })));
+  // One-time sales tax: set for this proposal (starts at the current revision's rate)
+  const [otTaxPct, setOtTaxPct] = useState<string>(isPlan ? '' : String(p.taxPercent ?? ''));
+  const otTaxPercent = isPlan ? p.taxPercent : Number(otTaxPct) || 0;
+  // One-time treatment types (several may be combined)
+  const [templateTypes, setTemplateTypes] = useState<TemplateType[]>(p.templateTypes?.length ? p.templateTypes : [p.templateType]);
 
   // Derived pricing
   const branchTotal = branchBreakdowns.reduce((s, b) => s + b.monthlyAmount, 0);
@@ -65,46 +71,57 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
 
   const otSubtotal = branchBreakdowns.length > 0 ? branchTotal : lineItems.reduce((s, li) => s + li.totalPrice, 0);
   const otDiscount = (otSubtotal * discountPercent) / 100;
-  const otTax = ((otSubtotal - otDiscount) * p.taxPercent) / 100;
+  const otTax = ((otSubtotal - otDiscount) * otTaxPercent) / 100;
 
   const problems: string[] = [];
-  if (!changeReason.trim()) problems.push('Enter a reason for this revision.');
+  if (!editing && !changeReason.trim()) problems.push('Enter a reason for this revision.');
   if (isPlan && !(effectiveRate > 0)) problems.push('Monthly charges must be greater than zero.');
   if (isPlan && !plan.some((r) => r.service.trim())) problems.push('Add at least one service row.');
   if (!isPlan) {
     const otValid = branchBreakdowns.length > 0 ? branchTotal > 0 : lineItems.some((li) => li.serviceName.trim() && li.totalPrice > 0);
     if (!otValid) problems.push('Add at least one priced service.');
+    if (otTaxPct.trim() === '') problems.push('Enter the sales tax % (type 0 if no tax).');
+    else if (!(Number(otTaxPct) >= 0 && Number(otTaxPct) <= 100)) problems.push('Sales tax must be between 0 and 100%.');
+    if (!templateTypes.length) problems.push('Select at least one treatment type.');
+  }
+  {
+    const legacy = (text?: string) => (text ? [{ formula: text }] : []);
+    const noFormula = [
+      ...(isPlan ? servicesMissingFormula(plan, (r) => r.service, (r) => r.formulas ?? legacy(r.formula)) : []),
+      ...branchBreakdowns.flatMap((b) => servicesMissingFormula(b.services ?? [], (sv) => sv.service, (sv) => sv.formulas ?? legacy(sv.formula))),
+      ...(!isPlan && branchBreakdowns.length === 0
+        ? servicesMissingFormula(lineItems, (li) => li.serviceName, (li) => li.formulas ?? legacy(li.chemicalsSuggested))
+        : []),
+    ];
+    if (noFormula.length) problems.push(`Enter a formula for: ${Array.from(new Set(noFormula)).join(', ')}.`);
   }
 
-  const setLine = (i: number, patch: Partial<ProposalLineItem>) =>
-    setLineItems((prev) =>
-      prev.map((li, idx) => {
-        if (idx !== i) return li;
-        const next = { ...li, ...patch };
-        return { ...next, totalPrice: next.quantity * next.unitPrice };
-      })
-    );
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (problems.length) return;
     const now = new Date().toISOString();
     const proposals = dataService.getProposals();
-    const id = generatePermanentId('P', proposals.length + 1);
-    const newRev = p.revisionNumber + 1;
+    const id = editing ? p.id : await dataService.newRecordId('P', 'proposal', proposals.map((x) => x.id), 'proposals');
+    const newRev = editing ? p.revisionNumber : p.revisionNumber + 1;
 
     const subtotal = isPlan ? pricing!.subtotal : otSubtotal;
     const discountAmount = isPlan ? pricing!.discountAmount : otDiscount;
     const taxAmount = isPlan ? pricing!.taxAmount : otTax;
     const totalAmount = isPlan ? pricing!.totalAmount : otSubtotal - otDiscount + otTax;
-    const cleanPlan = plan.filter((r) => r.service.trim());
+    // Blank formula lines are dropped
+    const cleanPlan = plan.filter((r) => r.service.trim()).map((r) => withCleanFormulas(r, 'formula'));
+    const cleanBreakdowns = branchBreakdowns.map((b) => ({ ...b, services: b.services?.filter((sv) => sv.service.trim()).map((sv) => withCleanFormulas(sv, 'formula')) }));
 
+    const note = changeReason.trim();
     const revised: Proposal = {
       ...p,
       id,
       revisionNumber: newRev,
-      parentProposalId: p.parentProposalId || p.id,
-      status: discountPercent > 10 ? 'pending_approval' : 'draft',
-      approval: undefined,
+      // Editing keeps the draft's status and the approver's feedback (it can then be sent);
+      // a discount above 10% still goes back for approval (saveProposal)
+      ...(editing
+        ? { status: p.status, approval: p.approval }
+        : { parentProposalId: p.parentProposalId || p.id, status: discountPercent > 10 ? 'pending_approval' as const : 'draft' as const, approval: undefined }),
       sentDate: undefined,
       acceptedDate: undefined,
       pdfUrl: undefined,
@@ -113,7 +130,12 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
       subtotal,
       taxAmount,
       totalAmount,
-      revisionsHistory: [
+      revisionsHistory: editing
+        // Same revision: its history line gets the new totals (and what was changed)
+        ? p.revisionsHistory.map((h) => h.revisionNumber === p.revisionNumber
+            ? { ...h, subtotal, discountPercent, totalAmount, timestamp: now, changedBy: userProfile?.email || h.changedBy, changedByName: userProfile?.displayName || h.changedByName, changeReason: note ? `${h.changeReason} · Edited: ${note}` : `${h.changeReason} · Edited` }
+            : h)
+        : [
         ...p.revisionsHistory,
         {
           revisionNumber: newRev,
@@ -133,13 +155,13 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
             tenureStart,
             tenureEnd: end,
             servicePlan: cleanPlan,
-            branchBreakdowns: branchBreakdowns.length > 0 ? branchBreakdowns : undefined,
+            branchBreakdowns: cleanBreakdowns.length > 0 ? cleanBreakdowns : undefined,
             lineItems: [
               {
                 id: 'plan',
                 serviceName: `Monthly IPM service plan (${tenureMonths} month${tenureMonths === 1 ? '' : 's'})`,
                 targetPest: (p.lineItems[0]?.targetPest || 'general_fumigation') as PestType,
-                chemicalsSuggested: '',
+                chemicalsSuggested: cleanPlan.map((r) => r.formula?.trim()).filter(Boolean).slice(0, 4).join(', '),
                 treatmentMethod: cleanPlan.map((r) => r.service).slice(0, 4).join(', '),
                 frequency: 'Monthly',
                 quantity: tenureMonths,
@@ -150,33 +172,42 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
           }
         : {
             lineItems: branchBreakdowns.length > 0
-              ? branchBreakdowns.map((b, i) => ({
-                  id: `li_site_${i}`,
-                  serviceName: b.branchName,
-                  targetPest: 'cockroaches' as PestType,
-                  chemicalsSuggested: '',
-                  treatmentMethod: '',
-                  frequency: 'One-time',
-                  quantity: 1,
-                  unitPrice: b.monthlyAmount,
-                  totalPrice: b.monthlyAmount,
-                }))
-              : lineItems,
-            branchBreakdowns: branchBreakdowns.length > 0 ? branchBreakdowns : undefined,
+              ? branchBreakdowns.map((b, i) => {
+                  const svcs = (b.services || []).filter((sv) => sv.service.trim());
+                  const freqs = Array.from(new Set(svcs.map((sv) => sv.frequency?.trim()).filter(Boolean)));
+                  return {
+                    id: `li_site_${i}`,
+                    serviceName: svcs.length ? `${b.branchName}: ${svcs.map((sv) => treatmentLabel(sv.service)).join(', ')}` : b.branchName,
+                    targetPest: 'cockroaches' as PestType,
+                    chemicalsSuggested: svcs.map((sv) => sv.formula?.trim()).filter(Boolean).join(', '),
+                    treatmentMethod: '',
+                    frequency: freqs.join(' / ') || 'One-time',
+                    quantity: 1,
+                    unitPrice: b.monthlyAmount,
+                    totalPrice: b.monthlyAmount,
+                  };
+                })
+              : lineItems.filter((li) => li.serviceName.trim()).map((li) => withCleanFormulas(li, 'chemicalsSuggested')),
+            taxPercent: otTaxPercent,
+            templateType: templateTypes[0],
+            templateTypes,
+            branchBreakdowns: cleanBreakdowns.length > 0 ? cleanBreakdowns : undefined,
           }),
-      createdAt: now,
+      createdAt: editing ? p.createdAt : now,
       updatedAt: now,
     };
 
     try {
       dataService.saveProposal(revised, userProfile?.email);
     } catch (err) {
-      error('Could not create revision', err instanceof Error ? err.message : String(err));
+      error(editing ? 'Could not save the proposal' : 'Could not create revision', err instanceof Error ? err.message : String(err));
       return;
     }
 
     if (revised.status === 'pending_approval') {
       warning('Approval required (AP-01)', `Discount ${discountPercent}% is above 10%. Sent for CRO Manager / CEO approval.`);
+    } else if (editing) {
+      success('Proposal updated', `${id} is saved. You can send it to the client now.`);
     } else {
       success('Revision created', `${id} (R${newRev}) is a draft.`);
     }
@@ -193,28 +224,39 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
     <Modal
       isOpen
       onClose={onClose}
-      title={`Revise proposal ${p.id}`}
-      subtitle={`${p.customerName} · R${p.revisionNumber} → R${p.revisionNumber + 1}`}
+      title={editing ? `Edit proposal ${p.id}` : `Revise proposal ${p.id}`}
+      subtitle={editing ? `${p.customerName} · R${p.revisionNumber}` : `${p.customerName} · R${p.revisionNumber} → R${p.revisionNumber + 1}`}
       maxWidth="700px"
       footer={
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
           <button type="button" className="btn btn-primary" onClick={handleSave} disabled={problems.length > 0} title={problems.join('\n')}>
-            Create revision
+            {editing ? 'Save changes' : 'Create revision'}
           </button>
         </>
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <TreatmentDatalists />
+
+        {/* What the approver asked for */}
+        {editing && p.approval?.status === 'changes_requested' && (
+          <div style={{ padding: '0.6rem 0.85rem', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '0.4rem', color: '#92400E', fontSize: '0.83rem' }}>
+            <strong>Changes requested{p.approval.decisionByName ? ` by ${p.approval.decisionByName}` : ''}</strong>
+            {p.approval.comments && <div style={{ marginTop: '0.3rem' }}>{p.approval.comments}</div>}
+          </div>
+        )}
 
         {/* Change reason */}
         <div className="form-group" style={{ marginBottom: 0 }}>
-          <label className="form-label">Reason for revision <span className="required">*</span></label>
+          <label className="form-label">
+            {editing ? <>What did you change? <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional)</span></> : <>Reason for revision <span className="required">*</span></>}
+          </label>
           <input
             className="form-input"
             value={changeReason}
             onChange={(e) => setChangeReason(e.target.value)}
-            placeholder="e.g. Client requested price reduction, added one site"
+            placeholder={editing ? 'e.g. Added the missing formulas' : 'e.g. Client requested price reduction, added one site'}
           />
         </div>
 
@@ -250,70 +292,21 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
             )}
 
             <div className="section-title">Service plan</div>
-            {plan.map((row, i) => (
-              <div key={row.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.3rem' }}>
-                <input
-                  className="form-input"
-                  placeholder="Service / treatment"
-                  value={row.service}
-                  onChange={(e) => setPlan((prev) => prev.map((r, idx) => idx === i ? { ...r, service: e.target.value } : r))}
-                />
-                <input
-                  className="form-input"
-                  placeholder="Frequency (e.g. Once per week)"
-                  value={row.frequency}
-                  onChange={(e) => setPlan((prev) => prev.map((r, idx) => idx === i ? { ...r, frequency: e.target.value } : r))}
-                />
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={() => setPlan((prev) => prev.filter((_, idx) => idx !== i))}
-                  title="Remove row"
-                >
-                  <Trash2 size={14} color="var(--ikpm-rose-400)" />
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              style={{ alignSelf: 'flex-start' }}
-              onClick={() => setPlan((prev) => [...prev, { id: `sp_${Date.now()}`, service: '', frequency: '' }])}
-            >
-              <Plus size={13} /> Add service row
-            </button>
+            <ServiceSelection<ServicePlanItem>
+              label="Services in the plan"
+              rows={plan}
+              onChange={(rows) => setPlan(() => rows)}
+              fields={{ name: 'service', formulas: 'formulas', formulaText: 'formula', frequency: 'frequency' }}
+              make={(service) => ({ id: `sp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, service, frequency: 'Once per month' })}
+            />
 
             {/* Per-branch pricing if applicable */}
             {branchBreakdowns.length > 0 && (
               <>
                 <div className="section-title">Site charges</div>
                 {branchBreakdowns.map((b, idx) => (
-                  <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.75rem', alignItems: 'center', marginBottom: '0.4rem' }}>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.2rem' }}>{b.branchName}</div>
-                      <input
-                        type="number"
-                        min={0}
-                        className="form-input"
-                        value={b.monthlyAmount || ''}
-                        placeholder="Monthly amount (PKR)"
-                        onChange={(e) => setBranchBreakdowns((prev) => prev.map((r, i) => i === idx ? { ...r, monthlyAmount: Number(e.target.value) } : r))}
-                      />
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.35rem' }}>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-secondary"
-                        style={{ marginTop: '1.4rem' }}
-                        onClick={() => {
-                          const svcOpts = p.branchBreakdowns?.find((bb) => bb.branchId === b.branchId)?.services || [];
-                          setBranchBreakdowns((prev) => prev.map((r, i) => i === idx ? { ...r, services: [...(r.services || svcOpts), { service: 'general_fumigation' }] } : r));
-                        }}
-                      >
-                        <Plus size={11} />
-                      </button>
-                    </div>
-                  </div>
+                  <SiteCard key={idx} b={b} amountLabel="Monthly amount (PKR)"
+                    onChange={(patch) => setBranchBreakdowns((prev) => prev.map((r, i) => i === idx ? { ...r, ...patch } : r))} />
                 ))}
                 {branchBreakdowns.length > 0 && (
                   <div style={{ textAlign: 'right', fontWeight: 700, fontSize: '0.85rem', color: 'var(--ikpm-emerald-700)' }}>
@@ -342,55 +335,53 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
         {/* ── One-time fields ── */}
         {!isPlan && (
           <>
-            <div className="section-title" style={{ marginTop: '0.25rem' }}>Services</div>
-            {lineItems.map((li, i) => (
-              <div key={li.id} className="line-item-row">
-                <input
-                  className="form-input"
-                  placeholder="Service"
-                  value={li.serviceName}
-                  onChange={(e) => setLine(i, { serviceName: e.target.value })}
-                />
-                <input
-                  type="number"
-                  min={1}
-                  className="form-input"
-                  aria-label="Quantity"
-                  value={li.quantity}
-                  onChange={(e) => setLine(i, { quantity: Number(e.target.value) })}
-                />
-                <input
-                  type="number"
-                  min={0}
-                  className="form-input"
-                  aria-label="Unit price"
-                  placeholder="Unit price"
-                  value={li.unitPrice || ''}
-                  onChange={(e) => setLine(i, { unitPrice: Number(e.target.value) })}
-                />
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={() => setLineItems((prev) => prev.filter((_, idx) => idx !== i))}
-                  aria-label="Remove"
-                >
-                  <Trash2 size={14} />
-                </button>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">Treatment type <span className="required">*</span> <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(select one or more)</span></label>
+              <div className="chip-row" style={{ marginBottom: 0 }}>
+                {TREATMENT_TYPES.map((t) => {
+                  const on = templateTypes.includes(t.value);
+                  return (
+                    <button key={t.value} type="button" className={`chip ${on ? 'chip-on' : ''}`} aria-pressed={on}
+                      onClick={() => setTemplateTypes((prev) => (on ? prev.filter((x) => x !== t.value) : [...prev, t.value]))}>
+                      {on && <Check size={13} />} {t.label}
+                    </button>
+                  );
+                })}
               </div>
-            ))}
-            <button
-              type="button"
-              className="btn btn-sm btn-secondary"
-              style={{ alignSelf: 'flex-start' }}
-              onClick={() =>
-                setLineItems((prev) => [
-                  ...prev,
-                  { id: `li_${Date.now()}`, serviceName: '', targetPest: 'cockroaches' as PestType, chemicalsSuggested: '', treatmentMethod: '', quantity: 1, unitPrice: 0, totalPrice: 0, frequency: 'One-time' },
-                ])
-              }
-            >
-              <Plus size={13} /> Add service
-            </button>
+            </div>
+            {branchBreakdowns.length > 0 ? (
+              <>
+                <div className="section-title" style={{ marginTop: '0.25rem' }}>Sites &amp; treatments</div>
+                {branchBreakdowns.map((b, idx) => (
+                  <SiteCard key={idx} b={b} amountLabel="Treatment amount (PKR)" defaultFrequency="One-time"
+                    onChange={(patch) => setBranchBreakdowns((prev) => prev.map((r, i) => i === idx ? { ...r, ...patch } : r))} />
+                ))}
+              </>
+            ) : (
+              <>
+                <div className="section-title" style={{ marginTop: '0.25rem' }}>Treatment</div>
+                <ServiceSelection<ProposalLineItem>
+                  label="Services"
+                  rows={lineItems}
+                  onChange={(rows) => setLineItems(() => rows.map((li) => ({ ...li, totalPrice: (li.quantity || 0) * (li.unitPrice || 0) })))}
+                  fields={{ name: 'serviceName', formulas: 'formulas', formulaText: 'chemicalsSuggested', frequency: 'frequency' }}
+                  make={(serviceName) => ({ id: `li_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, serviceName, targetPest: 'cockroaches' as PestType, chemicalsSuggested: '', treatmentMethod: '', quantity: 1, unitPrice: 0, totalPrice: 0, frequency: 'One-time' })}
+                  extraHead={['Qty', 'Rate (PKR)']}
+                  extra={(li, set) => (
+                    <>
+                      <input type="number" min={1} className="form-input" aria-label="Quantity" value={li.quantity} onChange={(e) => set({ quantity: Number(e.target.value) })} />
+                      <input type="number" min={0} className="form-input" aria-label="Rate" placeholder="Rate" value={li.unitPrice || ''} onChange={(e) => set({ unitPrice: Number(e.target.value) })} />
+                    </>
+                  )}
+                />
+              </>
+            )}
+
+            <div className="form-group" style={{ marginBottom: 0, maxWidth: 260 }}>
+              <label className="form-label">Sales tax (%) <span className="required">*</span></label>
+              <input type="number" min={0} max={100} step={0.01} className="form-input" value={otTaxPct} placeholder="Enter rate, e.g. 15" onChange={(e) => setOtTaxPct(e.target.value)} />
+              <div className="form-hint" style={{ marginTop: '0.2rem' }}>Type 0 if no tax is charged.</div>
+            </div>
           </>
         )}
 
@@ -433,7 +424,7 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
             <>
               <div>Subtotal: <strong>{formatPKR(otSubtotal)}</strong></div>
               {discountPercent > 0 && <div>Discount: -{formatPKR(otDiscount)}</div>}
-              {p.taxPercent > 0 && <div>Tax ({p.taxPercent}%): <strong>{formatPKR(otTax)}</strong></div>}
+              {otTaxPercent > 0 && <div>Sales tax ({otTaxPercent}%): <strong>{formatPKR(otTax)}</strong></div>}
               <div className="pricing-grand">Total: {formatPKR(otSubtotal - otDiscount + otTax)}</div>
             </>
           )}
@@ -446,5 +437,22 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
     </Modal>
   );
 };
+
+/** One site in a revision: its treatments and its amount. */
+const SiteCard: React.FC<{
+  b: ProposalBranchBreakdown;
+  amountLabel: string;
+  defaultFrequency?: string;
+  onChange: (patch: Partial<ProposalBranchBreakdown>) => void;
+}> = ({ b, amountLabel, defaultFrequency, onChange }) => (
+  <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '0.75rem', marginBottom: '0.5rem' }}>
+    <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.5rem' }}>{b.branchName}</div>
+    <SiteTreatments services={b.services || []} defaultFrequency={defaultFrequency} onChange={(services) => onChange({ services })} />
+    <div className="form-group" style={{ marginBottom: 0, maxWidth: 260 }}>
+      <label className="form-label">{amountLabel}</label>
+      <input type="number" min={0} className="form-input" value={b.monthlyAmount || ''} onChange={(e) => onChange({ monthlyAmount: Number(e.target.value) })} />
+    </div>
+  </div>
+);
 
 export default ReviseProposalModal;

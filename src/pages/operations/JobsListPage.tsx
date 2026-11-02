@@ -30,13 +30,17 @@ import { usePdfAction } from '../../hooks/usePdfAction';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
-import type { ServiceJob, SupervisorVerification, ChemicalUsageRecord } from '../../types/operations';
+import type { ServiceJob, SupervisorVerification, ChemicalUsageRecord, FuelClaim } from '../../types/operations';
+import { FUEL_KM_PER_LITRE, fuelCost } from '../../lib/fuel';
 import type { PestType } from '../../types/crm';
 import { UnifiedWorkflowStatusBar } from '../../components/common/UnifiedWorkflowStatusBar';
 import { getJobNextAction } from '../../lib/workflow';
 import { baseRoleOf, canEditModule } from '../../lib/permissions';
 import { fileGenerated } from '../../features/documents/fileGenerated';
 import type { DocumentOwner } from '../../types/document';
+
+/** Last petrol price entered on this device, to prefill the next report. */
+const LAST_PETROL_PRICE_KEY = 'ikpm.lastPetrolPrice';
 
 export const JobsListPage: React.FC = () => {
   const navigate = useNavigate();
@@ -192,6 +196,9 @@ export const JobsListPage: React.FC = () => {
   // Cash the client paid the Supervisor on site (residential); Finance confirms it later
   const [reportCashAmount, setReportCashAmount] = useState('');
   const [reportCashPhoto, setReportCashPhoto] = useState('');
+  // Fuel: today's petrol price and each on-site person's km (going / back); paid with salary
+  const [reportPetrolPrice, setReportPetrolPrice] = useState('');
+  const [reportKm, setReportKm] = useState<Record<string, { going: string; back: string }>>({});
 
   // Edit schedule / time slot modal state
   const [showEditScheduleJob, setShowEditScheduleJob] = useState<ServiceJob | null>(null);
@@ -231,7 +238,24 @@ export const JobsListPage: React.FC = () => {
     setReportChallanDate(todayStr);
     setReportCashAmount(showReportModal.cashCollection?.amount ? String(showReportModal.cashCollection.amount) : '');
     setReportCashPhoto(showReportModal.cashCollection?.receiptPhotoUrl || '');
+    setReportPetrolPrice(String(showReportModal.petrolPricePerLitre || localStorage.getItem(LAST_PETROL_PRICE_KEY) || ''));
+    setReportKm(Object.fromEntries((showReportModal.fuelClaims ?? []).map((c) => [
+      c.role === 'supervisor' ? 'tl' : c.employeeId || c.name,
+      { going: String(c.kmGoing), back: String(c.kmReturn) },
+    ])));
   }, [showReportModal?.id]);
+
+  /** Everyone on site for the fuel table: the Supervisor (if they went) and the ticked PCOs. */
+  const onSitePeople = (job: ServiceJob) => {
+    const tlUid = job.assignedTeamLeaderId || job.leadPcoId;
+    const tlEmployee = tlUid ? dataService.getEmployees().find((e) => e.uid === tlUid) : undefined;
+    return [
+      ...(reportTlOnSite
+        ? [{ key: 'tl', employeeId: tlEmployee?.id, name: job.assignedTeamLeaderName || tlEmployee?.name || 'Supervisor', role: 'supervisor' as const }]
+        : []),
+      ...reportPcoIds.map((id) => ({ key: id, employeeId: id as string | undefined, name: dataService.getEmployeeById(id)?.name || id, role: 'pco' as const })),
+    ];
+  };
   // QC: starts empty every time — the supervisor is the logged-in person
   const [verifyForm, setVerifyForm] = useState({
     qcRating: 'satisfactory' as 'excellent' | 'satisfactory',
@@ -646,8 +670,25 @@ export const JobsListPage: React.FC = () => {
     const ownTeam = new Set(dataService.getTeamPcos(tlUid).map((e) => e.id));
     const borrowed = reportPcoIds.filter((id) => !ownTeam.has(id));
 
+    // Fuel for everyone who travelled to site (completed, partial, or client blocked: they still went)
+    const travelled = outcome !== 'postponed';
+    const people = travelled ? onSitePeople(job) : [];
+    const petrolPrice = Number(reportPetrolPrice);
+    const kmOf = (key: string) => reportKm[key] ?? { going: '', back: '' };
+    const kmMissing = people.filter((p) => kmOf(p.key).going.trim() === '' || kmOf(p.key).back.trim() === '');
+    const fuelClaims: FuelClaim[] = people.map((p) => {
+      const kmGoing = Number(kmOf(p.key).going) || 0;
+      const kmReturn = Number(kmOf(p.key).back) || 0;
+      const { litres, amount } = fuelCost(kmGoing, kmReturn, petrolPrice);
+      return { ...(p.employeeId ? { employeeId: p.employeeId } : {}), name: p.name, role: p.role, kmGoing, kmReturn, litres, amount };
+    });
+
     // Every missing item listed at once, in plain words
     const missing: string[] = [];
+    if (people.length) {
+      if (!(petrolPrice > 0)) missing.push("today's petrol price (PKR per litre)");
+      if (kmMissing.length) missing.push(`km going and coming back for ${kmMissing.map((p) => p.name).join(', ')} (enter 0 if they rode with someone)`);
+    }
     if (needsProof) {
       if (!reportPcoIds.length && !reportTlOnSite) missing.push('who did the work (tick the PCOs, or "I did it myself")');
       if (borrowed.length && !reportBorrowReason.trim()) missing.push('why a PCO from another team was used');
@@ -673,6 +714,8 @@ export const JobsListPage: React.FC = () => {
       ...reportFinalPhotos.map((p) => ({ id: p.id, caption: p.caption || 'Final report', type: 'after' as const, imageUrl: p.url, capturedAt: now, uploadedBy: userProfile?.displayName })),
     ];
     const submittedBy = { submittedByUid: userProfile?.uid, submittedByName: userProfile?.displayName || 'Supervisor', submittedAt: now };
+    const fuel = people.length ? { petrolPricePerLitre: petrolPrice, fuelClaims } : {};
+    if (people.length) localStorage.setItem(LAST_PETROL_PRICE_KEY, String(petrolPrice));
 
     // Postponed on site: straight back to the schedule on the new date
     if (outcome === 'postponed') {
@@ -703,6 +746,8 @@ export const JobsListPage: React.FC = () => {
         cancellationReason: reportOutcomeReason.trim(),
         photoEvidence: [...(job.photoEvidence || []), ...newPhotos],
         executionNotes: reportNotes.trim() || job.executionNotes,
+        teamLeaderOnSite: reportTlOnSite,
+        ...fuel,
         ...submittedBy,
         updatedAt: now,
       };
@@ -742,6 +787,7 @@ export const JobsListPage: React.FC = () => {
             receiptPhotoUrl: reportCashPhoto || undefined,
           }
         : job.cashCollection,
+      ...fuel,
       ...submittedBy,
       lateSubmission: isLate,
       lateDays: isLate ? lateDays : undefined,
@@ -1319,6 +1365,16 @@ export const JobsListPage: React.FC = () => {
                 <div style={{ fontWeight: 600 }}>{teamLabel(showVerifyModal).tl || '—'}{showVerifyModal.teamLeaderOnSite ? ' (on site)' : ''}</div>
                 <div>{teamLabel(showVerifyModal).pcos || 'No PCOs ticked'}</div>
                 {showVerifyModal.borrowedPcoReason && <div style={{ color: '#B45309' }}>Borrowed PCO: {showVerifyModal.borrowedPcoReason}</div>}
+                {!!showVerifyModal.fuelClaims?.length && (
+                  <div style={{ marginTop: 4 }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Fuel (petrol PKR {showVerifyModal.petrolPricePerLitre}/L):</span>
+                    {showVerifyModal.fuelClaims.map((c) => (
+                      <div key={c.employeeId || c.name}>
+                        {c.name}: {c.kmGoing} + {c.kmReturn} km = <strong>PKR {c.amount.toLocaleString()}</strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div>
                 <span style={{ color: 'var(--text-muted)' }}>Submitted:</span>
@@ -1661,10 +1717,12 @@ export const JobsListPage: React.FC = () => {
             )}
 
             {/* Step 2: who did the work (PCOs have no login, the Supervisor ticks them) */}
-            {(reportVisitOutcome === 'completed' || reportVisitOutcome === 'partial') && (
+            {reportVisitOutcome !== 'postponed' && (
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">
-                  Who did the work? <span className="required">*</span>
+                  {reportVisitOutcome === 'client_blocked'
+                    ? 'Who went to the site?'
+                    : <>Who did the work? <span className="required">*</span></>}
                   <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>
                     Supervisor: {showReportModal.assignedTeamLeaderName || showReportModal.leadPcoName}
                   </span>
@@ -1688,9 +1746,85 @@ export const JobsListPage: React.FC = () => {
                     placeholder="Why a PCO from another team was used (required)"
                   />
                 )}
-                <div className="form-hint">Every ticked PCO gets credit for this visit in payroll once QC verifies it.</div>
+                <div className="form-hint">
+                  {reportVisitOutcome === 'client_blocked'
+                    ? 'Tick everyone who travelled, so their fuel is paid.'
+                    : 'Every ticked PCO gets credit for this visit in payroll once QC verifies it.'}
+                </div>
               </div>
             )}
+
+            {/* Fuel: km each person travelled, paid with salary at a fixed 36 km per litre */}
+            {reportVisitOutcome !== 'postponed' && (() => {
+              const people = onSitePeople(showReportModal);
+              if (!people.length) return null;
+              const price = Number(reportPetrolPrice) || 0;
+              const setKm = (key: string, field: 'going' | 'back', v: string) =>
+                setReportKm((prev) => ({ ...prev, [key]: { ...(prev[key] ?? { going: '', back: '' }), [field]: v } }));
+              const first = reportKm[people[0].key];
+              const rows = people.map((p) => {
+                const km = reportKm[p.key] ?? { going: '', back: '' };
+                return { ...p, km, cost: fuelCost(Number(km.going) || 0, Number(km.back) || 0, price) };
+              });
+              const total = rows.reduce((s, r) => s + r.cost.amount, 0);
+              const head = { fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' } as const;
+              return (
+                <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label">Petrol price today (PKR / litre) <span className="required">*</span></label>
+                      <input
+                        className="form-input"
+                        type="number"
+                        min={0}
+                        step="any"
+                        style={{ maxWidth: 180 }}
+                        value={reportPetrolPrice}
+                        onChange={(e) => setReportPetrolPrice(e.target.value)}
+                        placeholder="e.g. 265"
+                      />
+                    </div>
+                    {people.length > 1 && first && (first.going || first.back) && (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-secondary"
+                        onClick={() => setReportKm((prev) => ({ ...prev, ...Object.fromEntries(people.map((p) => [p.key, { ...first }])) }))}
+                      >
+                        Same km for everyone
+                      </button>
+                    )}
+                  </div>
+                  <label className="form-label">Travel (km) <span className="required">*</span></label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: '0.4rem', alignItems: 'center' }}>
+                    <span style={head}>Person</span>
+                    <span style={head}>Km going</span>
+                    <span style={head}>Km coming back</span>
+                    <span style={{ ...head, textAlign: 'right' }}>Fuel</span>
+                    {rows.map((r) => (
+                      <React.Fragment key={r.key}>
+                        <span style={{ fontSize: '0.84rem' }}>
+                          <strong>{r.name}</strong>{' '}
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>{r.role === 'supervisor' ? 'Supervisor' : 'PCO'}</span>
+                          {!r.employeeId && <div style={{ color: '#B45309', fontSize: '0.7rem' }}>No HR record: fuel can't be added to salary</div>}
+                        </span>
+                        <input className="form-input" type="number" min={0} step="any" value={r.km.going} placeholder="e.g. 13" onChange={(e) => setKm(r.key, 'going', e.target.value)} />
+                        <input className="form-input" type="number" min={0} step="any" value={r.km.back} placeholder="e.g. 13" onChange={(e) => setKm(r.key, 'back', e.target.value)} />
+                        <span style={{ textAlign: 'right', fontSize: '0.84rem' }}>
+                          PKR {r.cost.amount.toLocaleString()}
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>{r.cost.km} km · {r.cost.litres} L</div>
+                        </span>
+                      </React.Fragment>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', marginTop: 6, fontSize: '0.8rem' }}>
+                    <span className="form-hint" style={{ margin: 0 }}>
+                      Fuel = (km going + km back) ÷ {FUEL_KM_PER_LITRE} km/L × petrol price. Added to each person's salary{reportVisitOutcome === 'client_blocked' ? '' : ' once QC verifies the visit'}. Enter 0 for someone who rode with another person.
+                    </span>
+                    <strong style={{ whiteSpace: 'nowrap' }}>Total PKR {total.toLocaleString()}</strong>
+                  </div>
+                </div>
+              );
+            })()}
 
             {(reportVisitOutcome === 'completed' || reportVisitOutcome === 'partial') && <div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>

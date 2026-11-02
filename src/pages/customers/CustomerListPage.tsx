@@ -10,7 +10,7 @@ import {
   Phone,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
-import { formatPKR, formatNTN, formatCNIC, generatePermanentId } from '../../lib/formatters';
+import { formatPKR, formatNTN, formatCNIC } from '../../lib/formatters';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { Modal } from '../../components/common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -96,12 +96,13 @@ export const CustomerListPage: React.FC = () => {
     return companies.filter((c) => {
       const q = searchQuery.toLowerCase();
       const matchSearch =
-        c.legalCompanyName.toLowerCase().includes(q) ||
+        (c.legalCompanyName || '').toLowerCase().includes(q) ||
         (c.tradeName && c.tradeName.toLowerCase().includes(q)) ||
         c.id.toLowerCase().includes(q) ||
         (c.ntn && c.ntn.includes(q)) ||
-        c.primaryContact.phone.includes(q) ||
-        c.primaryContact.mobile.includes(q);
+        // Accounts made from a lead may have no phone yet
+        (c.primaryContact?.phone || '').includes(q) ||
+        (c.primaryContact?.mobile || '').includes(q);
 
       const matchCity = selectedCity === 'all' || c.city === selectedCity;
       return matchSearch && matchCity;
@@ -112,10 +113,10 @@ export const CustomerListPage: React.FC = () => {
     return clients.filter((cl) => {
       const q = searchQuery.toLowerCase();
       const matchSearch =
-        cl.fullName.toLowerCase().includes(q) ||
+        (cl.fullName || '').toLowerCase().includes(q) ||
         cl.id.toLowerCase().includes(q) ||
         (cl.cnic && cl.cnic.includes(q)) ||
-        cl.primaryPhone.includes(q) ||
+        (cl.primaryPhone || '').includes(q) ||
         (cl.email && cl.email.toLowerCase().includes(q));
 
       const matchCity = selectedCity === 'all' || cl.city === selectedCity;
@@ -136,7 +137,7 @@ export const CustomerListPage: React.FC = () => {
 
     setSaving(true);
     // Safe counter: two people saving at once never get the same id
-    const nextId = generatePermanentId('CO', await dataService.nextSequence('company', dataService.maxSeqOf(companies.map((c) => c.id))));
+    const nextId = await dataService.newRecordId('CO', 'company', companies.map((c) => c.id), 'companies');
     setSaving(false);
     const created: CompanyMaster = {
       id: nextId,
@@ -187,7 +188,7 @@ export const CustomerListPage: React.FC = () => {
     }
 
     setSaving(true);
-    const nextId = generatePermanentId('CL', await dataService.nextSequence('client', dataService.maxSeqOf(clients.map((c) => c.id))));
+    const nextId = await dataService.newRecordId('CL', 'client', clients.map((c) => c.id), 'clients');
     setSaving(false);
     const created: IndividualClient = {
       id: nextId,

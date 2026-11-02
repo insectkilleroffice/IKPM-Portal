@@ -210,9 +210,9 @@ export const LeadsListPage: React.FC = () => {
     setSearchParams(next, { replace: true });
   };
 
-  const createProposal = (lead: Lead) => {
+  const createProposal = async (lead: Lead) => {
     try {
-      const { customerId, customerType } = store.ensureLeadCustomer(lead.id, userProfile?.email);
+      const { customerId, customerType } = await store.ensureLeadCustomer(lead.id, userProfile?.email);
       const params = new URLSearchParams({
         action: 'new_proposal',
         fromLead: lead.id,

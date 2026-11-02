@@ -1,19 +1,18 @@
 import { FieldError } from '../../components/common/FieldError';
 import { emailProblem, phoneProblem } from '../../lib/validation';
 import React, { useState } from 'react';
-import { Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Check, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { dataService } from '../../services/dataService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
-import { formatDate, formatPKR, generatePermanentId } from '../../lib/formatters';
-import { CHEMICAL_PRESETS } from '../../lib/workflow';
+import { formatDate, formatPKR } from '../../lib/formatters';
 import { jurisdictionFor, taxRateFor } from '../../lib/taxRates';
 import {
   DEFAULT_EXCLUSIONS,
   defaultTenureStart,
   DOCUMENTATION_OPTIONS,
-  planFromPreset,
+  emptyPlanItem,
   planPricing,
   SERVICE_PLAN_PRESETS,
   tenureEnd,
@@ -28,6 +27,10 @@ import type { TaxJurisdiction } from '../../types/finance';
 import { contactsOf } from '../../lib/leadWorkflow';
 import { recommendedTreatmentOf } from '../../lib/riskAssessment';
 import { ServicePlanEditor } from './ServicePlanEditor';
+import { ServiceSelection } from './ServiceSelection';
+import { SiteTreatments, treatmentSummary } from './SiteTreatments';
+import { TreatmentDatalists } from './TreatmentDatalists';
+import { mergeRatsAndMice, withCleanFormulas, servicesMissingFormula, treatmentLabel, TREATMENT_TYPES } from '../../lib/treatments';
 import { fileProposalPdf } from './proposalFiles';
 
 export interface ProposalPrefill {
@@ -48,41 +51,36 @@ interface Props {
 
 const pestLabel = (p: string) => p.replace(/_/g, ' ');
 
-const SERVICE_OPTIONS = [
-  { value: 'general_fumigation', label: 'General fumigation' },
-  { value: 'cockroach_gel', label: 'Cockroach gel treatment' },
-  { value: 'rodent_control', label: 'Rodent control (bait stations)' },
-  { value: 'termite_treatment', label: 'Termite treatment' },
-  { value: 'bedbug_treatment', label: 'Bedbug treatment' },
-  { value: 'mosquito_fogging', label: 'Mosquito / fly fogging' },
-  { value: 'ant_treatment', label: 'Ant treatment' },
-  { value: 'stored_grain_pest', label: 'Stored grain pest control' },
-  { value: 'snake_reptile', label: 'Snake / reptile control' },
-  { value: 'monitoring_visit', label: 'Monitoring visit' },
-  { value: 'other', label: 'Other (specify)' },
-];
 
 const JURISDICTIONS: TaxJurisdiction[] = ['sindh_srb', 'punjab_pra', 'islamabad_ict', 'kpk_kpra', 'balochistan_bra'];
 
+/** The preset treatment for a pest found at the inspection. */
+const PEST_TREATMENT: Record<string, string> = {
+  cockroaches: 'Cockroach control',
+  rodents_rats: 'Rats control',
+  bedbugs: 'Bed bugs control',
+  termites: 'Termite treatment (post-construction)',
+  general_fumigation: 'General pest control',
+};
+
+/** Services for the pests found at the inspection, selected to start with (formula left to the CRO). */
+const servicesForPests = (pests: string[]) =>
+  Array.from(new Set(pests.filter((p) => p !== 'other').map((p) => PEST_TREATMENT[p] ?? `${pestLabel(p)} control`)));
+
+const newLine = (serviceName: string, i = 0): ProposalLineItem => ({
+  id: `li_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+  serviceName,
+  targetPest: 'cockroaches',
+  chemicalsSuggested: '',
+  treatmentMethod: '',
+  quantity: 1,
+  unitPrice: 0,
+  totalPrice: 0,
+  frequency: 'One-time',
+});
+
 function oneTimeLines(pests: string[]): ProposalLineItem[] {
-  const items = pests
-    .map((pst, i) => {
-      const preset = CHEMICAL_PRESETS[pst];
-      if (!preset) return null;
-      return {
-        id: `li_${Date.now()}_${i}`,
-        serviceName: `${pestLabel(pst)} treatment`,
-        targetPest: pst as PestType,
-        chemicalsSuggested: `${preset.chemicalName} (${preset.activeIngredient})`,
-        treatmentMethod: preset.applicationMethod.replace(/_/g, ' '),
-        quantity: 1,
-        unitPrice: 0,
-        totalPrice: 0,
-        frequency: 'One-time',
-      } as ProposalLineItem;
-    })
-    .filter(Boolean) as ProposalLineItem[];
-  return items.length ? items : [{ id: 'li_1', serviceName: '', targetPest: 'cockroaches', chemicalsSuggested: '', treatmentMethod: '', quantity: 1, unitPrice: 0, totalPrice: 0, frequency: 'One-time' }];
+  return servicesForPests(pests).map((s, i) => newLine(s, i));
 }
 
 /** New proposal: a monthly IPM service plan (quotation format) or a one-time treatment. */
@@ -126,8 +124,11 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
 
   // Plan
   const initialPreset: ServicePlanPreset = lead?.industry && /factory|manufactur|warehouse/i.test(lead.industry) ? 'factory' : lead?.industry && /food|restaurant|hotel/i.test(lead.industry) ? 'commercial_kitchen' : 'commercial_kitchen';
-  const [preset, setPreset] = useState<ServicePlanPreset>(initialPreset);
-  const [plan, setPlan] = useState<ServicePlanItem[]>(() => planFromPreset(initialPreset));
+  // Kind of premises (sets the document layout and the default visit counts); no preset service list
+  const preset: ServicePlanPreset = initialPreset;
+  // The plan starts with the services for the pests found; the CRO selects the rest
+  const [plan, setPlan] = useState<ServicePlanItem[]>(() =>
+    servicesForPests(pests).map((service) => ({ ...emptyPlanItem(), service, frequency: 'Once per month' })));
   const [visits, setVisits] = useState(SERVICE_PLAN_PRESETS[initialPreset].serviceVisitsPerMonth);
   const [followUps, setFollowUps] = useState(SERVICE_PLAN_PRESETS[initialPreset].followUpVisitsPerMonth);
   const [documentation, setDocumentation] = useState<string[]>(DOCUMENTATION_OPTIONS.slice(0, 3));
@@ -165,8 +166,21 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
   const [showWording, setShowWording] = useState(false);
 
   // One-time
-  const [templateType, setTemplateType] = useState<TemplateType>(pests.includes('termites') ? 'termite_proofing' : pests.includes('bedbugs') ? 'bedbug_eradication' : 'general_ipm');
-  const [lineItems, setLineItems] = useState<ProposalLineItem[]>(() => oneTimeLines(pests));
+  // One-time treatment types (several may be combined): started from the pests found
+  const [templateTypes, setTemplateTypes] = useState<TemplateType[]>(() => {
+    const t: TemplateType[] = [];
+    if (pests.includes('termites')) t.push('termite_proofing');
+    if (pests.includes('bedbugs')) t.push('bedbug_eradication');
+    if (pests.includes('rodents_rats')) t.push('rodent_control');
+    if (pests.includes('cockroaches')) t.push('cockroach_gel');
+    return t.length ? t : ['general_ipm'];
+  });
+  const [lineItems, setLineItemsRaw] = useState<ProposalLineItem[]>(() => oneTimeLines(pests));
+  // Rats control + Mice control → one "Rats & mice control" line
+  const setLineItems = (update: ProposalLineItem[] | ((prev: ProposalLineItem[]) => ProposalLineItem[])) =>
+    setLineItemsRaw((prev) => mergeRatsAndMice(typeof update === 'function' ? update(prev) : update, (li) => li.serviceName, (li, serviceName) => ({ ...li, serviceName })));
+  // One-time sales tax is typed in for each proposal (no preset rate): '' until entered
+  const [oneTimeTaxPct, setOneTimeTaxPct] = useState<string>('');
   const [scopeOfWork, setScopeOfWork] = useState(
     [`Pest management service at ${prefill.address || lead?.propertyAddress || ''}${prefill.city ? `, ${prefill.city}` : ''}.`, pests.length ? `Target pests: ${pests.map(pestLabel).join(', ')}.` : '', inspection?.areaSqFt ? `Area: about ${inspection.areaSqFt.toLocaleString()} sq ft.` : '', recommended].filter(Boolean).join(' ')
   );
@@ -179,7 +193,8 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
     ? branchTotal
     : lineItems.reduce((a, li) => a + li.totalPrice, 0);
   const oneTimeDiscount = (oneTimeSubtotal * discountPercent) / 100;
-  const oneTimeTax = ((oneTimeSubtotal - oneTimeDiscount) * tax.percent) / 100;
+  const oneTimeTaxPercent = Number(oneTimeTaxPct) || 0;
+  const oneTimeTax = ((oneTimeSubtotal - oneTimeDiscount) * oneTimeTaxPercent) / 100;
   const end = tenureEnd(tenureStart, tenureMonths);
 
   const problems: string[] = [];
@@ -192,12 +207,25 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
     if (ph) problems.push(ph);
   }
   if (mode === 'plan') {
-    if (!plan.some((r) => r.service.trim())) problems.push('Add at least one row to the service plan.');
+    if (!plan.some((r) => r.service.trim())) problems.push('Select at least one service for the plan.');
+    const noFormula = [
+      ...servicesMissingFormula(plan, (r) => r.service, (r) => r.formulas ?? (r.formula ? [{ formula: r.formula }] : [])),
+      ...branchBreakdowns.flatMap((b) => servicesMissingFormula(b.services ?? [], (s) => s.service, (s) => s.formulas ?? (s.formula ? [{ formula: s.formula }] : []))),
+    ];
+    if (noFormula.length) problems.push(`Enter a formula for: ${Array.from(new Set(noFormula)).join(', ')}.`);
     if (!(effectiveRate > 0)) problems.push('Enter the monthly charges (or add branch breakdown with amounts).');
     if (!(tenureMonths >= 1)) problems.push('Tenure must be at least one month.');
   } else {
     const otValid = branchBreakdowns.length > 0 ? branchTotal > 0 : lineItems.some((li) => li.serviceName.trim() && li.totalPrice > 0);
     if (!otValid) problems.push('Add at least one priced service (or site with an amount).');
+    if (!templateTypes.length) problems.push('Select at least one treatment type.');
+    const noFormula = branchBreakdowns.length > 0
+      ? branchBreakdowns.flatMap((b) => servicesMissingFormula(b.services ?? [], (s) => s.service, (s) => s.formulas ?? (s.formula ? [{ formula: s.formula }] : [])))
+      : servicesMissingFormula(lineItems, (li) => li.serviceName, (li) => li.formulas ?? (li.chemicalsSuggested ? [{ formula: li.chemicalsSuggested }] : []));
+    if (noFormula.length) problems.push(`Enter a formula for: ${Array.from(new Set(noFormula)).join(', ')}.`);
+    const t = oneTimeTaxPct.trim();
+    if (t === '') problems.push('Enter the sales tax % for this treatment (type 0 if no tax).');
+    else if (!(Number(t) >= 0 && Number(t) <= 100)) problems.push('Sales tax must be between 0 and 100%.');
   }
 
   const changeCustomer = (type: 'company' | 'individual', id: string, brId = '') => {
@@ -213,7 +241,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
     setTaxPct(taxRateFor(rules, jur).percent);
   };
 
-  const create = () => {
+  const create = async () => {
     if (problems.length) return;
     // Guard: warn if an active proposal already exists for this lead
     if (prefill.fromLead) {
@@ -231,18 +259,22 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
     }
     const now = new Date().toISOString();
     const customerName = company?.legalCompanyName || client?.fullName || lead?.companyName || lead?.title || 'Client';
-    const id = generatePermanentId('P', dataService.getProposals().length + 1);
+    // Shared counter: never reuse (and overwrite) a proposal this person can't see
+    const id = await dataService.newRecordId('P', 'proposal', dataService.getProposals().map((x) => x.id), 'proposals');
     const isPlan = mode === 'plan';
     const subtotal = isPlan ? pricing.subtotal : oneTimeSubtotal;
     const discountAmount = isPlan ? pricing.discountAmount : oneTimeDiscount;
     const taxAmount = isPlan ? pricing.taxAmount : oneTimeTax;
     const totalAmount = isPlan ? pricing.totalAmount : oneTimeSubtotal - oneTimeDiscount + oneTimeTax;
-    const cleanPlan = plan.filter((r) => r.service.trim());
+    // Blank formula lines are dropped
+    const cleanPlan = plan.filter((r) => r.service.trim()).map((r) => withCleanFormulas(r, 'formula'));
+    const cleanBreakdowns = branchBreakdowns.map((b) => ({ ...b, services: b.services?.filter((sv) => sv.service.trim()).map((sv) => withCleanFormulas(sv, 'formula')) }));
 
     const proposal: Proposal = {
       id,
       revisionNumber: 0,
-      templateType: isPlan ? (preset === 'commercial_kitchen' ? 'commercial_kitchen' : 'general_ipm') : templateType,
+      templateType: isPlan ? (preset === 'commercial_kitchen' ? 'commercial_kitchen' : 'general_ipm') : templateTypes[0],
+      ...(isPlan ? {} : { templateTypes }),
       customerType,
       customerId,
       customerName,
@@ -259,8 +291,8 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
             id: 'plan',
             serviceName: `Monthly IPM service plan (${tenureMonths} month${tenureMonths === 1 ? '' : 's'})`,
             targetPest: ((pests[0] as PestType) || 'general_fumigation'),
-            chemicalsSuggested: '',
             treatmentMethod: cleanPlan.map((r) => r.service).slice(0, 4).join(', '),
+            chemicalsSuggested: cleanPlan.map((r) => r.formula?.trim()).filter(Boolean).slice(0, 4).join(', '),
             frequency: 'Monthly',
             quantity: tenureMonths,
             unitPrice: pricing.monthlyBase,
@@ -268,15 +300,17 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
           }]
         : branchBreakdowns.length > 0
           ? branchBreakdowns.map((b, i) => {
-              const SVC: Record<string, string> = { general_fumigation: 'General fumigation', cockroach_gel: 'Cockroach gel', rodent_control: 'Rodent control', termite_treatment: 'Termite treatment', bedbug_treatment: 'Bedbug treatment', mosquito_fogging: 'Mosquito / fly fogging', ant_treatment: 'Ant treatment', stored_grain_pest: 'Stored grain pest control', snake_reptile: 'Snake / reptile control', monitoring_visit: 'Monitoring visit' };
-              const svcNames = (b.services || []).map((sv) => SVC[sv.service] || sv.service).join(', ') || 'Treatment';
-              return { id: `li_site_${i}`, serviceName: `${b.branchName}: ${svcNames}`, targetPest: 'cockroaches' as PestType, chemicalsSuggested: '', treatmentMethod: '', frequency: 'One-time', quantity: 1, unitPrice: b.monthlyAmount, totalPrice: b.monthlyAmount };
+              const svcs = (b.services || []).filter((sv) => sv.service.trim());
+              const svcNames = svcs.map((sv) => treatmentLabel(sv.service)).join(', ') || 'Treatment';
+              const formulas = svcs.map((sv) => sv.formula?.trim()).filter(Boolean).join(', ');
+              const freqs = Array.from(new Set(svcs.map((sv) => sv.frequency?.trim()).filter(Boolean)));
+              return { id: `li_site_${i}`, serviceName: `${b.branchName}: ${svcNames}`, targetPest: 'cockroaches' as PestType, chemicalsSuggested: formulas, treatmentMethod: '', frequency: freqs.join(' / ') || 'One-time', quantity: 1, unitPrice: b.monthlyAmount, totalPrice: b.monthlyAmount };
             })
-          : lineItems,
+          : lineItems.filter((li) => li.serviceName.trim()).map((li) => withCleanFormulas(li, 'chemicalsSuggested')),
       subtotal,
       discountPercent,
       discountAmount,
-      taxPercent: taxPct,
+      taxPercent: isPlan ? taxPct : Number(oneTimeTaxPct) || 0,
       taxAmount,
       totalAmount,
       validityDays: 30,
@@ -304,9 +338,10 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
             tenureEnd: end,
             paymentTermsDays,
             deviceOwnership: deviceOwnership.trim() || undefined,
-            branchBreakdowns: branchBreakdowns.length > 0 ? branchBreakdowns : undefined,
+            branchBreakdowns: cleanBreakdowns.length > 0 ? cleanBreakdowns : undefined,
           }
-        : { paymentTermsDays }),
+        // One-time: keep the site breakdown too, so a revision can edit each site's services
+        : { paymentTermsDays, branchBreakdowns: cleanBreakdowns.length > 0 ? cleanBreakdowns : undefined }),
       // Template version used; tax and payment wording are kept so later template edits don't change this proposal
       templateVersion: documentTemplates.version(),
       templateSnapshot: { taxWording: templates.taxWording, paymentTerms: templates.paymentTerms },
@@ -332,12 +367,6 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
     onClose();
   };
 
-  const setLine = (i: number, patch: Partial<ProposalLineItem>) =>
-    setLineItems((prev) => prev.map((li, idx) => {
-      if (idx !== i) return li;
-      const next = { ...li, ...patch };
-      return { ...next, totalPrice: next.quantity * next.unitPrice };
-    }));
 
   return (
     <Modal
@@ -411,6 +440,8 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
         ) : null;
       })()}
 
+      {/* Typing suggestions for every treatment / frequency field below */}
+      <TreatmentDatalists />
       <div className="chip-row" role="tablist" style={{ margin: '0.25rem 0 1rem' }}>
         <button type="button" className={`chip ${mode === 'plan' ? 'chip-on' : ''}`} onClick={() => setMode('plan')}>Monthly IPM service plan</button>
         <button type="button" className={`chip ${mode === 'one_time' ? 'chip-on' : ''}`} onClick={() => setMode('one_time')}>One-time treatment</button>
@@ -420,16 +451,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
         <>
           {/* ── Section 1: Service plan ── */}
           <div className="section-title" style={{ marginTop: 0 }}>Service plan</div>
-          <ServicePlanEditor
-            preset={preset}
-            items={plan}
-            onPresetChange={(p) => {
-              setPreset(p);
-              setVisits(SERVICE_PLAN_PRESETS[p].serviceVisitsPerMonth);
-              setFollowUps(SERVICE_PLAN_PRESETS[p].followUpVisitsPerMonth);
-            }}
-            onChange={setPlan}
-          />
+          <ServicePlanEditor items={plan} onChange={setPlan} />
           {branchBreakdowns.length === 0 && (
             <div className="form-grid-2" style={{ marginTop: '0.75rem' }}>
               <div className="form-group">
@@ -466,9 +488,6 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
             </div>
           </div>
 
-          <datalist id="site-frequencies">
-            {['Once per week','Twice per week','Twice per month','Once per month','Every service visit','Monthly','Quarterly','As required'].map((f) => <option key={f} value={f} />)}
-          </datalist>
 
           {/* ── Section 2: Site-by-site breakdown (multi-site, company only) ── */}
           {customerType === 'company' && (() => {
@@ -490,7 +509,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                       const usedIds = new Set(branchBreakdowns.map((x) => x.branchId));
                       const first = siteOptions.find((s) => !usedIds.has(s.id));
                       if (!first) return;
-                      setBranchBreakdowns((prev) => [...prev, { branchId: first.id, branchName: first.name, address: first.address, services: [{ service: 'general_fumigation', frequency: 'Once per month' }], visitsPerMonth: 1, monthlyAmount: 0 }]);
+                      setBranchBreakdowns((prev) => [...prev, { branchId: first.id, branchName: first.name, address: first.address, services: [{ service: 'General pest control', frequency: 'Once per month' }], visitsPerMonth: 1, monthlyAmount: 0 }]);
                     }}>
                     <Plus size={13} /> Add site
                   </button>
@@ -536,51 +555,8 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                         </div>
                       </div>
 
-                      {/* Services */}
-                      <div style={{ marginBottom: '0.75rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
-                          <label className="form-label" style={{ marginBottom: 0 }}>Services / treatments</label>
-                          <button type="button" className="btn btn-sm btn-ghost"
-                            onClick={() => upd({ services: [...(b.services || []), { service: 'general_fumigation', frequency: 'Once per month' }] })}>
-                            <Plus size={11} /> Add treatment
-                          </button>
-                        </div>
-                        {(b.services || []).length === 0 && (
-                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>No treatments added yet</div>
-                        )}
-                        {(b.services || []).length > 0 && (
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.25rem' }}>
-                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600, paddingLeft: 2 }}>Treatment</span>
-                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Frequency</span>
-                            <span />
-                          </div>
-                        )}
-                        {(b.services || []).map((sv, si) => (
-                          <div key={si} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.35rem' }}>
-                            <select className="form-select" value={sv.service}
-                              onChange={(e) => {
-                                const updated = (b.services || []).map((s, i) => i === si ? { ...s, service: e.target.value } : s);
-                                upd({ services: updated });
-                              }}>
-                              {SERVICE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                            </select>
-                            <input
-                              className="form-input"
-                              placeholder="Once per month"
-                              list="site-frequencies"
-                              value={sv.frequency ?? ''}
-                              onChange={(e) => {
-                                const updated = (b.services || []).map((s, i) => i === si ? { ...s, frequency: e.target.value } : s);
-                                upd({ services: updated });
-                              }}
-                            />
-                            <button type="button" className="icon-btn"
-                              onClick={() => upd({ services: (b.services || []).filter((_, i) => i !== si) })}>
-                              <Trash2 size={13} color="var(--ikpm-rose-400)" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
+                      {/* Treatments */}
+                      <SiteTreatments label="Services / treatments" services={b.services || []} onChange={(services) => upd({ services })} />
 
                       {/* Pricing row */}
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle)' }}>
@@ -629,10 +605,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                         {b.address && <div style={{ fontWeight: 400, fontSize: '0.72rem', color: 'var(--text-muted)' }}>{b.address}</div>}
                       </td>
                       <td style={{ padding: '0.4rem 0.7rem', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-                        {(b.services || []).map((sv) => {
-                          const label = SERVICE_OPTIONS.find((o) => o.value === sv.service)?.label || sv.service;
-                          return sv.frequency ? `${label} (${sv.frequency})` : label;
-                        }).join(', ') || '—'}
+                        {(b.services || []).map(treatmentSummary).join(', ') || '—'}
                       </td>
                       <td style={{ padding: '0.4rem 0.7rem', textAlign: 'center' }}>{b.visitsPerMonth}</td>
                       <td style={{ padding: '0.4rem 0.7rem', textAlign: 'right', fontWeight: 700 }}>{b.monthlyAmount > 0 ? b.monthlyAmount.toLocaleString() : '—'}</td>
@@ -754,26 +727,37 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
           <div className="section-title" style={{ marginTop: 0 }}>Treatment details</div>
           <div className="form-grid-2">
             <div className="form-group">
-              <label className="form-label">Treatment type</label>
-              <select className="form-select" value={templateType} onChange={(e) => setTemplateType(e.target.value as TemplateType)}>
-                <option value="general_ipm">General pest control</option>
-                <option value="termite_proofing">Termite proofing</option>
-                <option value="bedbug_eradication">Bedbug treatment</option>
-                <option value="rodent_control">Rodent control</option>
-                <option value="commercial_kitchen">Commercial kitchen</option>
-                <option value="fumigation_export">Fumigation (cargo / warehouse)</option>
-                <option value="cockroach_gel">Cockroach gel</option>
-              </select>
+              <label className="form-label">Treatment type <span className="required">*</span> <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(select one or more)</span></label>
+              <div className="chip-row" style={{ marginBottom: 0 }}>
+                {TREATMENT_TYPES.map((t) => {
+                  const on = templateTypes.includes(t.value);
+                  return (
+                    <button key={t.value} type="button" className={`chip ${on ? 'chip-on' : ''}`} aria-pressed={on}
+                      onClick={() => setTemplateTypes((prev) => (on ? prev.filter((x) => x !== t.value) : [...prev, t.value]))}>
+                      {on && <Check size={13} />} {t.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
             <div className="form-group">
-              <label className="form-label">Sales tax</label>
-              <select className="form-select" value={jurisdiction} onChange={(e) => setJurisdiction(e.target.value as TaxJurisdiction | 'exempt')}>
-                {JURISDICTIONS.map((j) => {
-                  const r = taxRateFor(rules, j);
-                  return <option key={j} value={j}>{r.title}: {r.percent}%</option>;
-                })}
-                <option value="exempt">Exempt / zero-rated</option>
-              </select>
+              <label className="form-label">Sales tax (%) <span className="required">*</span></label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="number" min={0} max={100} step={0.01}
+                  className="form-input"
+                  style={{ paddingRight: '2rem' }}
+                  list="one-time-tax-rates"
+                  value={oneTimeTaxPct}
+                  placeholder="Enter rate, e.g. 15"
+                  onChange={(e) => setOneTimeTaxPct(e.target.value)}
+                />
+                <span style={{ position: 'absolute', right: '0.6rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none', fontSize: '0.85rem' }}>%</span>
+              </div>
+              <datalist id="one-time-tax-rates">
+                {Array.from(new Set(JURISDICTIONS.map((j) => taxRateFor(rules, j).percent))).map((pct) => <option key={pct} value={pct} />)}
+              </datalist>
+              <div className="form-hint" style={{ marginTop: '0.2rem' }}>Set for this treatment. Type 0 if no tax is charged.</div>
             </div>
           </div>
           <div className="form-group">
@@ -801,7 +785,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                       const usedIds = new Set(branchBreakdowns.map((x) => x.branchId));
                       const first = siteOptions.find((s) => !usedIds.has(s.id));
                       if (!first) return;
-                      setBranchBreakdowns((prev) => [...prev, { branchId: first.id, branchName: first.name, address: first.address, services: [{ service: 'general_fumigation', frequency: 'Once per month' }], visitsPerMonth: 1, monthlyAmount: 0 }]);
+                      setBranchBreakdowns((prev) => [...prev, { branchId: first.id, branchName: first.name, address: first.address, services: [{ service: 'General pest control', frequency: 'One-time' }], visitsPerMonth: 1, monthlyAmount: 0 }]);
                     }}>
                     <Plus size={13} /> Add site
                   </button>
@@ -842,48 +826,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                           <input className="form-input" value={b.address ?? siteObj?.address ?? ''} onChange={(e) => upd({ address: e.target.value })} placeholder="Site address" />
                         </div>
                       </div>
-                      <div style={{ marginBottom: '0.75rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
-                          <label className="form-label" style={{ marginBottom: 0 }}>Treatments at this site</label>
-                          <button type="button" className="btn btn-sm btn-ghost"
-                            onClick={() => upd({ services: [...(b.services || []), { service: 'general_fumigation', frequency: 'Once per month' }] })}>
-                            <Plus size={11} /> Add treatment
-                          </button>
-                        </div>
-                        {(b.services || []).length === 0 && <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>No treatments added yet</div>}
-                        {(b.services || []).length > 0 && (
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.25rem' }}>
-                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600, paddingLeft: 2 }}>Treatment</span>
-                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Frequency</span>
-                            <span />
-                          </div>
-                        )}
-                        {(b.services || []).map((sv, si) => (
-                          <div key={si} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.4rem', alignItems: 'center', marginBottom: '0.35rem' }}>
-                            <select className="form-select" value={sv.service}
-                              onChange={(e) => {
-                                const updated = (b.services || []).map((s, i) => i === si ? { ...s, service: e.target.value } : s);
-                                upd({ services: updated });
-                              }}>
-                              {SERVICE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                            </select>
-                            <input
-                              className="form-input"
-                              placeholder="Once per month"
-                              list="site-frequencies"
-                              value={sv.frequency ?? ''}
-                              onChange={(e) => {
-                                const updated = (b.services || []).map((s, i) => i === si ? { ...s, frequency: e.target.value } : s);
-                                upd({ services: updated });
-                              }}
-                            />
-                            <button type="button" className="icon-btn"
-                              onClick={() => upd({ services: (b.services || []).filter((_, i) => i !== si) })}>
-                              <Trash2 size={13} color="var(--ikpm-rose-400)" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
+                      <SiteTreatments services={b.services || []} defaultFrequency="One-time" onChange={(services) => upd({ services })} />
                       <div style={{ paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle)' }}>
                         <div className="form-group" style={{ marginBottom: 0 }}>
                           <label className="form-label">Treatment amount — this site (PKR)</label>
@@ -912,10 +855,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
                               {b.address && <div style={{ fontWeight: 400, fontSize: '0.72rem', color: 'var(--text-muted)' }}>{b.address}</div>}
                             </td>
                             <td style={{ padding: '0.4rem 0.7rem', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-                              {(b.services || []).map((sv) => {
-                                const label = SERVICE_OPTIONS.find((o) => o.value === sv.service)?.label || sv.service;
-                                return sv.frequency ? `${label} (${sv.frequency})` : label;
-                              }).join(', ') || '—'}
+                              {(b.services || []).map(treatmentSummary).join(', ') || '—'}
                             </td>
                             <td style={{ padding: '0.4rem 0.7rem', textAlign: 'right', fontWeight: 700 }}>{b.monthlyAmount > 0 ? b.monthlyAmount.toLocaleString() : '—'}</td>
                           </tr>
@@ -937,26 +877,28 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
           {/* ── Section 3: Services (single site / no breakdown) ── */}
           {branchBreakdowns.length === 0 && (
             <>
-              <div className="section-title">Services</div>
-              {lineItems.map((li, i) => (
-                <div key={li.id} className="line-item-row">
-                  <input className="form-input" placeholder="Service" value={li.serviceName} onChange={(e) => setLine(i, { serviceName: e.target.value })} />
-                  <input className="form-input" placeholder="Chemicals / method" value={li.chemicalsSuggested} onChange={(e) => setLine(i, { chemicalsSuggested: e.target.value })} />
-                  <input type="number" min={1} className="form-input" aria-label="Quantity" value={li.quantity} onChange={(e) => setLine(i, { quantity: Number(e.target.value) })} />
-                  <input type="number" min={0} className="form-input" aria-label="Rate" placeholder="Rate" value={li.unitPrice || ''} onChange={(e) => setLine(i, { unitPrice: Number(e.target.value) })} />
-                  <button type="button" className="icon-btn" onClick={() => setLineItems((prev) => prev.filter((_, idx) => idx !== i))} aria-label="Remove line"><Trash2 size={14} /></button>
-                </div>
-              ))}
-              <button type="button" className="btn btn-sm btn-secondary" onClick={() => setLineItems((prev) => [...prev, { id: `li_${Date.now()}`, serviceName: '', targetPest: 'cockroaches', chemicalsSuggested: '', treatmentMethod: '', quantity: 1, unitPrice: 0, totalPrice: 0, frequency: 'One-time' }])}>
-                <Plus size={14} /> Add service
-              </button>
+              <div className="section-title">Treatment</div>
+              <ServiceSelection<ProposalLineItem>
+                label="Services"
+                rows={lineItems}
+                onChange={(rows) => setLineItems(rows.map((li) => ({ ...li, totalPrice: (li.quantity || 0) * (li.unitPrice || 0) })))}
+                fields={{ name: 'serviceName', formulas: 'formulas', formulaText: 'chemicalsSuggested', frequency: 'frequency' }}
+                make={(service) => newLine(service)}
+                extraHead={['Qty', 'Rate (PKR)']}
+                extra={(li, set) => (
+                  <>
+                    <input type="number" min={1} className="form-input" aria-label="Quantity" value={li.quantity} onChange={(e) => set({ quantity: Number(e.target.value) })} />
+                    <input type="number" min={0} className="form-input" aria-label="Rate" placeholder="Rate" value={li.unitPrice || ''} onChange={(e) => set({ unitPrice: Number(e.target.value) })} />
+                  </>
+                )}
+              />
             </>
           )}
 
           <div className="pricing-summary" style={{ marginTop: '1rem' }}>
             <div>Subtotal: <strong>{formatPKR(oneTimeSubtotal)}</strong></div>
             {discountPercent > 0 && <div>Discount: -{formatPKR(oneTimeDiscount)}</div>}
-            {tax.percent > 0 && <div>Tax ({tax.percent}%): <strong>{formatPKR(oneTimeTax)}</strong></div>}
+            {oneTimeTaxPercent > 0 && <div>Sales tax ({oneTimeTaxPercent}%): <strong>{formatPKR(oneTimeTax)}</strong></div>}
             <div className="pricing-grand">Total: {formatPKR(oneTimeSubtotal - oneTimeDiscount + oneTimeTax)}</div>
           </div>
         </>

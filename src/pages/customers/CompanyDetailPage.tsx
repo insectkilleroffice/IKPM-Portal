@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { treatmentTypeLabel } from '../../lib/treatments';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   GitFork,
@@ -22,7 +23,7 @@ import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { Modal } from '../../components/common/Modal';
-import { formatPKR, formatNTN, formatDate, formatDateTime, generatePermanentId } from '../../lib/formatters';
+import { formatPKR, formatNTN, formatDate, formatDateTime } from '../../lib/formatters';
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
@@ -142,7 +143,7 @@ export const CompanyDetailPage: React.FC = () => {
 
   const handleCreateBranch = (e: React.FormEvent) => {
     e.preventDefault();
-    const branchId = generatePermanentId('BR', branches.length + 1);
+    const branchId = dataService.newBranchId(company.id);
     const created: CompanyBranch = {
       id: branchId,
       companyId: company.id,
@@ -173,7 +174,8 @@ export const CompanyDetailPage: React.FC = () => {
 
   const handleCreateSite = (e: React.FormEvent) => {
     e.preventDefault();
-    const siteId = `SITE-${Date.now().toString().slice(-4)}`;
+    // Time-based and long enough never to repeat (the last 4 digits alone repeated every 10 seconds)
+    const siteId = `SITE-${Date.now().toString(36).toUpperCase()}`;
     const created: SiteAddress = {
       id: siteId,
       siteName: newSite.siteName,
@@ -675,7 +677,7 @@ export const CompanyDetailPage: React.FC = () => {
                   </td>
                   <td>{p.branchName || 'Company-Wide HQ'}</td>
                   <td>
-                    <div style={{ fontWeight: 600 }}>{p.templateType.replace('_', ' ')}</div>
+                    <div style={{ fontWeight: 600 }}>{(p.templateTypes?.length ? p.templateTypes : [p.templateType]).map(treatmentTypeLabel).join(', ')}</div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{p.lineItems.length} Service Items</div>
                   </td>
                   <td>{p.preparedByName}</td>

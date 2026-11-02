@@ -91,6 +91,8 @@ export const ContractsListPage: React.FC = () => {
   // Operations coordinators manage scheduling/assignment but don't own financials.
   const isOpsRole = baseRoleOf(effectiveRole) === 'operations';
   const canCreateContract = canEditModule(effectiveRole, 'crm') || canAdminAction;
+  // Renewing / revising a contract: the CRO and admins only
+  const canReviseContract = canAdminAction || (baseRoleOf(effectiveRole) === 'sales' && canEdit);
   const canSeeFinancials = !isOpsRole;
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -186,7 +188,7 @@ export const ContractsListPage: React.FC = () => {
     return eff === statusFilter;
   });
 
-  const handleCreateContract = (e: React.FormEvent) => {
+  const handleCreateContract = async (e: React.FormEvent) => {
     e.preventDefault();
     // Guard: block if this proposal already has a contract
     if (newContract.proposalId) {
@@ -233,7 +235,8 @@ export const ContractsListPage: React.FC = () => {
     }
 
     const sites = dataService.getSites(newContract.customerId, newContract.branchId || undefined);
-    const nextId = generatePermanentId('CT', contracts.length + 1);
+    // Shared counter: never reuse (and overwrite) a contract this person can't see
+    const nextId = await dataService.newRecordId('CT', 'contract', contracts.map((c) => c.id), 'contracts');
 
     const sourceProposal = newContract.proposalId ? dataService.getProposalById(newContract.proposalId) : undefined;
     const teamLeaderUser = newContract.assignedTeamLeaderId ? dataService.getStaff().find((u) => u.uid === newContract.assignedTeamLeaderId) : undefined;
@@ -276,7 +279,7 @@ export const ContractsListPage: React.FC = () => {
   const handleGenerateSchedule = (contract: Contract) => setScheduleFor(contract);
 
   // Step 15: 60 days before tenureEnd: clone contract and create renewal proposal
-  const handleRenewContract = (contract: Contract) => {
+  const handleRenewContract = async (contract: Contract) => {
     const prevStart = new Date(contract.startDate);
     const prevEnd = new Date(contract.endDate);
     const durationMs = Math.max(30 * 86400000, prevEnd.getTime() - prevStart.getTime());
@@ -285,7 +288,7 @@ export const ContractsListPage: React.FC = () => {
 
     // 1. Create a renewal proposal carrying forward the service plan, scope, and rates
     const origProp = contract.proposalId ? dataService.getProposalById(contract.proposalId) : undefined;
-    const propId = generatePermanentId('P', proposals.length + 1);
+    const propId = await dataService.newRecordId('P', 'proposal', proposals.map((p) => p.id), 'proposals');
     const subtotal = contract.monthlyRate ? contract.monthlyRate * (contract.tenureMonths || 12) : contract.totalContractValue;
     const taxPercent = contract.taxPercent ?? 13;
     const taxAmount = (subtotal * taxPercent) / 100;
@@ -327,7 +330,7 @@ export const ContractsListPage: React.FC = () => {
     dataService.saveProposal(renewalProposal, userProfile?.email);
 
     // 2. Clone the contract for the new tenure
-    const nextContractId = generatePermanentId('CT', contracts.length + 1);
+    const nextContractId = await dataService.newRecordId('CT', 'contract', contracts.map((c) => c.id), 'contracts');
     const clonedContract: Contract = {
       ...contract,
       id: nextContractId,
@@ -484,7 +487,7 @@ export const ContractsListPage: React.FC = () => {
               </div>
             </div>
           </div>
-          {canAdminAction && (
+          {canReviseContract && (
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
               {expiringContracts.map((ec) => (
                 <button
@@ -955,7 +958,7 @@ export const ContractsListPage: React.FC = () => {
           maxWidth="640px"
           footer={
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-              {canAdminAction && (
+              {canReviseContract && (
                 <button
                   className="btn btn-outline-emerald"
                   onClick={() => handleRenewContract(selectedContract)}
@@ -964,7 +967,7 @@ export const ContractsListPage: React.FC = () => {
                   <span>Renew AMC</span>
                 </button>
               )}
-              {!canAdminAction && <span />}
+              {!canReviseContract && <span />}
 
               <button
                 className="btn btn-primary"
@@ -987,7 +990,7 @@ export const ContractsListPage: React.FC = () => {
                   <table className="data-table">
                     <thead><tr><th style={{ width: 36 }}>#</th><th>Service</th><th>Frequency</th></tr></thead>
                     <tbody>
-                      {selectedContract.servicePlan.map((r, i) => <tr key={r.id}><td>{i + 1}</td><td>{r.service}</td><td>{r.frequency}</td></tr>)}
+                      {selectedContract.servicePlan.map((r, i) => <tr key={r.id}><td>{i + 1}</td><td>{r.service}{r.formula?.trim() && <div className="cell-sub">{r.formula}</div>}</td><td>{r.frequency}</td></tr>)}
                     </tbody>
                   </table>
                 </div>

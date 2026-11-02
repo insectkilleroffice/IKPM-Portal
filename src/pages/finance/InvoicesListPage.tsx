@@ -269,7 +269,7 @@ export const InvoicesListPage: React.FC = () => {
     let nextId: string;
     let invoiceNum: string;
     try {
-      nextId = generatePermanentId('INV', await dataService.nextSequence('invoice', dataService.maxSeqOf(invoices.map((i) => i.id))));
+      nextId = await dataService.newRecordId('INV', 'invoice', invoices.map((i) => i.id), 'invoices');
       const seq = await dataService.nextSequence(`invoice_${series.toLowerCase()}_${year}`,
         dataService.maxSeqOf(invoices.filter((i) => i.invoiceNumber.startsWith(seriesPrefix)).map((i) => i.invoiceNumber)));
       invoiceNum = `${seriesPrefix}${String(seq).padStart(4, '0')}`;
@@ -393,7 +393,7 @@ export const InvoicesListPage: React.FC = () => {
     try {
       setIsSubmittingPayment(true);
       // Safe counter (the old time-based numbers could repeat)
-      const receiptId = generatePermanentId('REC', await dataService.nextSequence('receipt', dataService.maxSeqOf(dataService.getPayments().map((r) => r.id))));
+      const receiptId = await dataService.newRecordId('REC', 'receipt', dataService.getPayments().map((r) => r.id), 'payments');
       const receiptNum = receiptId;
       const receipt: PaymentReceipt = {
         id: receiptId,

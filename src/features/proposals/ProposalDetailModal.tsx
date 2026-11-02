@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CheckCircle2, Download, UserCheck, Truck, Send, History, FolderUp } from 'lucide-react';
+import { CheckCircle2, Download, UserCheck, Truck, Send, History, FolderUp, Pencil } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { OutreachHistory } from '../outreach/OutreachHistory';
 import { formatDate, formatPKR } from '../../lib/formatters';
@@ -26,10 +26,12 @@ interface Props {
   onDecline: () => void;
   onSend?: () => void;
   onAssign?: () => void;
+  /** CRO / admin edits this draft in place (e.g. after "Changes requested"). */
+  onEdit?: () => void;
 }
 
 /** Proposal details with approval, client decision, contract / job hand-off and sharing. */
-export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, canAccept, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onRequestChanges, onSubmitForApproval, onAccept, onDecline, onSend, onAssign }) => {
+export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, canAccept, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onRequestChanges, onSubmitForApproval, onAccept, onDecline, onSend, onAssign, onEdit }) => {
   const navigate = useNavigate();
   const isPlan = Boolean(p.servicePlan?.length);
   const pricing = isPlan
@@ -62,6 +64,11 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
                 )}
                 <button className="btn btn-primary" onClick={onApprove}><CheckCircle2 size={15} /> <span>Approve</span></button>
               </>
+            )}
+            {onEdit && (
+              <button className={`btn ${p.approval?.status === 'changes_requested' ? 'btn-primary' : 'btn-secondary'}`} onClick={onEdit}>
+                <Pencil size={14} /> <span>Edit proposal</span>
+              </button>
             )}
             {onSubmitForApproval && p.status === 'draft' && (
               <button className="btn btn-primary" onClick={onSubmitForApproval}><Send size={15} /> <span>Submit for approval</span></button>
@@ -122,7 +129,7 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
           <div style={{ padding: '0.6rem 0.85rem', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '0.4rem', color: '#92400E', fontSize: '0.83rem' }}>
             <strong>Changes requested{p.approval.decisionByName ? ` by ${p.approval.decisionByName}` : ''}</strong>
             {p.approval.comments && <div style={{ marginTop: '0.3rem' }}>{p.approval.comments}</div>}
-            <div style={{ marginTop: '0.4rem', fontSize: '0.78rem', color: '#78350F' }}>Edit the proposal then send to client directly — no re-approval needed.</div>
+            <div style={{ marginTop: '0.4rem', fontSize: '0.78rem', color: '#78350F' }}>Click <strong>Edit proposal</strong>, make the changes, then send it to the client — no re-approval needed (unless the discount is above 10%).</div>
           </div>
         )}
 
@@ -136,7 +143,7 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
                 </thead>
                 <tbody>
                   {p.servicePlan!.map((row, i) => (
-                    <tr key={row.id}><td>{i + 1}</td><td><strong>{row.service}</strong></td><td>{row.frequency}</td></tr>
+                    <tr key={row.id}><td>{i + 1}</td><td><strong>{row.service}</strong>{row.formula?.trim() && <div className="cell-sub">{row.formula}</div>}</td><td>{row.frequency}</td></tr>
                   ))}
                 </tbody>
               </table>

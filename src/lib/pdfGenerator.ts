@@ -792,7 +792,7 @@ function branchSchedule(b: DocBuilder, proposal: Proposal) {
     rows.map((br, i) => [
       i + 1,
       br.branchName + (br.address ? `\n${br.address}` : ''),
-      (br.services || []).map((sv) => `${svcLabel(sv.service)}${sv.frequency ? ` (${sv.frequency})` : ''}`).join('\n') || br.treatment || '—',
+      (br.services || []).map((sv) => `${svcLabel(sv.service)}${sv.formula?.trim() ? ` — ${sv.formula.trim()}` : ''}${sv.frequency ? ` (${sv.frequency})` : ''}`).join('\n') || br.treatment || '—',
       String(br.visitsPerMonth ?? 1),
       money(br.monthlyAmount),
     ]),
@@ -896,10 +896,17 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
   }
 
   b.section('Monthly IPM service plan', 34);
+  // The formula / brand column appears only when at least one row has one
+  const planRows = proposal.servicePlan ?? [];
+  const withFormula = planRows.some((row) => row.formula?.trim());
   b.table(
-    ['#', 'Service', 'Frequency'],
-    (proposal.servicePlan ?? []).map((row, i) => [i + 1, row.service, row.frequency]),
-    { columnStyles: { 0: { cellWidth: 9, halign: 'center' }, 1: { fontStyle: 'bold' }, 2: { cellWidth: 52 } } }
+    withFormula ? ['#', 'Treatment / service', 'Formula / brand', 'Frequency'] : ['#', 'Service', 'Frequency'],
+    planRows.map((row, i) => (withFormula ? [i + 1, row.service, row.formula?.trim() || '—', row.frequency] : [i + 1, row.service, row.frequency])),
+    {
+      columnStyles: withFormula
+        ? { 0: { cellWidth: 9, halign: 'center' }, 1: { fontStyle: 'bold' }, 2: { cellWidth: 46 }, 3: { cellWidth: 42 } }
+        : { 0: { cellWidth: 9, halign: 'center' }, 1: { fontStyle: 'bold' }, 2: { cellWidth: 52 } },
+    }
   );
   b.keyValues([
     ['Total service visits per month', proposal.serviceVisitsPerMonth ? String(proposal.serviceVisitsPerMonth) : undefined],

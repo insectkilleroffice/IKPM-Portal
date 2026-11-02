@@ -8,6 +8,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromServer,
   limit,
   onSnapshot,
   orderBy,
@@ -312,7 +313,7 @@ const PROTECTED_FIELDS = ['ownerUid', 'teamId', 'customerId', 'contractId', 'lin
   'taxTotal', 'invoiceNumber', 'role', 'dataScope', 'isActive', 'contacts', 'existingCustomerId'];
 
 /** Matches the rules_probe id in firestore.rules; tells whether the published rules are current. */
-export const RULES_VERSION = '2026-11-02-l';
+export const RULES_VERSION = '2026-11-02-n';
 
 class DataService {
   /**
@@ -384,7 +385,8 @@ class DataService {
         // A new counter continues after the highest number already in use (records made before it existed)
         let current = floor;
         if (snap.exists()) {
-          current = Number(snap.data().seq || 0);
+          // Never behind a number already in use (counters started late, or ids made without them)
+          current = Math.max(Number(snap.data().seq || 0), floor);
         }
         const next = current + 1;
         txn.set(counterRef, { key, seq: next, updatedAt: new Date().toISOString() }, { merge: true });
@@ -1043,6 +1045,19 @@ class DataService {
     return this.s.branches.find((b) => b.id === id);
   }
 
+  /**
+   * A new branch id, numbered within its company: "BR-2026-0005-01" for company CO-2026-0005.
+   * (Numbering by the company's own branch count alone gave every company's first branch the same
+   * id, so a new branch overwrote — or was refused over — another company's branch.)
+   */
+  public newBranchId(companyId: string): string {
+    const base = `BR-${companyId.replace(/^CO-/, '')}`;
+    const taken = new Set(this.s.branches.map((b) => b.id));
+    let n = this.s.branches.filter((b) => b.companyId === companyId).length + 1;
+    while (taken.has(`${base}-${String(n).padStart(2, '0')}`)) n++;
+    return `${base}-${String(n).padStart(2, '0')}`;
+  }
+
   public saveBranch(branch: CompanyBranch, userEmail = 'admin'): CompanyBranch {
     const created = this.upsert(this.s.branches, branch);
     if (created) {
@@ -1620,24 +1635,78 @@ class DataService {
    * Proposals need a customer account. Creates a prospect account (status "lead") from the lead's
    * company details and contacts, or reuses the one already linked. Returns the account id.
    */
-  public ensureLeadCustomer(leadId: string, userEmail = 'admin'): { customerId: string; customerType: 'company' | 'individual' } {
+  public async ensureLeadCustomer(leadId: string, userEmail = 'admin'): Promise<{ customerId: string; customerType: 'company' | 'individual' }> {
     const lead = this.getLeadById(leadId);
     if (!lead) throw new Error('Lead not found');
-    if (lead.existingCustomerId) return { customerId: lead.existingCustomerId, customerType: lead.customerType };
+    const linked = this.linkedCustomerOf(lead);
+    if (linked) return linked;
+    // Numbered from the shared counter: someone who only sees their own accounts must never reuse
+    // (and overwrite) another account's id
+    const customerId = lead.customerType === 'individual'
+      ? await this.newRecordId('CL', 'client', this.s.clients.map((c) => c.id), 'clients')
+      : await this.newRecordId('CO', 'company', this.s.companies.map((c) => c.id), 'companies');
+    // The lead may have been linked while the number was being fetched
+    const again = this.linkedCustomerOf(this.getLeadById(leadId) ?? lead);
+    if (again) return again;
+    return this.createLeadCustomer(this.getLeadById(leadId) ?? lead, customerId, userEmail);
+  }
 
+  /** The account a lead already points at (directly, or through one of its proposals). */
+  private linkedCustomerOf(lead: Lead): { customerId: string; customerType: 'company' | 'individual' } | undefined {
+    if (lead.existingCustomerId) return { customerId: lead.existingCustomerId, customerType: lead.customerType };
+    const p = this.s.proposals.find((x) => x.leadId === lead.id && x.customerId);
+    return p ? { customerId: p.customerId, customerType: p.customerType } : undefined;
+  }
+
+  /**
+   * A new record id from the shared counter (id_counters/{key}), never one already in use here.
+   * Ids must not come from "how many records I can see + 1": staff limited to their own records see
+   * fewer, and would reuse — and overwrite — someone else's record.
+   */
+  public async newRecordId(
+    prefix: Parameters<typeof generatePermanentId>[0],
+    key: string,
+    inUse: (string | undefined)[],
+    collectionName?: string,
+  ): Promise<string> {
+    const taken = new Set(inUse.filter(Boolean));
+    for (let i = 0; i < 20; i++) {
+      const id = generatePermanentId(prefix, await this.nextSequence(key, this.maxSeqOf(inUse)));
+      if (taken.has(id)) continue;
+      // Also ask the database: a record this user can't see may already have the number
+      if (collectionName && !(await this.isFreeOnServer(collectionName, id))) continue;
+      return id;
+    }
+    return generatePermanentId(prefix, this.maxSeqOf(inUse) + 1 + Math.floor(Math.random() * 1000));
+  }
+
+  /**
+   * Whether no record with this id exists in the database. The rules let anyone signed in look up a
+   * missing record, so "permission denied" here means the id belongs to someone else's record.
+   * Offline (can't check), the counter's number is used as is.
+   */
+  private async isFreeOnServer(collectionName: string, id: string): Promise<boolean> {
+    try {
+      const snap = await getDocFromServer(doc(db, collectionName, id));
+      return !snap.exists();
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      return !(code === 'permission-denied');
+    }
+  }
+
+  private createLeadCustomer(lead: Lead, customerId: string, userEmail: string): { customerId: string; customerType: 'company' | 'individual' } {
     const ts = now();
     const contacts = contactsOf(lead);
     const primary = contacts.find((c) => c.isPrimary) ?? contacts[0];
     const province = this.provinceFor(lead.city || '');
-    let customerId: string;
 
     if (lead.customerType === 'individual') {
-      customerId = generatePermanentId('CL', this.s.clients.length + 1);
       const client: IndividualClient = {
         id: customerId,
         type: 'individual',
         fullName: primary?.name || lead.title,
-        primaryPhone: primary?.phone || lead.phone,
+        primaryPhone: primary?.phone || lead.phone || '',
         email: primary?.email || lead.email,
         residentialAddress: lead.propertyAddress || lead.city,
         city: lead.city,
@@ -1652,13 +1721,12 @@ class DataService {
       };
       this.saveClient(client, userEmail);
     } else {
-      customerId = generatePermanentId('CO', this.s.companies.length + 1);
       const toContact = (c: LeadContact, isPrimary: boolean) => ({
         id: `cont_${c.id}_${Date.now().toString(36)}`,
         fullName: c.name,
         designation: c.designation,
-        phone: c.phone,
-        mobile: c.phone,
+        phone: c.phone || '',
+        mobile: c.phone || '',
         email: c.email,
         isPrimary,
       });
@@ -1670,7 +1738,7 @@ class DataService {
         city: lead.city,
         province,
         website: lead.website,
-        primaryContact: primary ? toContact(primary, true) : { id: 'cont_primary', fullName: lead.contactName, phone: lead.phone, mobile: lead.phone, email: lead.email, isPrimary: true },
+        primaryContact: primary ? toContact(primary, true) : { id: 'cont_primary', fullName: lead.contactName || lead.title, phone: lead.phone || '', mobile: lead.phone || '', email: lead.email, isPrimary: true },
         additionalContacts: contacts.filter((c) => c !== primary).map((c) => toContact(c, false)),
         industrySegment: 'other',
         billingPreference: 'centralized',
@@ -1697,7 +1765,14 @@ class DataService {
     if (!lead) return undefined;
     // Check before creating/activating the customer account so nothing is half-done.
     assertStageTransition(lead, 'won', lead);
-    const { customerId, customerType } = this.ensureLeadCustomer(leadId, userEmail);
+    // A won lead always has a proposal, and the proposal its customer account
+    const linked = this.linkedCustomerOf(lead);
+    if (!linked) throw new Error('This lead has no customer account yet. Create its proposal first.');
+    const { customerId, customerType } = linked;
+    if (lead.existingCustomerId !== customerId) {
+      this.saveLead({ ...lead, existingCustomerId: customerId }, userEmail);
+      this.refileLeadRecords(leadId, customerId, userEmail);
+    }
     // Files created after the prospect account existed are already filed; this catches the rest.
     this.refileLeadRecords(leadId, customerId, userEmail);
     if (customerType === 'company') {
@@ -1707,7 +1782,7 @@ class DataService {
         const existing = this.getBranches(customerId);
         lead.branches.forEach((b, idx) => {
           if (!existing.some((eb) => eb.branchName.toLowerCase() === b.name.toLowerCase())) {
-            const branchId = `BR-${new Date().getFullYear()}-${String(existing.length + idx + 1).padStart(4, '0')}`;
+            const branchId = this.newBranchId(customerId);
             this.saveBranch({
               id: branchId,
               companyId: customerId,
@@ -1964,7 +2039,8 @@ class DataService {
     return this.s.contracts.find((c) => c.id === id);
   }
 
-  public saveContract(contract: Contract, _userEmail = 'admin'): Contract {
+  public saveContract(contract: Contract, userEmail = 'admin'): Contract {
+    const isNew = !this.getContractById(contract.id);
     this.fileRecord(contract, {
       customerId: contract.customerId,
       customerType: contract.customerType,
@@ -1976,7 +2052,63 @@ class DataService {
     this.upsert(this.s.contracts, contract);
     this.commit();
     this.write('contracts', contract.id, contract);
+    if (isNew && contract.status === 'active') this.completeContractCustomer(contract, userEmail);
     return contract;
+  }
+
+  /**
+   * A signed contract turns the prospect into a real customer: the lead is closed as won (which
+   * activates the account and adds the lead's branches / sites), the proposal is marked accepted and
+   * the account's active-contract count goes up. Each step is skipped when already done.
+   */
+  private completeContractCustomer(contract: Contract, userEmail: string) {
+    // Only steps the signed-in role may make (so nobody hits a refused save)
+    const role = this.session?.role;
+    const may = (m: ModuleKey) => !this.session || accessLevel(role, m) === 'edit';
+    const proposal = contract.proposalId ? this.getProposalById(contract.proposalId) : undefined;
+    const lead = (proposal?.leadId ? this.getLeadById(proposal.leadId) : undefined)
+      ?? this.s.leads.find((l) => l.existingCustomerId === contract.customerId && !['won', 'lost'].includes(stageOf(l)));
+
+    if (lead && may('crm') && may('customers')) {
+      // Point the lead at the contract's account first, so winning it never makes a second account
+      if (lead.existingCustomerId !== contract.customerId) {
+        this.saveLead({ ...lead, existingCustomerId: contract.customerId }, userEmail);
+      }
+      const stage = stageOf(this.getLeadById(lead.id) ?? lead);
+      if (stage !== 'won' && stage !== 'lost') {
+        try {
+          if (stage === 'proposal_sent' || stage === 'negotiation') {
+            this.markLeadWon(lead.id, `Contract ${contract.id} signed`, userEmail);
+          }
+        } catch (e) {
+          console.warn('[contracts] lead could not be closed as won', e);
+        }
+      }
+    }
+
+    // Only a proposal the client was offered (not a renewal draft) becomes accepted
+    if (proposal && may('proposals') && ['approved', 'sent_to_client', 'negotiation'].includes(proposal.status)) {
+      const p = this.getProposalById(proposal.id) ?? proposal;
+      this.upsert(this.s.proposals, { ...p, status: 'accepted' });
+      this.write('proposals', p.id, { ...p, status: 'accepted' });
+    }
+
+    // Activate the account (markLeadWon does this too; contracts made without a lead need it here)
+    const ts = now();
+    if (!may('customers')) return this.commit();
+    if (contract.customerType === 'company') {
+      const co = this.getCompanyById(contract.customerId);
+      if (co) {
+        const active = this.s.contracts.filter((c) => c.customerId === co.id && c.status === 'active').length;
+        if (co.status !== 'active' || co.totalActiveContracts !== active) {
+          this.saveCompany({ ...co, status: 'active', totalActiveContracts: active, updatedAt: ts }, userEmail);
+        }
+      }
+    } else {
+      const cl = this.getClientById(contract.customerId);
+      if (cl && cl.status !== 'active') this.saveClient({ ...cl, status: 'active', updatedAt: ts }, userEmail);
+    }
+    this.commit();
   }
 
   /**
@@ -2037,10 +2169,12 @@ class DataService {
 
     let curDate = new Date(startDate.getTime());
     let jobIdx = 1;
+    const scheduleStamp = Date.now().toString(36).toUpperCase();
 
     while (curDate <= endDate && (stepDays > 0 || jobIdx === 1)) {
       const scheduledDateStr = curDate.toISOString().split('T')[0];
-      const jobId = `JOB-${new Date().getFullYear()}-${String(this.s.jobs.length + 1).padStart(4, '0')}`;
+      // Time-stamped like the contract schedule's visits: never repeats another user's job id
+      const jobId = `JOB-${scheduleStamp}-${String(jobIdx).padStart(3, '0')}`;
 
       const job: ServiceJob = {
         id: jobId,
