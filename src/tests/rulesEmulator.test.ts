@@ -39,7 +39,7 @@ const call = (method: string, path: string, as: string, body?: { [k: string]: Js
     method,
     headers: { Authorization: `Bearer ${as === 'owner' ? 'owner' : tokenFor(as)}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify({ fields: toFields(body) }) : undefined,
-  }).then((r) => r.status);
+  }).then(async (r) => { if (process.env.RULES_DEBUG && r.status === 403) console.log(`[${as} ${method} ${path}]`, (await r.text()).slice(0, 500)); return r.status; });
 
 /** Writes bypassing the rules. */
 const seed = (path: string, data: { [k: string]: Json }) => call('PATCH', path, 'owner', data);

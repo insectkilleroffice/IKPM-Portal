@@ -1,603 +1,652 @@
-  rules_version = '2';
+rules_version = '2';
 
-  // IKPM Portal security rules.
-  // Permissions are data: each staff profile (users/{uid}) names a role, and roles/{roleId}
-  // gives every module an access level ('none' | 'view' | 'edit'). The super admin edits roles on
-  // the Team & Access page; these rules read the same documents, so the server enforces exactly
-  // what the portal shows. Records are also scoped to their owner / team unless the person has
-  // company-wide data access. Mirrors src/lib/permissions.ts.
-  //
-  // Deploy with:  npx firebase-tools deploy --only firestore
-  service cloud.firestore {
-    match /databases/{database}/documents {
+// IKPM Portal security rules.
+// Permissions are data: each staff profile (users/{uid}) names a role, and roles/{roleId} gives every
+// module an access level ('none' | 'view' | 'edit'). The super admin edits roles (and per-person access
+// profiles) on the Team & Access page; these rules read the same documents, so the server enforces
+// exactly what the portal shows. Records are also scoped to their owner / team unless the person has
+// company-wide data access. Mirrors src/lib/permissions.ts.
+//
+// PERFORMANCE: Firestore evaluates at most 1000 expressions per request and refuses the request when
+// that budget runs out. Every rule therefore reads the caller ONCE through who() and passes that map
+// ("w") to the small helpers below, instead of re-reading the profile / role document and rebuilding
+// the default-permission table for every check.
+//
+// Deploy with:  npx firebase-tools deploy --only firestore
+service cloud.firestore {
+  match /databases/{database}/documents {
 
-      // ---------- Identity ----------
-      function signedIn() {
-        return request.auth != null;
-      }
+    // ---------- Who is calling (read once per request) ----------
+    function profilePath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
 
-      function profilePath() {
-        return /databases/$(database)/documents/users/$(request.auth.uid);
-      }
+    function signedIn() {
+      return request.auth != null;
+    }
 
-      function me() {
-        return get(profilePath()).data;
-      }
+    // { active, role, rk (role key, old ids mapped), base (built-in role it is based on), mods, scope, team }
+    function who() {
+      let ok = request.auth != null && exists(profilePath());
+      let p = ok ? get(profilePath()).data : {};
+      let r = p.get('role', '');
+      let rk = r == 'operations_coordinator' ? 'team_leader' : (r == 'operations_manager' ? 'operations' : r);
+      let rp = /databases/$(database)/documents/roles/$(rk == '' ? '_none' : rk);
+      let rd = ok && rk != '' && exists(rp) ? get(rp).data : {};
+      return {
+        'active': ok && p.get('isActive', false) == true,
+        'role': r,
+        'rk': rk,
+        'base': rd.get('basedOn', rk),
+        'mods': rd.get('modules', {}),
+        'hasDoc': 'modules' in rd,
+        'scope': p.get('dataScope', 'own'),
+        'team': p.get('teamId', '__no_team__')
+      };
+    }
 
-      function active() {
-        return signedIn() && exists(profilePath()) && me().get('isActive', false) == true;
-      }
+    // Built-in default levels (mirror DEFAULT_ROLES in src/lib/permissions.ts). Used only for a module
+    // the saved role document doesn't list, exactly as the portal merges them.
+    function defaultModulesFor(r) {
+      return r == 'admin'
+        ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
+          'contracts':'edit','files':'edit','documents':'edit','company_files':'edit','calendar':'edit',
+          'jobs':'edit','pco':'edit','complaints':'edit','challans':'edit','attendance':'edit',
+          'hr':'edit','team':'edit','payroll':'view','search':'edit','invoices':'view','settings':'view','approvals':'view','roles':'view'}
+        : r == 'sales'
+        ? {'dashboard':'edit','customers':'edit','crm':'edit','proposals':'edit','contracts':'edit',
+          'pco':'edit','files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
+        : (r == 'operations' || r == 'operations_manager')
+        ? {'dashboard':'edit','customers':'edit','inspections':'edit','contracts':'edit','calendar':'edit',
+          'jobs':'edit','pco':'edit','files':'edit','complaints':'edit','challans':'edit','attendance':'edit',
+          'search':'edit','crm':'view','proposals':'view','documents':'view','company_files':'view','hr':'view'}
+        : (r == 'team_leader' || r == 'operations_coordinator')
+        ? {'dashboard':'edit','inspections':'edit','jobs':'edit','pco':'edit','complaints':'edit',
+          'challans':'edit','attendance':'edit','search':'edit','calendar':'edit','company_files':'view'}
+        : r == 'technician'
+        ? {'dashboard':'view','jobs':'view','pco':'edit','attendance':'view'}
+        : r == 'finance'
+        ? {'dashboard':'view','invoices':'edit','tax':'view','payroll':'edit',
+          'challans':'view','search':'edit','documents':'view','contracts':'view','customers':'view','complaints':'view','jobs':'view'}
+        : r == 'auditor'
+        ? {'dashboard':'view','audit_logs':'view','complaints':'view'}
+        : r == 'hr'
+        ? {'dashboard':'view','hr':'edit','attendance':'view','payroll':'view',
+          'team':'view','documents':'view','search':'view'}
+        : r == 'management'
+        ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
+          'contracts':'edit','files':'edit','documents':'edit','company_files':'edit','calendar':'edit',
+          'jobs':'edit','pco':'edit','complaints':'edit','settings':'view','approvals':'edit'}
+        : {};
+    }
 
-      function role() {
-        return me().role;
-      }
+    // Access level for a module: the saved role document's level, else the built-in default
+    function lvl(w, m) {
+      return m in w.mods ? w.mods[m] : defaultModulesFor(w.rk).get(m, 'none');
+    }
 
-      function isSuperAdmin() {
-        return active() && role() == 'super_admin';
-      }
+    function isSA(w) {
+      return w.active && w.role == 'super_admin';
+    }
 
-      // ---------- Role-based module access ----------
-      // Hard-coded fallback module maps that mirror DEFAULT_ROLES in src/lib/permissions.ts.
-      // Used when a built-in role's Firestore document hasn't been seeded yet (e.g. team_leader
-      // was added after initial seeding). Keep in sync with permissions.ts whenever roles change.
-      function defaultModulesFor(r) {
-        return r == 'admin'
-          ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
-            'contracts':'edit','files':'edit','documents':'edit','company_files':'edit','calendar':'edit',
-            'jobs':'edit','pco':'edit','complaints':'edit','challans':'edit','attendance':'edit',
-            'hr':'edit','team':'edit','payroll':'view','search':'edit','invoices':'view','settings':'view','approvals':'view','roles':'view'}
-          : r == 'sales'
-          ? {'dashboard':'edit','customers':'edit','crm':'edit','proposals':'edit','contracts':'edit',
-            'pco':'edit','files':'edit','complaints':'edit','documents':'view','company_files':'view','approvals':'view'}
-          : (r == 'operations' || r == 'operations_manager')
-          ? {'dashboard':'edit','customers':'edit','inspections':'edit','contracts':'edit','calendar':'edit',
-            'jobs':'edit','pco':'edit','files':'edit','complaints':'edit','challans':'edit','attendance':'edit',
-            'search':'edit','proposals':'view','documents':'view','company_files':'view','hr':'view'}
-          : (r == 'team_leader' || r == 'operations_coordinator')
-          ? {'dashboard':'edit','inspections':'edit','jobs':'edit','pco':'edit','files':'edit','complaints':'edit',
-            'challans':'edit','attendance':'edit','search':'edit','customers':'view','contracts':'edit','calendar':'edit','company_files':'view','hr':'view'}
-          : r == 'technician'
-          ? {'dashboard':'view','jobs':'view','pco':'edit','attendance':'view'}
-          : r == 'finance'
-          ? {'dashboard':'view','invoices':'edit','tax':'view','payroll':'edit',
-            'challans':'view','search':'edit','documents':'view','contracts':'view','customers':'view','complaints':'view','jobs':'view'}
-          : r == 'auditor'
-          ? {'dashboard':'view','audit_logs':'view','complaints':'view'}
-          : r == 'hr'
-          ? {'dashboard':'view','hr':'edit','attendance':'view','payroll':'view',
-            'team':'view','documents':'view','search':'view'}
-          : r == 'management'
-          ? {'dashboard':'edit','customers':'edit','crm':'edit','inspections':'edit','proposals':'edit',
-            'contracts':'edit','files':'edit','documents':'edit','company_files':'edit','calendar':'edit',
-            'jobs':'edit','pco':'edit','complaints':'edit','settings':'view','approvals':'edit'}
-          : {};
-      }
+    function canV(w, m) {
+      return isSA(w) || (w.active && lvl(w, m) in ['view', 'edit']);
+    }
 
-      function roleModules() {
-        let rolePath = /databases/$(database)/documents/roles/$(role());
-        // If the role document exists, use its modules (fallback to hardcoded defaults if the
-        // modules field itself is missing). If the document doesn't exist yet, use the hardcoded
-        // defaults so built-in roles work before backfillRoleModules() seeds them.
-        return exists(rolePath)
-          ? get(rolePath).data.get('modules', defaultModulesFor(role()))
-          : defaultModulesFor(role());
-      }
+    function canE(w, m) {
+      return isSA(w) || (w.active && lvl(w, m) == 'edit');
+    }
 
-      // A module the saved role document doesn't list falls back to the built-in default, exactly as
-      // the portal does (setRoleDefinitions merges defaults under the saved levels). Without this, an
-      // old role document made the portal show a button that the server then refused.
-      function access(module) {
-        return roleModules().get(module, defaultModulesFor(role()).get(module, 'none'));
-      }
+    // Built-in role checks go by the role a role is based on (custom and personal roles included)
+    function isSupervisor(w) {
+      return w.active && (w.rk == 'team_leader' || w.base == 'team_leader');
+    }
 
-      // Role documents saved before a module existed have no entry for it: fall back to the access
-      // that guarded the same records before (company files were under 'documents').
-      function companyFilesAccess() {
-        return roleModules().get('company_files', roleModules().get('documents', 'none'));
-      }
+    function isOpsManager(w) {
+      return w.active && (w.rk == 'operations' || w.base == 'operations');
+    }
 
-      function canViewCompanyFiles() {
-        return isSuperAdmin() || (active() && companyFilesAccess() in ['view', 'edit']);
-      }
+    function isBase(w, b) {
+      return w.active && (w.rk == b || w.base == b);
+    }
 
-      function canEditCompanyFiles() {
-        return isSuperAdmin() || (active() && companyFilesAccess() == 'edit');
-      }
+    // ---------- Record scope ----------
+    // The Operations Manager oversees all operations work, so the role always has company-wide access.
+    function seesAll(w) {
+      return isSA(w) || (w.active && (w.scope == 'company' || isOpsManager(w)));
+    }
 
-      // Wording templates: the 'templates' module (management gets edit until its role is saved)
-      function canEditWordingTemplates() {
-        return isSuperAdmin()
-          || (active() && roleModules().get('templates', role() == 'management' ? 'edit' : 'none') == 'edit');
-      }
+    // Direct field reads (data.ownerUid, data.teamId) so list queries filtered on them can be proven
+    function inScope(w, data) {
+      return seesAll(w)
+        || data.ownerUid == request.auth.uid
+        || (w.scope == 'team' && data.teamId == w.team);
+    }
 
-      function canView(module) {
-        return isSuperAdmin() || (active() && access(module) in ['view', 'edit']);
-      }
+    function ownsNew(w) {
+      return seesAll(w) || request.resource.data.get('ownerUid', '') == request.auth.uid;
+    }
 
-      function canEdit(module) {
-        return isSuperAdmin() || (active() && access(module) == 'edit');
-      }
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
 
-      // ---------- Record scope ----------
-      function seesAll() {
-        return isSuperAdmin() || (active() && me().get('dataScope', 'own') == 'company');
-      }
+    function keepsOwner(w) {
+      return seesAll(w) || !changed().hasAny(['ownerUid', 'teamId']);
+    }
 
-      function myTeam() {
-        return me().get('teamId', '__no_team__');
-      }
+    // ---------- Virtual folders (src/lib/folders.ts) ----------
+    // Records carry ownerScope ('company' = IKPM's own, 'client') and clientId. Once set they never
+    // change, except when a lead becomes a customer: its records move from clientId = lead id to the
+    // customer account the lead now points at (leads/{id}.existingCustomerId).
+    function leadConversion() {
+      return resource.data.get('ownerScope', '') == 'client'
+        && request.resource.data.get('ownerScope', '') == 'client'
+        && exists(/databases/$(database)/documents/leads/$(resource.data.clientId))
+        && get(/databases/$(database)/documents/leads/$(resource.data.clientId)).data.get('existingCustomerId', '') == request.resource.data.get('clientId', '');
+    }
 
-      function inScope(data) {
-        return seesAll()
-          || data.ownerUid == request.auth.uid
-          || (me().get('dataScope', 'own') == 'team' && data.teamId == myTeam());
-      }
+    function folderOwnerKept() {
+      return (!('ownerScope' in resource.data) || request.resource.data.get('ownerScope', null) == resource.data.ownerScope)
+        && (!('clientId' in resource.data) || request.resource.data.get('clientId', null) == resource.data.clientId || leadConversion());
+    }
 
-      function ownsNew() {
-        return seesAll() || request.resource.data.get('ownerUid', '') == request.auth.uid;
-      }
+    // Folder fields only: filing an unfiled record, or the lead → customer move
+    function filingOnly(w) {
+      return w.active
+        && changed().hasOnly(['ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory', 'folderMovedFrom', 'updatedAt'])
+        && (!('folderPath' in resource.data) || leadConversion())
+        && folderOwnerKept();
+    }
 
-      function keepsOwner() {
-        return seesAll() || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerUid', 'teamId']);
-      }
+    // Standard business collection guarded by one module
+    function readMod(w, m) {
+      return canV(w, m) && inScope(w, resource.data);
+    }
 
-      // Standard business collection guarded by one module
-      function readMod(module) {
-        return canView(module) && inScope(resource.data);
-      }
+    function createMod(w, m) {
+      return canE(w, m) && ownsNew(w);
+    }
 
-      function createMod(module) {
-        return canEdit(module) && ownsNew();
-      }
+    function updateMod(w, m) {
+      return canE(w, m) && inScope(w, resource.data) && keepsOwner(w) && folderOwnerKept();
+    }
 
-      function updateMod(module) {
-        return canEdit(module) && inScope(resource.data) && keepsOwner() && folderOwnerKept();
-      }
+    // ---------- System bootstrap ----------
+    match /system_config/{configId} {
+      allow read: if true;
+      allow create: if configId == 'initialization'
+        && signedIn()
+        && !exists(/databases/$(database)/documents/system_config/initialization)
+        && request.resource.data.superAdminUid == request.auth.uid
+        && get(profilePath()).data.role == 'super_admin';
+      // Company letterhead (name, NTN, bank details, logo) used on generated documents
+      allow create: if (configId == 'company_profile' || configId == 'document_templates') && isSA(who());
+      allow update, delete: if isSA(who());
+    }
 
-      // ---------- Virtual folders (src/lib/folders.ts) ----------
-      // Records carry ownerScope ('company' = IKPM's own, 'client') and clientId. Once set they never
-      // change, except when a lead becomes a customer: its records move from clientId = lead id to the
-      // customer account the lead now points at (leads/{id}.existingCustomerId).
-      function leadConversion() {
-        return resource.data.get('ownerScope', '') == 'client'
-          && exists(/databases/$(database)/documents/leads/$(resource.data.clientId))
-          && get(/databases/$(database)/documents/leads/$(resource.data.clientId)).data.get('existingCustomerId', '') == request.resource.data.get('clientId', '')
-          && request.resource.data.get('ownerScope', '') == 'client';
-      }
+    // ---------- Document templates: every save is a new version, never overwritten ----------
+    // Wording (cover letter, scope, SOP): super admin + 'templates' edit. Commercial / legal: super admin.
+    function templateCreate(w, vid) {
+      return w.active
+        && request.resource.data.savedByUid == request.auth.uid
+        && vid == request.resource.data.kind + '_v' + string(request.resource.data.version)
+        && (
+          (request.resource.data.kind == 'wording'
+            && (isSA(w) || w.mods.get('templates', w.rk == 'management' ? 'edit' : 'none') == 'edit')
+            && request.resource.data.data.keys().hasOnly(['coverLetter', 'scopeSections', 'sopSections']))
+          || (request.resource.data.kind == 'commercial' && isSA(w))
+        );
+    }
 
-      function folderOwnerKept() {
-        return (
-            !('ownerScope' in resource.data)
-            || request.resource.data.get('ownerScope', null) == resource.data.ownerScope
-          ) && (
-            !('clientId' in resource.data)
-            || request.resource.data.get('clientId', null) == resource.data.clientId
-            || leadConversion()
-          );
-      }
+    match /template_versions/{vid} {
+      allow read: if who().active;
+      allow create: if templateCreate(who(), vid);
+      allow update, delete: if false;
+    }
 
-      // Folder fields only: filing an unfiled record, or the lead → customer move
-      function onlyFolderFields() {
-        return request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory', 'folderMovedFrom', 'updatedAt']);
-      }
+    // ---------- Roles (customizable permissions + personal access profiles) ----------
+    match /roles/{roleId} {
+      allow read: if signedIn();
+      // Super admin, or a role granted "Customize roles". Nobody but the super admin can touch super_admin.
+      allow write: if isSA(who()) || (roleId != 'super_admin' && canE(who(), 'roles'));
+    }
 
-      function filingOnly() {
-        return active() && onlyFolderFields()
-          && (!('folderPath' in resource.data) || leadConversion())
-          && folderOwnerKept();
-      }
-
-      // ---------- System bootstrap ----------
-      match /system_config/{configId} {
-        allow read: if true;
-        allow create: if configId == 'initialization'
-          && signedIn()
+    // ---------- Staff accounts & teams ----------
+    function userCreate(w, userId) {
+      return isSA(w)
+        || (canE(w, 'team') && request.resource.data.role != 'super_admin')
+        || (
+          // First super admin bootstrap (only before initialization)
+          signedIn() && request.auth.uid == userId
+          && request.resource.data.role == 'super_admin'
           && !exists(/databases/$(database)/documents/system_config/initialization)
-          && request.resource.data.superAdminUid == request.auth.uid
-          && get(profilePath()).data.role == 'super_admin';
-        // Company letterhead (name, NTN, bank details, logo) used on generated documents
-        allow create: if (configId == 'company_profile' || configId == 'document_templates') && isSuperAdmin();
-        allow update, delete: if isSuperAdmin();
-      }
-
-      // ---------- Document templates: every save is a new version, never overwritten ----------
-      // Wording (cover letter, scope, SOP): super admin + 'templates' edit. Commercial / legal: super admin.
-      match /template_versions/{versionId} {
-        allow read: if active();
-        allow create: if active()
-          && request.resource.data.savedByUid == request.auth.uid
-          && versionId == request.resource.data.kind + '_v' + string(request.resource.data.version)
-          && (
-            (request.resource.data.kind == 'wording' && canEditWordingTemplates()
-              && request.resource.data.data.keys().hasOnly(['coverLetter', 'scopeSections', 'sopSections']))
-            || (request.resource.data.kind == 'commercial' && isSuperAdmin())
-          );
-        allow update, delete: if false;
-      }
-
-      // ---------- Roles (customizable permissions) ----------
-      match /roles/{roleId} {
-        allow read: if signedIn();
-        // Super admin, or a role granted "Customize roles". Nobody but the super admin can touch super_admin.
-        allow write: if isSuperAdmin() || (roleId != 'super_admin' && canEdit('roles'));
-      }
-
-      // ---------- Staff accounts & teams ----------
-      match /users/{userId} {
-        allow read: if active() || (signedIn() && request.auth.uid == userId);
-        allow create: if isSuperAdmin()
-          || (canEdit('team') && request.resource.data.role != 'super_admin')
-          || (
-            // First super admin bootstrap (only before initialization)
-            signedIn() && request.auth.uid == userId
-            && request.resource.data.role == 'super_admin'
-            && !exists(/databases/$(database)/documents/system_config/initialization)
-          );
-        allow update: if isSuperAdmin()
-          || (
-            // Staff managers can edit other non-super-admin people, never promote to super admin
-            canEdit('team') && userId != request.auth.uid
-            && resource.data.role != 'super_admin' && request.resource.data.role != 'super_admin'
-          )
-          || (
-            // Anyone may edit their own name / phone / last login, never their access
-            signedIn() && request.auth.uid == userId
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-              ['role', 'dataScope', 'isActive', 'teamId', 'teamName', 'businessEmail', 'email'])
-          );
-        allow delete: if isSuperAdmin();
-      }
-
-      match /teams/{teamId} {
-        allow read: if active();
-        allow write: if canEdit('team');
-      }
-
-      // ---------- Customers ----------
-      match /companies/{id} {
-        allow read: if readMod('customers');
-        allow create: if createMod('customers');
-        allow update: if updateMod('customers');
-        allow delete: if isSuperAdmin();
-      }
-
-      match /branches/{id} {
-        allow read: if readMod('customers');
-        allow create: if createMod('customers');
-        allow update: if updateMod('customers');
-        allow delete: if isSuperAdmin();
-      }
-
-      match /clients/{id} {
-        allow read: if readMod('customers');
-        allow create: if createMod('customers');
-        allow update: if updateMod('customers');
-        allow delete: if isSuperAdmin();
-      }
-
-      match /sites/{id} {
-        allow read: if readMod('customers');
-        allow create: if createMod('customers');
-        allow update: if updateMod('customers');
-        allow delete: if isSuperAdmin();
-      }
-
-      // ---------- Sales pipeline ----------
-      function assignedInspector() {
-        return request.auth.uid in resource.data.inspectorIds;
-      }
-
-      match /leads/{id} {
-        // crm readers, inspectors on the lead, pco viewers (operations), and site inspection team may read leads.
-        allow read: if readMod('crm')
-          || (canView('inspections') && assignedInspector())
-          || (canView('pco') && inScope(resource.data))
-          || (canView('inspections')
-              && (request.auth.uid == resource.data.get('siteInspection', {}).get('teamLeaderId', '')
-                  || request.auth.uid in resource.data.get('siteInspection', {}).get('assignedTechIds', [])));
-        allow create: if createMod('crm');
-        // Assigned inspectors may record findings, but not reassign the lead or change its contacts.
-        // Operation coordinators (pco: view + inspections: edit) may update meeting/team-assignment and site-inspection fields.
-        // Site inspection team members may record site inspection findings only.
-        allow update: if updateMod('crm')
-          || (canEdit('inspections') && assignedInspector()
-              && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-                ['ownerUid', 'teamId', 'inspectorIds', 'contacts', 'companyName', 'title', 'customerType', 'existingCustomerId']))
-          || (canView('pco') && canEdit('inspections') && inScope(resource.data)
-              && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['inspection', 'inspectorIds', 'assignedTeamLeaderId', 'assignedTeamLeaderName',
-                           'stage', 'activities', 'updatedAt', 'siteInspection']))
-          || (canEdit('inspections')
-              && (request.auth.uid == resource.data.get('siteInspection', {}).get('teamLeaderId', '')
-                  || request.auth.uid in resource.data.get('siteInspection', {}).get('assignedTechIds', []))
-              && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['siteInspection', 'activities', 'updatedAt', 'stage']));
-        allow delete: if isSuperAdmin();
-      }
-
-      match /proposals/{id} {
-        allow read: if readMod('proposals');
-        allow create: if createMod('proposals');
-        allow update: if updateMod('proposals') || (canEdit('proposals') && filingOnly());
-        allow delete: if isSuperAdmin();
-      }
-
-      match /contracts/{id} {
-        // Assigned team leaders may read their own contracts even if company scope is restricted
-        allow read: if readMod('contracts')
-          || (canView('pco') && resource.data.get('assignedTeamLeaderId', '') == request.auth.uid);
-        allow create: if createMod('contracts');
-        allow update: if updateMod('contracts')
-          || (canEdit('contracts') && filingOnly())
-          // Schedule generator / dispatch: job counters and TL / ops-manager assignment only,
-          // without needing company-wide data scope.
-          || ((canEdit('contracts') || canEdit('jobs')) && keepsOwner() && folderOwnerKept()
-              && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['totalJobsScheduled', 'totalJobsCompleted',
-                           'assignedTeamLeaderId', 'assignedTeamLeaderName',
-                           'assignedOperationsManagerId', 'assignedOperationsManagerName',
-                           'isRenewalInitiated', 'renewalAlertDate', 'updatedAt']));
-        allow delete: if isSuperAdmin();
-      }
-
-      // ---------- Field operations ----------
-      // The Team Leader on a job (assignedTeamLeaderId, also listed in assignedTechnicianIds) runs it
-      // in the field and submits the report. PCOs have no login; they are HR employee ids on the job.
-      function onMyJob() {
-        return request.auth.uid in resource.data.get('assignedTechnicianIds', [])
-          || resource.data.get('assignedTeamLeaderId', '') == request.auth.uid
-          // Older jobs named the field lead only here
-          || resource.data.get('leadPcoId', '') == request.auth.uid;
-      }
-
-      // Field steps: starting a visit (scheduled → in progress) and closing it out (in progress →
-      // completed). Only the Supervisor on the job does these. QC sending a completed report back
-      // (completed → in progress) is not a field step, so the Operations Manager can still do it.
-      function isFieldStep() {
-        return request.resource.data.get('status', '') != resource.data.get('status', '')
-          && resource.data.get('status', '') in ['scheduled', 'en_route', 'in_progress']
-          && request.resource.data.get('status', '') in ['in_progress', 'completed'];
-      }
-
-      match /service_jobs/{id} {
-        allow read: if readMod('jobs') || (canView('pco') && onMyJob());
-        // Contracts generate their visit schedule, so contract editors may create jobs too
-        allow create: if (canEdit('jobs') || canEdit('contracts')) && ownsNew();
-        allow update: if (!isFieldStep() || onMyJob()) && (
-          updateMod('jobs')
-          || ((canEdit('jobs') || canEdit('contracts')) && filingOnly())
-          || ((canEdit('pco') || canEdit('jobs')) && onMyJob()
-              && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-                ['ownerUid', 'teamId', 'assignedTechnicianIds', 'assignedTeamLeaderId', 'customerId', 'contractId',
-                'ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory'])));
-        allow delete: if isSuperAdmin();
-      }
-
-      // Device register (Step 12): customer editors and dispatch maintain it; the field app reads it.
-      // Devices are retired (status), never deleted, so monitoring history keeps its references.
-      match /devices/{id} {
-        allow read: if canView('customers') || canView('jobs') || canView('pco');
-        allow create, update: if canEdit('customers') || canEdit('jobs');
-        allow delete: if isSuperAdmin();
-      }
-
-      // Monitoring sheets (Step 13): one record per device per visit, written by the PCO on the job
-      // (also offline: the write syncs later) or by dispatch.
-      match /monitoring_records/{id} {
-        allow read: if canView('customers') || canView('jobs') || canView('pco');
-        allow create, update: if (canEdit('pco') || canEdit('jobs'))
-          && request.resource.data.recordedByUid == request.auth.uid
-          && id == request.resource.data.jobId + '_' + request.resource.data.deviceId;
-        allow delete: if isSuperAdmin();
-      }
-
-      // ---------- Finance ----------
-      match /invoices/{id} {
-        allow read: if canView('invoices');
-        allow create: if canEdit('invoices') || role() == 'admin';
-        // Posted invoices are immutable except for a credit-note reversal or recording payment settlement
-        allow update: if (canEdit('invoices') || role() == 'admin') && folderOwnerKept() && (
-          resource.data.get('isPosted', false) != true
-            || (request.resource.data.status == 'void_reversed'
-                && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerScope', 'clientId', 'folderPath', 'fileCategory']))
-            || (request.resource.data.status in ['paid', 'partially_paid', 'posted', 'issued', 'sent']
-                && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ownerScope', 'clientId', 'folderPath', 'fileCategory', 'lineItems', 'subtotal', 'grossPayable', 'taxTotal', 'invoiceNumber', 'customerId']))
         );
-        allow delete: if false;
-      }
+    }
 
-      match /payments/{id} {
-        allow read: if canView('invoices');
-        allow create: if canEdit('invoices') || role() == 'admin';
-        // Receipts never change, apart from being filed into their client's folder
-        allow update: if canEdit('invoices') && filingOnly();
-        allow delete: if false;
-      }
+    function userUpdate(w, userId) {
+      return isSA(w)
+        // Staff managers can edit other non-super-admin people, never promote to super admin
+        || (canE(w, 'team') && userId != request.auth.uid
+            && resource.data.role != 'super_admin' && request.resource.data.role != 'super_admin')
+        // Anyone may edit their own name / phone / last login, never their access
+        || (signedIn() && request.auth.uid == userId
+            && !changed().hasAny(['role', 'dataScope', 'isActive', 'teamId', 'teamName', 'businessEmail', 'email']));
+    }
 
-      match /tax_rules/{id} {
-        allow read: if active();
-        allow write: if canEdit('tax');
-      }
+    match /users/{userId} {
+      allow read: if (signedIn() && request.auth.uid == userId) || who().active;
+      allow create: if userCreate(who(), userId);
+      allow update: if userUpdate(who(), userId);
+      allow delete: if isSA(who());
+    }
 
-      // ---------- Documents (files live in Cloudinary) ----------
-      // Company (IKPM) files are exactly the documents owned by the library (owner.kind == 'library',
-      // ownerScope 'company'); every other owner kind is a client file. Queries filter on owner.kind,
-      // so these rules can be proven for them (see dataService.queriesFor).
-      function clientOwnerKinds() {
-        return ['company', 'client', 'branch', 'lead', 'proposal', 'job'];
-      }
+    match /teams/{teamId} {
+      allow read: if who().active;
+      allow write: if canE(who(), 'team');
+    }
 
-      // Old records may have no owner at all; they were client files guarded by 'files' + scope
-      function ownerKind(d) {
-        return d.get('owner', {}).get('kind', 'legacy');
-      }
+    // ---------- Customers ----------
+    match /companies/{id} {
+      allow read: if readMod(who(), 'customers');
+      allow create: if createMod(who(), 'customers');
+      allow update: if updateMod(who(), 'customers');
+      allow delete: if isSA(who());
+    }
 
-      function isClientKind(d) {
-        return ownerKind(d) in clientOwnerKinds() || ownerKind(d) == 'legacy';
-      }
+    match /branches/{id} {
+      allow read: if readMod(who(), 'customers');
+      allow create: if createMod(who(), 'customers');
+      allow update: if updateMod(who(), 'customers');
+      allow delete: if isSA(who());
+    }
 
-      function scopeMatchesOwner(d) {
-        return (ownerKind(d) == 'library' && d.get('ownerScope', 'company') == 'company')
-          || (isClientKind(d) && d.get('ownerScope', 'client') == 'client');
-      }
+    match /clients/{id} {
+      allow read: if readMod(who(), 'customers');
+      allow create: if createMod(who(), 'customers');
+      allow update: if updateMod(who(), 'customers');
+      allow delete: if isSA(who());
+    }
 
-      match /documents/{id} {
-        allow read: if (ownerKind(resource.data) == 'library' && canViewCompanyFiles())
-          || (isClientKind(resource.data) && canView('files') && inScope(resource.data))
-          || (isClientKind(resource.data) && active() && resource.data.get('ownerUid', '') == request.auth.uid);
-        allow create: if active()
-          && request.resource.data.get('ownerUid', '') == request.auth.uid
-          && 'owner' in request.resource.data
-          && scopeMatchesOwner(request.resource.data)
-          && (
-            (request.resource.data.owner.kind == 'library' && canEditCompanyFiles())
-            || (request.resource.data.owner.kind in clientOwnerKinds()
-                && (canEdit('files') || canEdit('pco') || canEdit('proposals') || canEdit('crm') || canEdit('inspections')))
-          );
-        allow update: if keepsOwner()
-          && folderOwnerKept()
-          && scopeMatchesOwner(request.resource.data)
-          && (
-            (ownerKind(resource.data) == 'library' && ownerKind(request.resource.data) == 'library' && canEditCompanyFiles())
-            || (isClientKind(resource.data) && isClientKind(request.resource.data)
-                && canEdit('files') && inScope(resource.data))
-            || (isClientKind(resource.data) && filingOnly())
-          );
-        allow delete: if isSuperAdmin();
-      }
+    match /sites/{id} {
+      allow read: if readMod(who(), 'customers');
+      allow create: if createMod(who(), 'customers');
+      allow update: if updateMod(who(), 'customers');
+      allow delete: if isSA(who());
+    }
 
-      // Packs list document ids only (no file content); everyone sending documents reads them.
-      match /document_packs/{id} {
-        allow read: if active();
-        allow create: if (request.resource.data.get('ownerScope', 'company') == 'company' && canEditCompanyFiles())
-          || (request.resource.data.get('ownerScope', 'company') == 'client' && canEdit('files'));
-        allow update: if folderOwnerKept() && (
-          (resource.data.get('ownerScope', 'company') == 'company' && canEditCompanyFiles())
-          || (resource.data.get('ownerScope', 'company') == 'client' && canEdit('files'))
-          || filingOnly()
+    // ---------- Sales pipeline ----------
+    // "Assigned to me" checks read fields directly so the matching list queries can be proven
+    // (inspectorIds array-contains / assignedTeamLeaderId == / siteInspection.teamLeaderId ==).
+    function leadAssignedToMe() {
+      return request.auth.uid in resource.data.inspectorIds
+        || resource.data.assignedTeamLeaderId == request.auth.uid
+        || resource.data.siteInspection.teamLeaderId == request.auth.uid
+        || request.auth.uid in resource.data.siteInspection.assignedTechIds;
+    }
+
+    function leadRead(w) {
+      return readMod(w, 'crm')
+        || isOpsManager(w)
+        || (canV(w, 'pco') && inScope(w, resource.data))
+        || ((canV(w, 'inspections') || canV(w, 'pco') || isSupervisor(w)) && leadAssignedToMe());
+    }
+
+    // Meeting / inspection fields: what assigning, scheduling and reporting a visit may change
+    function meetingFieldsOnly() {
+      return changed().hasOnly(['inspection', 'inspectorIds', 'assignedTeamLeaderId', 'assignedTeamLeaderName',
+        'stage', 'activities', 'updatedAt', 'siteInspection', 'branches', 'pestIssues', 'stuckAt', 'stuckAtDate',
+        // recalculated on every save (same phone / email as another lead)
+        'duplicateWarning']);
+    }
+
+    function leadUpdate(w) {
+      return updateMod(w, 'crm')
+        // Assigned inspectors record findings, but can't reassign the lead or change its contacts
+        || (canE(w, 'inspections') && request.auth.uid in resource.data.get('inspectorIds', [])
+            && !changed().hasAny(['ownerUid', 'teamId', 'inspectorIds', 'contacts', 'companyName', 'title', 'customerType', 'existingCustomerId']))
+        // Operations Manager (or anyone with field + inspection / dispatch access): assign and schedule
+        // meetings and site inspections on any lead, meeting fields only
+        || ((isOpsManager(w) || (canV(w, 'pco') && canE(w, 'inspections')) || canE(w, 'jobs')) && meetingFieldsOnly())
+        // Site inspection team: findings only
+        || ((canE(w, 'inspections') || isSupervisor(w))
+            && (request.auth.uid == resource.data.get('siteInspection', {}).get('teamLeaderId', '')
+                || request.auth.uid in resource.data.get('siteInspection', {}).get('assignedTechIds', []))
+            && changed().hasOnly(['siteInspection', 'activities', 'updatedAt', 'stage', 'pestIssues', 'branches', 'duplicateWarning']));
+    }
+
+    match /leads/{id} {
+      allow read: if leadRead(who());
+      allow create: if createMod(who(), 'crm');
+      allow update: if leadUpdate(who());
+      allow delete: if isSA(who());
+    }
+
+    match /proposals/{id} {
+      allow read: if readMod(who(), 'proposals');
+      allow create: if createMod(who(), 'proposals');
+      allow update: if updateMod(who(), 'proposals') || (canE(who(), 'proposals') && filingOnly(who()));
+      allow delete: if isSA(who());
+    }
+
+    function contractUpdate(w) {
+      return updateMod(w, 'contracts')
+        || (canE(w, 'contracts') && filingOnly(w))
+        // Schedule generator / dispatch: job counters and Supervisor / Ops Manager assignment only
+        || ((canE(w, 'contracts') || canE(w, 'jobs') || isOpsManager(w)) && keepsOwner(w) && folderOwnerKept()
+            && changed().hasOnly(['totalJobsScheduled', 'totalJobsCompleted',
+                                  'assignedTeamLeaderId', 'assignedTeamLeaderName',
+                                  'assignedOperationsManagerId', 'assignedOperationsManagerName', 'assignedAt',
+                                  'isRenewalInitiated', 'renewalAlertDate', 'updatedAt']))
+        // Supervisor closing a visit: only the completed-visit counter changes
+        || (isSupervisor(w) && changed().hasOnly(['totalJobsCompleted', 'updatedAt']));
+    }
+
+    match /contracts/{id} {
+      // Assigned Supervisors may read their own contracts even if company scope is restricted
+      allow read: if readMod(who(), 'contracts')
+        || ((canV(who(), 'pco') || isSupervisor(who())) && resource.data.assignedTeamLeaderId == request.auth.uid);
+      allow create: if createMod(who(), 'contracts');
+      allow update: if contractUpdate(who());
+      allow delete: if isSA(who());
+    }
+
+    // ---------- Field operations ----------
+    // The Supervisor on a job (assignedTeamLeaderId, also in assignedTechnicianIds) runs it in the field
+    // and submits the report. PCOs have no login; they are HR employee ids on the job.
+    // Older jobs stored the Supervisor's HR employee id (EMP-…, whose record points at their login uid).
+    function isMyEmployeeId(empId) {
+      return empId is string && empId.matches('^EMP-[A-Za-z0-9-]+$')
+        && exists(/databases/$(database)/documents/employees/$(empId))
+        && get(/databases/$(database)/documents/employees/$(empId)).data.get('uid', '') == request.auth.uid;
+    }
+
+    // Direct field reads first, so "my jobs" queries can be proven
+    function onMyJob() {
+      return request.auth.uid in resource.data.assignedTechnicianIds
+        || resource.data.assignedTeamLeaderId == request.auth.uid
+        || resource.data.leadPcoId == request.auth.uid
+        || isMyEmployeeId(resource.data.get('assignedTeamLeaderId', ''))
+        || isMyEmployeeId(resource.data.get('leadPcoId', ''));
+    }
+
+    // Field steps: starting a visit (scheduled → in progress) and closing it out (in progress → completed).
+    // QC sending a completed report back (completed → in progress) is not a field step.
+    function isFieldStep() {
+      return request.resource.data.get('status', '') != resource.data.get('status', '')
+        && resource.data.get('status', '') in ['scheduled', 'en_route', 'in_progress']
+        && request.resource.data.get('status', '') in ['in_progress', 'completed'];
+    }
+
+    function jobUpdate(w) {
+      // Field steps: the job's Supervisor, any Supervisor covering for them, or the CEO
+      return (!isFieldStep() || isSupervisor(w) || isSA(w) || onMyJob()) && (
+        updateMod(w, 'jobs')
+        || ((canE(w, 'jobs') || canE(w, 'contracts')) && filingOnly(w))
+        // The Supervisor on the job runs the visit, whatever their saved module levels; they can't
+        // reassign, refile or change the customer
+        // (a Supervisor may also cover a colleague's visit)
+        || ((isSupervisor(w) || ((canE(w, 'pco') || canE(w, 'jobs')) && onMyJob()))
+            && !changed().hasAny(['ownerUid', 'teamId', 'assignedTechnicianIds', 'assignedTeamLeaderId', 'customerId', 'contractId',
+                                  'ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory'])));
+    }
+
+    match /service_jobs/{id} {
+      allow read: if readMod(who(), 'jobs') || ((canV(who(), 'pco') || isSupervisor(who())) && onMyJob());
+      // Contracts generate their visit schedule, so contract editors may create jobs too
+      allow create: if (canE(who(), 'jobs') || canE(who(), 'contracts')) && ownsNew(who());
+      allow update: if jobUpdate(who());
+      allow delete: if isSA(who());
+    }
+
+    // Device register: customer editors and dispatch maintain it; the field app reads it.
+    match /devices/{id} {
+      allow read: if canV(who(), 'customers') || canV(who(), 'jobs') || canV(who(), 'pco');
+      allow create, update: if canE(who(), 'customers') || canE(who(), 'jobs');
+      allow delete: if isSA(who());
+    }
+
+    // Monitoring sheets: one record per device per visit, written on the job (also offline) or by dispatch.
+    match /monitoring_records/{id} {
+      allow read: if canV(who(), 'customers') || canV(who(), 'jobs') || canV(who(), 'pco');
+      allow create, update: if (canE(who(), 'pco') || canE(who(), 'jobs') || isSupervisor(who()))
+        && request.resource.data.recordedByUid == request.auth.uid
+        && id == request.resource.data.jobId + '_' + request.resource.data.deviceId;
+      allow delete: if isSA(who());
+    }
+
+    // ---------- Finance ----------
+    function invoiceUpdate(w) {
+      // Posted invoices are immutable except for a credit-note reversal or recording payment settlement
+      return (canE(w, 'invoices') || isBase(w, 'admin')) && folderOwnerKept() && (
+        resource.data.get('isPosted', false) != true
+          || (request.resource.data.status == 'void_reversed'
+              && !changed().hasAny(['ownerScope', 'clientId', 'folderPath', 'fileCategory']))
+          || (request.resource.data.status in ['paid', 'partially_paid', 'posted', 'issued', 'sent']
+              && !changed().hasAny(['ownerScope', 'clientId', 'folderPath', 'fileCategory', 'lineItems', 'subtotal',
+                                    'grossPayable', 'taxTotal', 'invoiceNumber', 'customerId']))
+      );
+    }
+
+    match /invoices/{id} {
+      allow read: if canV(who(), 'invoices');
+      allow create: if canE(who(), 'invoices') || isBase(who(), 'admin');
+      allow update: if invoiceUpdate(who());
+      allow delete: if false;
+    }
+
+    match /payments/{id} {
+      allow read: if canV(who(), 'invoices');
+      allow create: if canE(who(), 'invoices') || isBase(who(), 'admin');
+      // Receipts never change, apart from being filed into their client's folder
+      allow update: if canE(who(), 'invoices') && filingOnly(who());
+      allow delete: if false;
+    }
+
+    match /tax_rules/{id} {
+      allow read: if who().active;
+      allow write: if canE(who(), 'tax');
+    }
+
+    // ---------- Documents (files live in Cloudinary) ----------
+    // Company (IKPM) files are the documents owned by the library (owner.kind == 'library', ownerScope
+    // 'company'); every other owner kind is a client file. Queries filter on owner.kind.
+    function ownerKind(d) {
+      return d.get('owner', {}).get('kind', 'legacy');
+    }
+
+    function isClientKind(d) {
+      return ownerKind(d) in ['company', 'client', 'branch', 'lead', 'proposal', 'job', 'legacy'];
+    }
+
+    function scopeMatchesOwner(d) {
+      return (ownerKind(d) == 'library' && d.get('ownerScope', 'company') == 'company')
+        || (isClientKind(d) && d.get('ownerScope', 'client') == 'client');
+    }
+
+    // Role documents saved before company_files existed fall back to the old 'documents' level;
+    // a built-in role with no saved document uses its default
+    function companyFiles(w) {
+      return w.hasDoc
+        ? w.mods.get('company_files', w.mods.get('documents', 'none'))
+        : defaultModulesFor(w.rk).get('company_files', 'none');
+    }
+
+    function documentRead(w) {
+      return (ownerKind(resource.data) == 'library' && (isSA(w) || (w.active && companyFiles(w) in ['view', 'edit'])))
+        || (isClientKind(resource.data) && canV(w, 'files') && inScope(w, resource.data))
+        || (isClientKind(resource.data) && w.active && resource.data.ownerUid == request.auth.uid);
+    }
+
+    function documentCreate(w) {
+      return w.active
+        && request.resource.data.get('ownerUid', '') == request.auth.uid
+        && 'owner' in request.resource.data
+        && scopeMatchesOwner(request.resource.data)
+        && (
+          (request.resource.data.owner.kind == 'library' && (isSA(w) || companyFiles(w) == 'edit'))
+          || (isClientKind(request.resource.data) && request.resource.data.owner.kind != 'legacy'
+              // Finance files invoice / receipt PDFs; Supervisors file signed challans and photos
+              && (canE(w, 'files') || canE(w, 'pco') || canE(w, 'proposals') || canE(w, 'crm')
+                  || canE(w, 'inspections') || canE(w, 'invoices') || isSupervisor(w)))
         );
-        allow delete: if isSuperAdmin();
-      }
+    }
 
-      // ---------- Approvals ----------
-      // Managers (edit) see all; requesters (view) see only their own.
-      // Nobody can decide their own request.
-      match /approvals/{id} {
-        allow read: if active() && canView('approvals')
-          && (canEdit('approvals') || resource.data.ownerUid == request.auth.uid);
-        allow create: if active()
-          && request.resource.data.ownerUid == request.auth.uid;
-        allow update: if active() && canEdit('approvals')
-          && resource.data.ownerUid != request.auth.uid;
-        allow delete: if isSuperAdmin();
-      }
+    function documentUpdate(w) {
+      return keepsOwner(w) && folderOwnerKept() && scopeMatchesOwner(request.resource.data) && (
+        (ownerKind(resource.data) == 'library' && ownerKind(request.resource.data) == 'library' && (isSA(w) || companyFiles(w) == 'edit'))
+        || (isClientKind(resource.data) && isClientKind(request.resource.data) && canE(w, 'files') && inScope(w, resource.data))
+        // Re-submitting a visit report replaces the challan file the Supervisor uploaded
+        || (isClientKind(resource.data) && isClientKind(request.resource.data)
+            && isSupervisor(w) && resource.data.get('ownerUid', '') == request.auth.uid)
+        || (isClientKind(resource.data) && filingOnly(w))
+      );
+    }
 
-      // ---------- Complaints ----------
-      match /complaints/{id} {
-        allow read: if canView('complaints') && inScope(resource.data);
-        allow create: if canEdit('complaints') && ownsNew();
-        allow update: if canEdit('complaints') && inScope(resource.data) && keepsOwner();
-        allow delete: if isSuperAdmin();
-      }
+    match /documents/{id} {
+      allow read: if documentRead(who());
+      allow create: if documentCreate(who());
+      allow update: if documentUpdate(who());
+      allow delete: if isSA(who());
+    }
 
-      // ---------- Outreach & audit (append-only) ----------
-      match /outreach_logs/{id} {
-        allow read: if (canView('crm') || canView('proposals') || canView('documents')) && inScope(resource.data);
-        allow create: if active() && request.resource.data.sentBy == request.auth.token.email
-          && request.resource.data.get('ownerUid', '') == request.auth.uid;
-        // Messages never change, apart from being filed into (or moving with) their client's folder
-        allow update: if filingOnly();
-        allow delete: if false;
-      }
+    // Packs list document ids only (no file content); everyone sending documents reads them.
+    function packWrite(w, scope) {
+      return (scope == 'company' && (isSA(w) || companyFiles(w) == 'edit')) || (scope == 'client' && canE(w, 'files'));
+    }
 
-      // "Scan to verify" records behind document QR codes: anyone holding the link can read one,
-      // nobody can list them, and only active staff can write them
-      match /doc_verifications/{id} {
-        allow get: if true;
-        allow list: if false;
-        allow create, update: if active();
-        allow delete: if isSuperAdmin();
-      }
+    match /document_packs/{id} {
+      allow read: if who().active;
+      allow create: if packWrite(who(), request.resource.data.get('ownerScope', 'company'));
+      allow update: if folderOwnerKept()
+        && (packWrite(who(), resource.data.get('ownerScope', 'company')) || filingOnly(who()));
+      allow delete: if isSA(who());
+    }
 
+    // ---------- Approvals ----------
+    // Managers (edit) see all; requesters (view) see only their own. Nobody decides their own request.
+    match /approvals/{id} {
+      allow read: if canV(who(), 'approvals')
+        && (canE(who(), 'approvals') || resource.data.ownerUid == request.auth.uid);
+      // The requester files their own request; approvers may file a missing one on the requester's behalf
+      allow create: if who().active
+        && (request.resource.data.ownerUid == request.auth.uid
+            || (canE(who(), 'approvals') && request.resource.data.ownerUid != request.auth.uid));
+      allow update: if canE(who(), 'approvals') && resource.data.ownerUid != request.auth.uid;
+      allow delete: if isSA(who());
+    }
 
-      // ---------- Challans (Item 39, 40) ----------
-      match /challans/{id} {
-        allow read: if canView('challans') || canView('jobs') || canView('invoices');
-        allow create: if canEdit('challans') || canEdit('jobs');
-        allow update: if canEdit('challans') || canEdit('jobs');
-        allow delete: if false; // Challans are permanent, never deleted
-      }
+    // ---------- Complaints ----------
+    match /complaints/{id} {
+      allow read: if readMod(who(), 'complaints');
+      allow create: if createMod(who(), 'complaints');
+      allow update: if canE(who(), 'complaints') && inScope(who(), resource.data) && keepsOwner(who());
+      allow delete: if isSA(who());
+    }
 
-      // ---------- HR & Employee records (Item 42) ----------
-      // Public to staff: basic directory info (name, role, status, phone, photo)
-      match /employees/{id} {
-        allow read: if active();
-        allow create, update: if canEdit('hr') || isSuperAdmin();
-        allow delete: if false; // Status is set to inactive, never hard deleted
-      }
+    // ---------- Outreach & audit (append-only) ----------
+    match /outreach_logs/{id} {
+      allow read: if (canV(who(), 'crm') || canV(who(), 'proposals') || canV(who(), 'documents')) && inScope(who(), resource.data);
+      allow create: if who().active && request.resource.data.sentBy == request.auth.token.email
+        && request.resource.data.get('ownerUid', '') == request.auth.uid;
+      // Messages never change, apart from being filed into (or moving with) their client's folder
+      allow update: if filingOnly(who());
+      allow delete: if false;
+    }
 
-      // Sensitive HR data (CNIC, bank account, address, witnesses): HR and Super Admin (CEO) ONLY.
-      // Checked by role, not module level, so giving another role 'hr' edit never exposes it.
-      function isHrOrCeo() {
-        return isSuperAdmin() || (active() && role() == 'hr');
-      }
+    // "Scan to verify" records behind document QR codes: readable by id only
+    match /doc_verifications/{id} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if who().active;
+      allow delete: if isSA(who());
+    }
 
-      match /employee_private/{id} {
-        allow read: if isHrOrCeo();
-        allow create, update: if isHrOrCeo();
-        allow delete: if false;
-      }
+    // ---------- Challans ----------
+    match /challans/{id} {
+      allow read: if canV(who(), 'challans') || canV(who(), 'jobs') || canV(who(), 'invoices');
+      allow create, update: if canE(who(), 'challans') || canE(who(), 'jobs') || isSupervisor(who());
+      allow delete: if false; // Challans are permanent, never deleted
+    }
 
-      // Salary structure & pay data: Finance, HR and Super Admin
-      match /employee_pay/{id} {
-        allow read: if canView('payroll') || canEdit('payroll') || canEdit('hr') || isSuperAdmin();
-        allow create, update: if canEdit('payroll') || canEdit('hr') || isSuperAdmin();
-        allow delete: if false;
-      }
+    // ---------- HR & Employee records ----------
+    // Public to staff: basic directory info (name, role, status, phone, photo)
+    match /employees/{id} {
+      allow read: if who().active;
+      allow create, update: if canE(who(), 'hr');
+      allow delete: if false; // Status is set to inactive, never hard deleted
+    }
 
-      // 30-day payroll cycles & lines (Item 44)
-      match /salary_cycles/{id} {
-        allow read: if canView('payroll') || canEdit('payroll') || canEdit('hr') || isSuperAdmin();
-        allow create, update: if canEdit('payroll') || isSuperAdmin();
-        allow delete: if isSuperAdmin();
-      }
+    // Sensitive HR data (CNIC, bank account, address, witnesses): HR and the CEO only.
+    // Checked by role, not module level, so giving another role 'hr' edit never exposes it.
+    function isHrOrCeo(w) {
+      return isSA(w) || isBase(w, 'hr');
+    }
 
-      // Payroll collection alias
-      match /payroll/{id} {
-        allow read: if canView('payroll') || canEdit('payroll') || canEdit('hr') || isSuperAdmin();
-        allow create, update: if canEdit('payroll') || canEdit('hr') || isSuperAdmin();
-        allow delete: if isSuperAdmin();
-      }
+    match /employee_private/{id} {
+      allow read: if isHrOrCeo(who());
+      allow create, update: if isHrOrCeo(who());
+      allow delete: if false;
+    }
 
-      // HR collection alias
-      match /hr/{id} {
-        allow read: if active();
-        allow create, update: if canEdit('hr') || isSuperAdmin();
-        allow delete: if false;
-      }
+    // Salary structure & pay data: Finance, HR and the CEO
+    match /employee_pay/{id} {
+      allow read: if canV(who(), 'payroll') || canE(who(), 'hr');
+      allow create, update: if canE(who(), 'payroll') || canE(who(), 'hr');
+      allow delete: if false;
+    }
 
-      // Daily attendance (Item 43)
-      match /attendance/{id} {
-        // Coordinator / operations edits, HR views, technician sees own
-        allow read: if canView('attendance') || canView('hr') || canView('payroll')
-          || (role() == 'technician' && resource.data.get('employeeId', '') == me().get('employeeId', ''));
-        allow create, update: if canEdit('attendance') || canEdit('jobs') || isSuperAdmin();
-        allow delete: if isSuperAdmin();
-      }
+    // 30-day payroll cycles
+    match /salary_cycles/{id} {
+      allow read: if canV(who(), 'payroll') || canE(who(), 'hr');
+      allow create, update: if canE(who(), 'payroll');
+      allow delete: if isSA(who());
+    }
 
-      // Transactional safe ID counters (Item 47)
-      match /id_counters/{key} {
-        allow read: if active();
-        allow create: if active();
-        allow update: if active() && request.resource.data.seq == resource.data.seq + 1;
-        allow delete: if isSuperAdmin();
-      }
+    // Payroll collection alias
+    match /payroll/{id} {
+      allow read: if canV(who(), 'payroll') || canE(who(), 'hr');
+      allow create, update: if canE(who(), 'payroll') || canE(who(), 'hr');
+      allow delete: if isSA(who());
+    }
 
-      match /audit_logs/{id} {
-        allow read: if canView('settings');
-        allow create: if active() && request.resource.data.userId == request.auth.uid;
-        allow update, delete: if false;
-      }
+    // HR collection alias
+    match /hr/{id} {
+      allow read: if who().active;
+      allow create, update: if canE(who(), 'hr');
+      allow delete: if false;
+    }
+
+    // Daily attendance
+    function attendanceRead(w) {
+      return canV(w, 'attendance') || canV(w, 'hr') || canV(w, 'payroll')
+        || (isBase(w, 'technician') && resource.data.get('employeeId', '') == get(profilePath()).data.get('employeeId', ''));
+    }
+
+    match /attendance/{id} {
+      allow read: if attendanceRead(who());
+      allow create, update: if canE(who(), 'attendance') || canE(who(), 'jobs') || isSupervisor(who());
+      allow delete: if isSA(who());
+    }
+
+    // Safe ID counters
+    match /id_counters/{key} {
+      allow read: if who().active;
+      allow create: if who().active;
+      allow update: if who().active && request.resource.data.seq == resource.data.seq + 1;
+      allow delete: if isSA(who());
+    }
+
+    // Lets the portal check which rules are live (dataService.rulesAreCurrent). Change this id
+    // together with RULES_VERSION in src/services/dataService.ts whenever the rules change.
+    match /rules_probe/{version} {
+      allow get: if version == '2026-11-02-l';
+    }
+
+    match /audit_logs/{id} {
+      allow read: if canV(who(), 'settings');
+      allow create: if who().active && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
     }
   }
+}

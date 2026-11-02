@@ -7,6 +7,7 @@
 import {
   collection,
   doc,
+  getDoc,
   limit,
   onSnapshot,
   orderBy,
@@ -28,8 +29,7 @@ import {
   seesAllRecords,
   setRoleDefinitions,
   type ModuleKey,
-  type RoleDefinition,
-} from '../lib/permissions';
+  type RoleDefinition, roleLabel } from '../lib/permissions';
 import type {
   IndividualClient,
   CompanyMaster,
@@ -283,6 +283,8 @@ export interface WriteError {
   id: string;
   code: string;
   message: string;
+  /** Top-level fields this save tried to change (to pinpoint a refused field). */
+  fields?: string[];
 }
 
 const friendlyError = (code: string, message: string) => {
@@ -295,12 +297,85 @@ const friendlyError = (code: string, message: string) => {
 
 type Listener = () => void;
 
+/** What each collection is called in an error message. */
+const COLLECTION_AREA: Record<string, string> = {
+  leads: 'this lead', proposals: 'this proposal', contracts: 'this contract', service_jobs: 'this service job',
+  companies: 'this client account', clients: 'this client', branches: 'this branch', sites: 'this site',
+  invoices: 'this invoice', payments: 'this payment', challans: 'this challan', documents: 'this file',
+  attendance: 'attendance', employees: 'employee records', employee_private: 'private HR records',
+  employee_pay: 'pay records', salary_cycles: 'payroll', complaints: 'this complaint', approvals: 'this approval',
+  users: 'staff accounts', roles: 'roles', teams: 'teams',
+};
+
+/** Fields no ordinary edit may change (ownership, customer, invoice amounts, access). */
+const PROTECTED_FIELDS = ['ownerUid', 'teamId', 'customerId', 'contractId', 'lineItems', 'subtotal', 'grossPayable',
+  'taxTotal', 'invoiceNumber', 'role', 'dataScope', 'isActive', 'contacts', 'existingCustomerId'];
+
+/** Matches the rules_probe id in firestore.rules; tells whether the published rules are current. */
+export const RULES_VERSION = '2026-11-02-l';
+
 class DataService {
   /**
    * Safe transactional ID counter (Item 47).
    * Reads and increments id_counters/{key} within a Firestore transaction so two simultaneous
    * operations never generate the same sequence number.
    */
+  /**
+   * true = the live database runs this version of firestore.rules; false = older rules are live
+   * (publish firestore.rules); null = couldn't tell (offline).
+   */
+  public isSuperAdminSession() {
+    return this.session?.role === 'super_admin';
+  }
+
+  async rulesAreCurrent(): Promise<boolean | null> {
+    try {
+      await getDoc(doc(db, 'rules_probe', RULES_VERSION));
+      return true;
+    } catch (err) {
+      return (err as { code?: string }).code === 'permission-denied' ? false : null;
+    }
+  }
+
+  /**
+   * How the server sees the signed-in person, for a refused save: their staff profile and role
+   * document as stored in the database (not the portal's merged copy). Shown in the error toast.
+   */
+  async explainAccess(collectionName?: string, id?: string, fields: string[] = []): Promise<{ reason: string; details: string }> {
+    const uid = this.session?.uid;
+    if (!uid) return { reason: 'You are signed out. Sign in again and retry.', details: 'signed out' };
+    try {
+      const prof = (await getDoc(doc(db, 'users', uid))).data() ?? {};
+      const rawRole = String(prof.role ?? '(none)');
+      const key = rawRole === 'operations_coordinator' ? 'team_leader' : rawRole === 'operations_manager' ? 'operations' : rawRole;
+      const roleSnap = await getDoc(doc(db, 'roles', key)).catch(() => null);
+      const r = roleSnap?.exists() ? roleSnap.data() : undefined;
+      const mods = (r?.modules ?? {}) as Record<string, string>;
+      const rec = collectionName && id ? this.serverRaw.get(`${collectionName}/${id}`) : undefined;
+      // Plain reason for the person (no internal details)
+      const area = COLLECTION_AREA[collectionName ?? ''] ?? 'this record';
+      const protectedHit = fields.filter((f) => PROTECTED_FIELDS.includes(f));
+      const notMine = rec && rec.ownerUid && rec.ownerUid !== uid && prof.dataScope !== 'company';
+      const reason =
+        prof.isActive !== true ? 'Your portal access is paused. Ask the administrator to restore it.'
+        : !prof.role ? 'Your account has no role yet. Ask the administrator to give you one.'
+        : protectedHit.length ? `This change touches protected details (${protectedHit.join(', ')}) that your role cannot change.`
+        : notMine ? `This ${area} belongs to someone else, and your data access is limited to your own${prof.dataScope === 'team' ? ' team’s' : ''} records.`
+        : `Your role (${roleLabel(rawRole)}) is not allowed to change ${area}. Ask the administrator for Edit access in Team & Access.`;
+      const details = [
+        `role "${rawRole}"`,
+        `role document: ${r ? `found, based on "${r.basedOn ?? '—'}"` : 'missing (built-in defaults used)'}`,
+        `active ${prof.isActive === true ? 'yes' : `NO (${JSON.stringify(prof.isActive)})`}`,
+        `data access "${prof.dataScope ?? 'own'}"`,
+        r ? `saved levels: crm ${mods.crm ?? '—'}, pco ${mods.pco ?? '—'}, inspections ${mods.inspections ?? '—'}, jobs ${mods.jobs ?? '—'}` : '',
+        rec ? `record owner ${rec.ownerUid === uid ? 'you' : String(rec.ownerUid ?? '—')}` : '',
+      ].filter(Boolean).join(' · ');
+      return { reason, details };
+    } catch (err) {
+      return { reason: 'Your role is not allowed to make this change.', details: `could not read profile (${(err as { code?: string }).code ?? err})` };
+    }
+  }
+
   async nextSequence(key: string, floor = 0): Promise<number> {
     try {
       const counterRef = doc(db, 'id_counters', key);
@@ -328,6 +403,11 @@ class DataService {
   }
 
   private s: DbState = emptyState();
+  /** Refused queries per collection, and how many queries each collection uses (see listen). */
+  private failedQueries = new Map<StateKey, Set<string>>();
+  /** Last copy of each document as stored in the database ("collection/id" → raw data). */
+  private serverRaw = new Map<string, Record<string, unknown>>();
+  private queryCount = new Map<StateKey, number>();
   private listeners = new Set<Listener>();
   private errorListeners = new Set<(e: WriteError) => void>();
   private version = 0;
@@ -402,8 +482,12 @@ class DataService {
     if (!se) return;
     const role = getRole(se.role);
     this.accessSignature = JSON.stringify(role?.modules ?? {});
+    this.failedQueries.clear();
+    this.queryCount.clear();
     BUSINESS_KEYS.forEach((key) => {
-      this.queriesFor(key, se).forEach((q, i) => this.listen(key, `${key}#${i}`, q, this.scopedUnsubs));
+      const qs = this.queriesFor(key, se);
+      this.queryCount.set(key, qs.length);
+      qs.forEach((q, i) => this.listen(key, `${key}#${i}`, q, this.scopedUnsubs));
     });
   }
 
@@ -489,9 +573,12 @@ class DataService {
       const qs: Query[] = can('crm') ? (all ? [col] : ownAndTeam()) : [];
       // Operations (pco + company scope) see all leads so they can manage meetings, assign teams and create contracts.
       if (can('pco') && !can('crm')) qs.push(...(all ? [col] : ownAndTeam()));
-      // Inspectors not already covered by a full-collection query see their own assigned leads.
-      if (can('inspections') && !(can('crm') && all) && !(can('pco') && all)) {
+      // Field staff (Supervisors) always load the meetings and inspections assigned to them, through
+      // queries the rules can prove for each record, even when a broader list is refused.
+      if ((can('inspections') || can('pco')) && !can('crm')) {
         qs.push(query(col, where('inspectorIds', 'array-contains', se.uid)));
+        qs.push(query(col, where('assignedTeamLeaderId', '==', se.uid)));
+        qs.push(query(col, where('siteInspection.teamLeaderId', '==', se.uid)));
       }
       return qs;
     }
@@ -507,7 +594,7 @@ class DataService {
     // HR employee directory: every active person may read it (PCO roster for supervisors).
     if (key === 'employees') return [col];
     // CNIC / bank / witnesses: HR and super admin only (checked by role in firestore.rules).
-    if (key === 'employeePrivate') return se.role === 'super_admin' || se.role === 'hr' ? [col] : [];
+    if (key === 'employeePrivate') return se.role === 'super_admin' || baseRoleOf(se.role) === 'hr' ? [col] : [];
 
     // Approvals: managers (edit) may list all; view-only roles (CRO, operations) may only read
     // their own requests. A bare collection query fails the Firestore rule for non-editors.
@@ -530,6 +617,7 @@ class DataService {
         const docs = new Map<string, unknown>();
         snap.forEach((d) => {
           const data = d.data() as Record<string, unknown>;
+          this.serverRaw.set(`${COLLECTIONS[key]}/${d.id}`, data);
           if (data.removed) return; // soft-deleted
           docs.set(d.id, key === 'users' ? { uid: d.id, ...data } : { id: d.id, ...data });
         });
@@ -545,6 +633,17 @@ class DataService {
         this.maybeAutoUploadLocal();
       },
       (err) => {
+        // A collection may load through several queries (e.g. a Supervisor's jobs: by team, by
+        // assignment, by older "lead" field). If one is refused but others work, keep what loaded
+        // and only warn; the collection is blocked only when every query was refused.
+        const failed = this.failedQueries.get(key) ?? new Set<string>();
+        failed.add(queryKey);
+        this.failedQueries.set(key, failed);
+        const total = this.queryCount.get(key) ?? 1;
+        if (err.code === 'permission-denied' && failed.size < total) {
+          console.warn(`[Firestore] one of ${total} queries for "${COLLECTIONS[key]}" was refused (deploy the latest firestore.rules):`, err.message);
+          return;
+        }
         console.error(`[Firestore] subscription to "${COLLECTIONS[key]}" failed:`, err);
         const blocked = Array.from(new Set([...this.cloud.blocked, COLLECTIONS[key]]));
         this.setCloud({
@@ -592,15 +691,33 @@ class DataService {
       this.emitError({ collection: collectionName, id, code: 'unauthenticated', message: 'You are signed out. Sign in again to save changes.' });
       return;
     }
+    // Send only the fields that really changed. The local copy carries extras the database copy
+    // doesn't (the injected id, normalised values), and the rules check which fields a save
+    // touches: sending the whole record made roles with field-limited access (Operations Manager on a
+    // CRO's lead, Supervisor on a job) fail on fields they never edited.
+    const full = toFirestore(data) as Record<string, unknown>;
+    const stored = this.serverRaw.get(`${collectionName}/${id}`);
+    let payload = full;
+    if (stored) {
+      const storedJson = toFirestore(stored) as Record<string, unknown>;
+      payload = Object.fromEntries(
+        Object.entries(full).filter(([k, v]) => {
+          if ((k === 'id' || k === 'uid') && !(k in storedJson)) return false;
+          return JSON.stringify(v) !== JSON.stringify(storedJson[k]);
+        })
+      );
+      if (Object.keys(payload).length === 0) return; // nothing changed
+    }
+    const fields = Object.keys(payload);
     this.cloud = { ...this.cloud, pendingWrites: this.cloud.pendingWrites + 1 };
     this.commit();
-    setDoc(doc(db, collectionName, id), toFirestore(data) as Record<string, unknown>, { merge: true })
+    setDoc(doc(db, collectionName, id), payload, { merge: true })
       .catch((err: { code?: string; message?: string }) => {
         const code = err?.code || 'unknown';
         const message = friendlyError(code, err?.message || String(err));
-        console.error(`[Firestore] write to ${collectionName}/${id} failed:`, err);
+        console.error(`[Firestore] write to ${collectionName}/${id} failed (fields: ${fields.join(', ')}):`, err);
         this.cloud = { ...this.cloud, lastError: { collection: collectionName, message, at: now() } };
-        this.emitError({ collection: collectionName, id, code, message });
+        this.emitError({ collection: collectionName, id, code, message, fields });
       })
       .finally(() => {
         this.cloud = { ...this.cloud, pendingWrites: Math.max(0, this.cloud.pendingWrites - 1) };
@@ -701,7 +818,7 @@ class DataService {
     return [...this.s.teams].sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /** Field Supervisors: active logins whose role is (or is based on) Supervisor / Operations Coordinator. */
+  /** Field Supervisors: active logins whose role is (or is based on) Supervisor. */
   public getTeamLeaders(): UserProfile[] {
     return this.getStaff().filter((u) => baseRoleOf(u.role) === 'team_leader');
   }
@@ -1719,10 +1836,13 @@ class DataService {
       category: 'proposal',
       date: proposal.createdAt,
     });
-    if (proposal.discountPercent > 10 && proposal.status === 'draft') {
+    // Discount above 10% needs approval. The builder / revision screens already mark the proposal
+    // 'pending_approval' themselves, so that status must also create the approval request (it used
+    // to be created only for 'draft', which left the Approvals page empty).
+    if (proposal.discountPercent > 10 && (proposal.status === 'draft' || proposal.status === 'pending_approval')) {
       const ts = now();
       proposal.status = 'pending_approval';
-      proposal.approval = {
+      if (!proposal.approval || proposal.approval.status !== 'pending') proposal.approval = {
         ruleId: 'AP-01',
         ruleDescription: `Discount ${proposal.discountPercent}% exceeds standard authority threshold (10%). Requires CRO Manager / CEO Approval.`,
         requiredRole: proposal.discountPercent > 20 ? 'ceo' : 'sales_manager',
@@ -1743,7 +1863,7 @@ class DataService {
           entityTitle: `Proposal ${proposal.id} for ${proposal.customerName}`,
           ownerUid: this.session?.uid ?? userEmail,
           requestedBy: userEmail,
-          requestedByName: userEmail,
+          requestedByName: this.session?.name || userEmail,
           requestedAt: ts,
           reason: `Discount ${proposal.discountPercent}% exceeds the 10% threshold. Rule AP-01.`,
           amount: proposal.discountAmount,
@@ -2081,7 +2201,10 @@ class DataService {
     // A Supervisor updating an older job must not add them: firestore.rules forbids field staff from
     // changing those fields, so the whole save (Start Visit, Close Out) would be refused.
     const isNew = !this.getJobById(job.id);
-    const mayRefile = isNew || (this.session ? seesAllRecords(this.session.role, this.session.dataScope) : true);
+    // Field staff (Supervisors) never add owner / folder fields, even with company-wide data access:
+    // the rules' field-staff path forbids those keys, so Start Visit / Close Out would be refused.
+    const fieldStaff = ['team_leader', 'technician'].includes(baseRoleOf(this.session?.role) ?? '');
+    const mayRefile = isNew || (this.session ? !fieldStaff && seesAllRecords(this.session.role, this.session.dataScope) : true);
     if (mayRefile && !job.ownerUid && this.session?.uid) {
       Object.assign(job, this.ownership());
     }
@@ -2769,6 +2892,42 @@ class DataService {
     return this.s.approvals.find((a) => a.id === id);
   }
 
+  /**
+   * Keeps the Approvals queue in step with proposals (run by approvers when the page opens):
+   * creates the missing request for every proposal waiting for discount approval, and closes
+   * requests whose proposal was already decided elsewhere (e.g. from the proposal screen).
+   */
+  public syncProposalApprovals(userEmail = 'admin') {
+    const ts = now();
+    for (const p of this.s.proposals) {
+      if (p.status !== 'pending_approval' || this.getApprovalForEntity(p.id)) continue;
+      const owner = (p as { ownerUid?: string }).ownerUid || p.preparedByUserId || '';
+      if (!owner || owner === this.session?.uid) continue; // nobody may decide their own request
+      this.saveApproval({
+        id: `AP-${new Date().getFullYear()}-${p.id.replace(/[^A-Za-z0-9]/g, '').slice(-6).toUpperCase()}`,
+        type: 'proposal_discount',
+        entityType: 'proposal',
+        entityId: p.id,
+        entityTitle: `Proposal ${p.id} for ${p.customerName}`,
+        ownerUid: owner,
+        requestedBy: p.approval?.requestedBy || p.preparedByName || '',
+        requestedByName: p.approval?.requestedByName || p.preparedByName || '',
+        requestedAt: p.approval?.requestedAt || p.updatedAt || ts,
+        reason: `Discount ${p.discountPercent}% exceeds the 10% threshold. Rule AP-01.`,
+        amount: p.discountAmount,
+        status: 'pending',
+        updatedAt: ts,
+      }, userEmail);
+    }
+    for (const a of this.s.approvals) {
+      if (a.status !== 'pending' || a.type !== 'proposal_discount') continue;
+      const p = this.s.proposals.find((x) => x.id === a.entityId);
+      if (p && p.status !== 'pending_approval') {
+        this.saveApproval({ ...a, status: 'cancelled', decisionNote: `Proposal is now ${p.status.replace(/_/g, ' ')}`, updatedAt: ts }, userEmail);
+      }
+    }
+  }
+
   public getApprovalForEntity(entityId: string): Approval | undefined {
     return this.s.approvals.find((a) => a.entityId === entityId && a.status === 'pending');
   }
@@ -2846,7 +3005,7 @@ class DataService {
             .forEach((j) => {
               const cancelled = { ...j, status: 'cancelled' as const, cancellationReason: 'Contract cancelled', updatedAt: now() };
               this.upsert(this.s.jobs, cancelled);
-              this.write('jobs', j.id, cancelled);
+              this.write('service_jobs', j.id, cancelled); // was 'jobs': no such collection, refused
             });
         }
       }

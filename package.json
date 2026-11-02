@@ -12,7 +12,7 @@
     "backfill:folders": "tsx scripts/backfillFolders.ts",
     "typecheck:scripts": "tsc -p scripts/tsconfig.json",
     "preview": "vite preview",
-    "test:rules": "npx --yes firebase-tools@14 emulators:exec --only firestore --project demo-ikpm \"vitest run src/tests/rulesEmulator.test.ts\""
+    "test:rules": "npx --yes firebase-tools@14 emulators:exec --only firestore --project demo-ikpm \"vitest run --no-file-parallelism src/tests/rulesEmulator.test.ts src/tests/rulesWorkflows.test.ts\""
   },
   "dependencies": {
     "firebase": "^13.0.0",

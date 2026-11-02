@@ -40,6 +40,11 @@ export const MeetingsPage: React.FC = () => {
   // CRO can also assign a meeting / inspection — to himself or to any operations staff
   const canAssign = ['team_leader', 'operations', 'sales', 'super_admin', 'admin'].includes(baseRoleOf(effectiveRole) ?? '');
   const canOpenLeads = canAccessModule(effectiveRole, 'crm');
+  // The meeting report is submitted by whoever attended (the assigned person or the extra staff);
+  // admin / CEO may submit on anyone's behalf
+  const isAttending = (i: NonNullable<Lead['inspection']>) =>
+    !!userProfile?.uid && (i.assignedTeamLeaderId === userProfile.uid || (i.inspectorIds ?? []).includes(userProfile.uid));
+  const isAdmin = ['admin', 'super_admin'].includes(baseRoleOf(effectiveRole) ?? '');
 
   const all = store.getLeads().filter((l) => l.inspection && l.inspection.status !== 'cancelled');
   const filtered = useMemo(() => {
@@ -204,7 +209,7 @@ export const MeetingsPage: React.FC = () => {
                             <ClipboardCheck size={14} /> Schedule inspection
                           </button>
                         )}
-                        {canRecord && i.status === 'scheduled' && (
+                        {canRecord && i.status === 'scheduled' && (isAttending(i) || isAdmin) && (
                           <button className="btn btn-sm btn-primary" onClick={() => setReportLead(l)}>
                             <ClipboardCheck size={14} /> Submit report
                           </button>

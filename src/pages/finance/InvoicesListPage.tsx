@@ -1,3 +1,4 @@
+import { baseRoleOf } from '../../lib/permissions';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -1002,7 +1003,7 @@ export const InvoicesListPage: React.FC = () => {
           maxWidth="680px"
           footer={
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-              {selectedInvoice.status !== 'void_reversed' && ['super_admin', 'finance'].includes(effectiveRole || '') && (
+              {selectedInvoice.status !== 'void_reversed' && ['super_admin', 'finance'].includes(baseRoleOf(effectiveRole) ?? '') && (
                 <button className="btn btn-danger" onClick={() => setShowVoidDialog(true)}>
                   <RotateCcw size={14} />
                   <span>Void / Issue Credit Note</span>

@@ -366,16 +366,47 @@ class DocBuilder {
   }
 
   table(head: string[], body: (string | number)[][], opts: Partial<UserOptions> = {}) {
+    // Professional alignment for every table: serial numbers and short codes centred, money and
+    // numbers right-aligned, text left. Headers follow their column. A table's own columnStyles win.
+    const rows = body.map((r) => r.map((c) => (typeof c === 'number' ? String(c) : c)));
+    const given = (opts.columnStyles ?? {}) as Record<number, { halign?: 'left' | 'center' | 'right'; cellWidth?: number | 'auto' | 'wrap' }>;
+    const numeric = (v: unknown) => typeof v === 'string' && v.trim() !== '' && /^(PKR\s*)?[-+]?[\d,]+(\.\d+)?\s*%?$|^[-–—]$/.test(v.trim());
+    const alignOf = (h: string, col: number): 'left' | 'center' | 'right' => {
+      const t = h.trim().toLowerCase();
+      if (/^(#|no\.?|s\.?\s?no\.?|sr\.?(\s?no\.?)?)$/.test(t)) return 'center';
+      if (/(pkr|amount|rate|price|total|value|balance|paid|charges|cost|sales tax|wht|net|gross|incl\.|excl\.)/.test(t)) return 'right';
+      if (/^(qty|quantity|unit|units|%|tax %|visits?|frequency|date|status|time|sq\s?ft|area)\b/.test(t)) return 'center';
+      const cells = rows.map((r) => r[col]).filter((c) => c !== undefined && String(c).trim() !== '');
+      return cells.length > 0 && cells.every(numeric) ? 'right' : 'left';
+    };
+    const columnStyles: Record<number, object> = {};
+    const headAlign: ('left' | 'center' | 'right')[] = [];
+    head.forEach((h, i) => {
+      const auto = alignOf(h, i);
+      const halign = given[i]?.halign ?? auto;
+      headAlign[i] = halign;
+      columnStyles[i] = {
+        ...(/^(#|no\.?|sr\.?)$/i.test(h.trim()) && given[i]?.cellWidth === undefined ? { cellWidth: 9 } : {}),
+        ...given[i],
+        halign,
+      };
+    });
+    const userParse = opts.didParseCell;
     autoTable(this.doc, {
       startY: this.y,
       head: [head],
-      body: body.map((r) => r.map((c) => (typeof c === 'number' ? String(c) : c))),
+      body: rows,
       margin: { left: M, right: M, top: 20, bottom: FOOTER_H + 6 },
       theme: 'grid',
-      styles: { font: 'helvetica', fontSize: 8.2, cellPadding: { top: 2.2, bottom: 2.2, left: 2.5, right: 2.5 }, textColor: INK, lineColor: RULE, lineWidth: 0.2, valign: 'middle' },
-      headStyles: { fillColor: this.navy, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.8, lineColor: this.navy },
+      styles: { font: 'helvetica', fontSize: 8.2, cellPadding: { top: 2.2, bottom: 2.2, left: 2.5, right: 2.5 }, textColor: INK, lineColor: RULE, lineWidth: 0.2, valign: 'middle', overflow: 'linebreak' },
+      headStyles: { fillColor: this.navy, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.8, lineColor: this.navy, valign: 'middle' },
       alternateRowStyles: { fillColor: TINT },
       ...opts,
+      columnStyles,
+      didParseCell: (data) => {
+        if (data.section === 'head') data.cell.styles.halign = headAlign[data.column.index] ?? 'left';
+        userParse?.(data);
+      },
     });
     this.y = ((this.doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? this.y) + 6;
   }

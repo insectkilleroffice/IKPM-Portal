@@ -7,7 +7,7 @@ import { EmptyState } from '../../components/common/EmptyState';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
-import { canEditModule } from '../../lib/permissions';
+import { canEditModule, baseRoleOf } from '../../lib/permissions';
 import { formatDate, generatePermanentId } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
 import type { Complaint, ComplaintCategory, ComplaintPriority, ComplaintSource, ComplaintStatus } from '../../types/complaints';
@@ -74,9 +74,9 @@ export const ComplaintsPage: React.FC = () => {
   const { success, error, info } = useNotification();
 
   const canEdit = canEditModule(effectiveRole, 'complaints');
-  const isOps = ['operations', 'team_leader', 'admin', 'super_admin'].includes(effectiveRole ?? '');
-  const isSalesOrAdmin = ['sales', 'admin', 'team_leader', 'super_admin'].includes(effectiveRole ?? '');
-  const canAssign = isSalesOrAdmin || effectiveRole === 'super_admin';
+  const isOps = ['operations', 'team_leader', 'admin', 'super_admin'].includes(baseRoleOf(effectiveRole) ?? '');
+  const isSalesOrAdmin = ['sales', 'admin', 'team_leader', 'super_admin'].includes(baseRoleOf(effectiveRole) ?? '');
+  const canAssign = isSalesOrAdmin;
 
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<ComplaintStatus | 'all'>('all');
@@ -154,7 +154,7 @@ export const ComplaintsPage: React.FC = () => {
     }
     const id = generatePermanentId('CMP', allComplaints.length + 1);
     // Change 18: Auto-assign new complaints to the Operations Manager role
-    const defaultOps = opsStaff.find((u) => u.role === 'operations') || opsStaff.find((u) => u.role === 'team_leader') || opsStaff[0];
+    const defaultOps = opsStaff.find((u) => baseRoleOf(u.role) === 'operations') || opsStaff.find((u) => baseRoleOf(u.role) === 'team_leader') || opsStaff[0];
     const initialStatus: ComplaintStatus = defaultOps ? 'assigned' : 'new';
 
     const complaint: Complaint = {
@@ -319,7 +319,7 @@ export const ComplaintsPage: React.FC = () => {
   // ---- Next step button ----
   function nextStepBtn(c: Complaint): { label: string; action: () => void } | null {
     if (!canEdit) return null;
-    if (c.status === 'new' && canAssign) return { label: 'Assign to Ops Manager', action: () => { setAssignOpsId(c.assignedOperationsManagerId ?? ''); setAssignOpsName(c.assignedOperationsManagerName ?? ''); setShowAssign(true); } };
+    if (c.status === 'new' && canAssign) return { label: 'Assign to Operations Manager', action: () => { setAssignOpsId(c.assignedOperationsManagerId ?? ''); setAssignOpsName(c.assignedOperationsManagerName ?? ''); setShowAssign(true); } };
     if (c.status === 'reopened' && canAssign) return { label: 'Reassign', action: () => { setAssignOpsId(c.assignedOperationsManagerId ?? ''); setAssignOpsName(c.assignedOperationsManagerName ?? ''); setShowAssign(true); } };
     if (c.status === 'assigned' && isOps) return { label: 'Mark In Progress', action: () => handleMarkInProgress(c) };
     if (c.status === 'in_progress' && isOps) return { label: 'Mark Resolved', action: () => setShowResolve(true) };
@@ -334,7 +334,7 @@ export const ComplaintsPage: React.FC = () => {
       <div className="page-header">
         <div className="page-title-wrap">
           <h1>Complaints</h1>
-          <p className="page-subtitle">CRO logs · Ops Manager resolves with re-service visit · CRO closes after client confirmation</p>
+          <p className="page-subtitle">CRO logs · Operations Manager resolves with re-service visit · CRO closes after client confirmation</p>
         </div>
         {canEdit && (
           <button className="btn btn-primary" onClick={() => { setForm(blank()); setShowNew(true); }}>

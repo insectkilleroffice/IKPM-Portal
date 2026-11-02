@@ -338,11 +338,11 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
     setDate(i?.scheduledDate || addDays(1));
     setScheduledTime(i?.scheduledTime || '');
     setTimeSlot(i?.timeSlot || 'morning');
-    // A CRO books without a team by default; Ops Manager picks the team (or the CRO picks a person)
-    const initialTeamId = i?.teamId || (isCRO ? '' : teams[0]?.id || '');
-    setTeamId(initialTeamId);
-    const initialTeam = teams.find((t) => t.id === initialTeamId);
-    setTeamLeaderId(i?.assignedTeamLeaderId || (isCRO ? '' : initialTeam?.leaderId || initialTeam?.leadUid || staff.find((u) => u.teamId === initialTeamId)?.uid || ''));
+    // A CRO books without a team by default; Operations Manager picks the team (or the CRO picks a person)
+    // Nothing is pre-picked: a meeting the CRO left for the Operations Manager stays unassigned
+    // until someone is chosen on purpose
+    setTeamId(i?.teamId || '');
+    setTeamLeaderId(i?.assignedTeamLeaderId || '');
     setExtraIds((i?.inspectorIds ?? []).filter((id) => id !== i?.assignedTeamLeaderId));
     setPcoIds(i?.pcoEmployeeIds ?? []);
     setInstructions(i?.instructions || '');
@@ -357,9 +357,13 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
 
   const teamMembers = staff.filter((u) => u.teamId === teamId);
   const me = staff.find((u) => u.uid === userProfile?.uid);
-  const eligibleLeaders = teamMembers.length > 0
-    ? [...(me && !teamMembers.includes(me) ? [me] : []), ...teamMembers]
-    : staff;
+  // Everyone who can take a meeting is always listed (a team only sorts its members to the top):
+  // yourself, then Supervisors, then Operations Managers
+  const rank = (u: (typeof staff)[number]) =>
+    u.uid === me?.uid ? 0 : teamMembers.includes(u) ? 1 : baseRoleOf(u.role) === 'team_leader' ? 2 : 3;
+  const eligibleLeaders = [...staff].sort((a, b) => rank(a) - rank(b) || a.displayName.localeCompare(b.displayName));
+  const supervisors = eligibleLeaders.filter((u) => u.uid !== me?.uid && baseRoleOf(u.role) === 'team_leader');
+  const managers = eligibleLeaders.filter((u) => u.uid !== me?.uid && baseRoleOf(u.role) !== 'team_leader');
 
   const pickTeam = (id: string) => {
     setTeamId(id);
@@ -478,12 +482,18 @@ export const ScheduleInspectionModal: React.FC<{ lead: Lead | null; onClose: () 
           <label className="form-label">Who will attend the meeting?</label>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
             <select className="form-select" style={{ flex: 1, minWidth: 200 }} value={teamLeaderId} onChange={(e) => setTeamLeaderId(e.target.value)}>
-              <option value="">{isCRO ? '— Leave for Operations Manager —' : '— Unassigned —'}</option>
-              {eligibleLeaders.map((u) => (
-                <option key={u.uid} value={u.uid}>
-                  {u.uid === userProfile?.uid ? `Myself — ${u.displayName}` : `${u.displayName} (${roleLabel(u.role)})`}
-                </option>
-              ))}
+              <option value="">{isCRO ? '— Leave for Operations Manager —' : '— Choose who attends —'}</option>
+              {me && <option value={me.uid}>Myself — {me.displayName}</option>}
+              {supervisors.length > 0 && (
+                <optgroup label="Supervisors">
+                  {supervisors.map((u) => <option key={u.uid} value={u.uid}>{u.displayName}{teamMembers.includes(u) ? ' · this team' : ''}</option>)}
+                </optgroup>
+              )}
+              {managers.length > 0 && (
+                <optgroup label="Operations Managers">
+                  {managers.map((u) => <option key={u.uid} value={u.uid}>{u.displayName}</option>)}
+                </optgroup>
+              )}
             </select>
             {userProfile && teamLeaderId !== userProfile.uid && (
               <button type="button" className="btn btn-sm btn-secondary" onClick={() => setTeamLeaderId(userProfile.uid)}>Assign myself</button>
@@ -1163,7 +1173,9 @@ export const ScheduleSiteInspectionModal: React.FC<{ lead: Lead | null; onClose:
   const [notes, setNotes] = useState('');
 
   const isCRO = baseRoleOf(effectiveRole) === 'sales';
-  const staff = store.getStaff().filter((u) => ['team_leader', 'operations', 'sales'].includes(u.role));
+  // Supervisors (incl. older 'Operations Coordinator' accounts), Ops Managers and CROs, plus yourself
+  const staff = store.getStaff().filter((u) => u.isActive !== false
+    && (['team_leader', 'operations', 'sales'].includes(baseRoleOf(u.role) ?? '') || u.uid === userProfile?.uid));
 
   useEffect(() => {
     if (!lead) return;

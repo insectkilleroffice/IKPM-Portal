@@ -34,7 +34,7 @@ import type { ServiceJob, SupervisorVerification, ChemicalUsageRecord } from '..
 import type { PestType } from '../../types/crm';
 import { UnifiedWorkflowStatusBar } from '../../components/common/UnifiedWorkflowStatusBar';
 import { getJobNextAction } from '../../lib/workflow';
-import { canEditModule } from '../../lib/permissions';
+import { baseRoleOf, canEditModule } from '../../lib/permissions';
 import { fileGenerated } from '../../features/documents/fileGenerated';
 import type { DocumentOwner } from '../../types/document';
 
@@ -47,7 +47,9 @@ export const JobsListPage: React.FC = () => {
   useDataStore();
 
   const canInvoice = canEditModule(effectiveRole, 'invoices');
-  const canDispatch = canEditModule(effectiveRole, 'jobs');
+  // Dispatch (new jobs, assigning the Supervisor, rescheduling) is the Operations Manager's work.
+  // Supervisors edit jobs only to run their visits.
+  const canDispatch = canEditModule(effectiveRole, 'jobs') && !['team_leader', 'technician'].includes(baseRoleOf(effectiveRole) ?? '');
   // Start Visit and Close Out are field steps: only the Supervisor on the job does them (in person,
   // with the PCOs). The Operations Manager assigns, reschedules and does the QC check instead.
   const isFieldStep = (a: string) => a === 'start_job' || a === 'complete_job';
@@ -56,6 +58,9 @@ export const JobsListPage: React.FC = () => {
   const isMyFieldJob = (j: ServiceJob) => {
     const uid = userProfile?.uid;
     if (!uid) return false;
+    // Any Supervisor (Team Leader / Operations Coordinator) may run field steps, e.g. covering a
+    // colleague's visit. Operations Manager, CRO, Finance etc. still can't.
+    if (baseRoleOf(effectiveRole) === 'team_leader') return true;
     const me = new Set([uid, ...dataService.getEmployees().filter((e) => e.uid === uid).map((e) => e.id)]);
     return [j.assignedTeamLeaderId, j.leadPcoId, ...(j.assignedTechnicianIds ?? [])].some((id) => !!id && me.has(id));
   };
@@ -100,7 +105,8 @@ export const JobsListPage: React.FC = () => {
   const [customDate, setCustomDate] = useState(todayStr);
   const [selectedJob, setSelectedJob] = useState<ServiceJob | null>(null);
   const [showNewJobModal, setShowNewJobModal] = useState(
-    searchParams.get('action') === 'new_job' || Boolean(searchParams.get('fromProposal'))
+    (searchParams.get('action') === 'new_job' || Boolean(searchParams.get('fromProposal')))
+      && canEditModule(effectiveRole, 'jobs') && !['team_leader', 'technician'].includes(baseRoleOf(effectiveRole) ?? '')
   );
 
   // Reschedule modal (supervisor)
@@ -546,6 +552,10 @@ export const JobsListPage: React.FC = () => {
       if (nextAct.actionType === 'start_job' && canDispatch) { setAssignTlJob(job); setAssignTlId(''); }
       return;
     }
+    if (nextAct.actionType === 'verify_report' && !canDispatch) {
+      warning('Operations Manager only', 'The quality check is done by the Operations Manager.');
+      return;
+    }
     if (isFieldStep(nextAct.actionType) && !isMyFieldJob(job)) {
       warning('Supervisor only', `${nextAct.label} is done by ${supervisorOf(job)}, the Supervisor on this visit.`);
       return;
@@ -773,7 +783,8 @@ export const JobsListPage: React.FC = () => {
           title: `Signed Delivery Challan #${cNo} - ${updatedJob.customerName}`,
           category: 'other',
           fileCategory: 'certificate',
-          owner: { kind: 'client', id: updatedJob.customerId },
+          // File it under the right customer account (companies are 'company', individuals 'client')
+          owner: updatedJob.customerType === 'company' ? { kind: 'company', id: updatedJob.customerId } : { kind: 'client', id: updatedJob.customerId },
           source: 'uploaded',
           file: {
             url: reportChallanFileUrl,
@@ -807,10 +818,10 @@ export const JobsListPage: React.FC = () => {
           </p>
         </div>
 
-        <button className="btn btn-primary" onClick={() => setShowNewJobModal(true)}>
+        {canDispatch && <button className="btn btn-primary" onClick={() => setShowNewJobModal(true)}>
           <Plus size={16} />
           <span>+ Schedule Service Visit</span>
-        </button>
+        </button>}
       </div>
 
       {/* Filter and Search Bar */}
@@ -972,7 +983,7 @@ export const JobsListPage: React.FC = () => {
                   <td><StatusBadge status={j.status} /></td>
                   <td>
                     <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                      {j.status === 'scheduled' && (
+                      {j.status === 'scheduled' && canDispatch && (
                         <button
                           className="btn btn-secondary"
                           style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
@@ -992,6 +1003,10 @@ export const JobsListPage: React.FC = () => {
                       {nextAct.actionType === 'create_invoice' && !canInvoice ? (
                         <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '0.25rem 0.6rem', border: '1px solid var(--border-subtle)', borderRadius: '0.35rem', whiteSpace: 'nowrap' }}>
                           Invoice — Finance
+                        </span>
+                      ) : nextAct.actionType === 'verify_report' && !canDispatch ? (
+                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '0.25rem 0.6rem', border: '1px solid var(--border-subtle)', borderRadius: '0.35rem', whiteSpace: 'nowrap' }}>
+                          Awaiting QC
                         </span>
                       ) : isFieldStep(nextAct.actionType) && !isMyFieldJob(j) && !(nextAct.isBlocked && canDispatch) ? (
                         <span title={`${nextAct.label} is done by the Supervisor on this visit`} style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '0.25rem 0.6rem', border: '1px solid var(--border-subtle)', borderRadius: '0.35rem', whiteSpace: 'nowrap' }}>
@@ -1431,6 +1446,10 @@ export const JobsListPage: React.FC = () => {
                 {getJobNextAction(selectedJob, dataService.getInvoiceForJob(selectedJob.id)).actionType === 'create_invoice' && !canInvoice ? (
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.4rem 0.8rem', border: '1px solid var(--border-subtle)', borderRadius: '0.4rem' }}>
                     Awaiting Finance to issue invoice
+                  </span>
+                ) : getJobNextAction(selectedJob).actionType === 'verify_report' && !canDispatch ? (
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.4rem 0.8rem', border: '1px solid var(--border-subtle)', borderRadius: '0.4rem' }}>
+                    Waiting for the Operations Manager's quality check
                   </span>
                 ) : isFieldStep(getJobNextAction(selectedJob).actionType) && !isMyFieldJob(selectedJob) ? (
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.4rem 0.8rem', border: '1px solid var(--border-subtle)', borderRadius: '0.4rem' }}>
@@ -2190,7 +2209,7 @@ export const JobsListPage: React.FC = () => {
                       title: `Signed Delivery Challan #${cNo} - ${updated.customerName}`,
                       category: 'other',
                       fileCategory: 'certificate',
-                      owner: { kind: 'client', id: updated.customerId },
+                      owner: updated.customerType === 'company' ? { kind: 'company', id: updated.customerId } : { kind: 'client', id: updated.customerId },
                       source: 'uploaded',
                       file: {
                         url: attachChallanFileUrl,

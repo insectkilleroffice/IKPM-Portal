@@ -85,7 +85,7 @@ export const EmployeesPage: React.FC = () => {
   const { success, error } = useNotification();
 
   const canEdit = canEditModule(effectiveRole, 'hr');
-  const canManageSalary = effectiveRole === 'super_admin' || effectiveRole === 'admin' || effectiveRole === 'hr' || effectiveRole === 'finance';
+  const canManageSalary = ['super_admin', 'admin', 'hr', 'finance'].includes(baseRoleOf(effectiveRole) ?? '');
 
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<EmployeeStatus | 'all'>('all');

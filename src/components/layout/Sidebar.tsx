@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
-import { canAccessModule, roleLabel, type ModuleKey } from '../../lib/permissions';
+import { baseRoleOf, canAccessModule, roleLabel, type ModuleKey } from '../../lib/permissions';
 
 interface NavEntry {
   to: string;
@@ -42,10 +42,11 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
   {
     items: [
       { to: '/', label: 'Dashboard', icon: LayoutDashboard, module: 'dashboard', end: true },
+      { to: '/my-calendar', label: 'My Calendar', icon: CalendarDays, module: 'dashboard' },
     ],
   },
   {
-    title: 'CRO Sales & pipeline pipeline',
+    title: 'Sales & pipeline',
     items: [
       { to: '/customers', label: 'Client Accounts', icon: Building2, module: 'customers' },
       { to: '/crm', label: 'Leads Pipeline', icon: Users2, module: 'crm' },
@@ -59,7 +60,8 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
     items: [
       { to: '/contracts', label: 'Contracts', icon: FileSpreadsheet, module: 'contracts' },
       { to: '/operations/calendar', label: 'Dispatch Calendar', icon: CalendarDays, module: 'calendar' },
-      { to: '/operations/jobs', label: 'Service Jobs', icon: Truck, module: ['jobs', 'pco'] },
+      // 'jobs' only: the CRO has 'pco' for meeting reports but no service jobs
+      { to: '/operations/jobs', label: 'Service Jobs', icon: Truck, module: 'jobs' },
       { to: '/operations/challans', label: 'Challan Register', icon: ClipboardList, module: ['challans', 'jobs', 'invoices'] as ModuleKey[] },
       { to: '/operations/attendance', label: 'Daily Attendance', icon: CalendarRange, module: 'attendance' },
     ],
@@ -132,7 +134,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onNavigate }) => {
     const keys = Array.isArray(m) ? m : [m];
     return keys.some((k) => canAccessModule(effectiveRole, k) || (k === 'team' && canAccessModule(effectiveRole, 'roles')));
   };
-  const quick = QUICK_CREATE.filter((q) => can(q.module));
+  // Supervisors run visits but don't create them (dispatch is the Operations Manager's)
+  const quick = QUICK_CREATE.filter((q) => can(q.module)
+    && !(q.module === 'jobs' && ['team_leader', 'technician'].includes(baseRoleOf(effectiveRole) ?? '')));
 
   return (
     <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`} aria-label="Main navigation">

@@ -202,7 +202,7 @@ export const ACTION_LABELS: Record<LeadActionId, string> = {
   edit: 'Edit details',
   log_contact: 'Log contact',
   schedule_inspection: 'Schedule meeting (assign Supervisor)',
-  reschedule_inspection: 'Reschedule meeting',
+  reschedule_inspection: 'Reschedule / reassign meeting',
   record_findings: 'Submit meeting report / inspection findings',
   create_proposal: 'Create proposal',
   open_proposal: 'Open proposal',
@@ -299,7 +299,10 @@ export function availableActions(lead: Lead): AvailableAction[] {
       case 'schedule_negotiation_meeting': {
         const mt = lead.inspection?.meetingType;
         const ist = lead.inspection?.status;
+        // While a meeting is scheduled, "Reschedule / reassign meeting" already covers it: no second
+        // reschedule button for the same meeting
         if (ist === 'scheduled') {
+          if (stageActions.includes('reschedule_inspection')) continue;
           label = mt === 'negotiation' ? 'Reschedule negotiation meeting' : mt === 'renewal' ? 'Reschedule renewal meeting' : 'Reschedule meeting';
         } else if (stage === 'won') {
           label = 'Schedule renewal meeting';
@@ -453,10 +456,20 @@ const NEXT_ACTION: Record<PipelineStage, { action: LeadActionId; label: string }
   lost: { action: 'reopen', label: 'Reopen lead' },
 };
 
-/** The single recommended next step shown on each row. */
-export function nextStep(lead: Lead): { label: string; action: LeadActionId } {
+/**
+ * The single recommended next step shown on each row. With the viewer's uid, a scheduled meeting
+ * shows "Submit meeting report" only to the people attending it; for everyone else (Operations Manager,
+ * CRO) it is "Assign Supervisor" when nobody is assigned, else "Reschedule / reassign meeting".
+ */
+export function nextStep(lead: Lead, viewerUid?: string): { label: string; action: LeadActionId } {
   const stage = stageOf(lead);
   const actions = availableActions(lead);
+  const i = lead.inspection;
+  if (i?.status === 'scheduled' && actions.some((a) => a.id === 'reschedule_inspection' && a.enabled)) {
+    if (!i.assignedTeamLeaderId) return { action: 'reschedule_inspection', label: 'Assign Supervisor' };
+    const attending = !!viewerUid && (i.assignedTeamLeaderId === viewerUid || (i.inspectorIds ?? []).includes(viewerUid));
+    if (viewerUid && !attending) return { action: 'reschedule_inspection', label: 'Reschedule / reassign meeting' };
+  }
   // Residential shortcut: propose directly without Supervisor meeting.
   if (lead.clientType === 'residential' && !lead.proposalId && !['won', 'lost'].includes(stage)) {
     const cp = actions.find((a) => a.id === 'create_proposal' && a.enabled);

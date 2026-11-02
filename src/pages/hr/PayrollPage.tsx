@@ -9,7 +9,7 @@ import { EmptyState } from '../../components/common/EmptyState';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
-import { canEditModule } from '../../lib/permissions';
+import { canEditModule, baseRoleOf } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
 import { calculateSalaryLine, payrollRulesFrom } from '../../lib/payroll';
@@ -36,8 +36,8 @@ export const PayrollPage: React.FC = () => {
   const { success, error } = useNotification();
 
   const isSuperAdmin = effectiveRole === 'super_admin';
-  const isFinance = effectiveRole === 'finance' || effectiveRole === 'super_admin' || effectiveRole === 'admin';
-  const isHR = effectiveRole === 'hr' || effectiveRole === 'super_admin' || effectiveRole === 'admin';
+  const isFinance = ['finance', 'super_admin', 'admin'].includes(baseRoleOf(effectiveRole) ?? '');
+  const isHR = ['hr', 'super_admin', 'admin'].includes(baseRoleOf(effectiveRole) ?? '');
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedCycle, setSelectedCycle] = useState<SalaryCycle | null>(null);

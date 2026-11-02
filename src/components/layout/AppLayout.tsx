@@ -17,7 +17,23 @@ function useCloudErrorToasts() {
       dataService.onWriteError((e) => {
         if (Date.now() - last.current < 4000) return;
         last.current = Date.now();
-        error('Not saved to the cloud', e.message);
+        // Name the record so a refused save can be traced (e.g. "service_jobs/JOB-…")
+        const where = e.collection ? ` [${e.collection}${e.id ? `/${e.id}` : ''}${e.fields?.length ? ` · fields: ${e.fields.join(', ')}` : ''}]` : '';
+        if (e.code !== 'permission-denied') return error('Not saved to the cloud', `${e.message}${where}`);
+        // Refused: say whether the live database still has old rules (the usual cause)
+        dataService.rulesAreCurrent().then((current) => {
+          if (current === false) {
+            error('Not saved: database rules are out of date',
+              dataService.isSuperAdminSession()
+                ? `The live Firebase rules are older than this portal. Publish firestore.rules (Firebase Console → Firestore → Rules → Publish).${where}`
+                : 'The system is being updated. Please tell the administrator and try again shortly.');
+          } else {
+            // Plain reason for everyone; technical details only for the super admin
+            dataService.explainAccess(e.collection, e.id, e.fields).then(({ reason, details }) =>
+              error('Not saved: not allowed',
+                dataService.isSuperAdminSession() ? `${reason}${where} — ${details}` : reason));
+          }
+        });
       }),
     [error]
   );

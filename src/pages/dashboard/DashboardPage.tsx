@@ -1,3 +1,5 @@
+import { TodayWorkBar } from '../../features/calendar/TodayWorkBar';
+import { myWorkItems } from '../../lib/myWork';
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import {
@@ -1043,18 +1045,37 @@ function AdminDashboard() {
 }
 
 // ─── Main Export ───────────────────────────────────────────────────────────────
+/** Today's work strip shown above every role's dashboard. */
+const MyTodayBar: React.FC = () => {
+  const store = useDataStore();
+  const { userProfile, effectiveRole } = useAuth();
+  const items = myWorkItems(
+    { uid: userProfile?.uid || '', role: effectiveRole },
+    { leads: store.getLeads(), jobs: store.getJobs(), invoices: store.getInvoices() },
+    true
+  );
+  return <TodayWorkBar items={items} compact />;
+};
+
 export const DashboardPage: React.FC = () => {
   const { effectiveRole } = useAuth();
   const base = baseRoleOf(effectiveRole);
 
-  // CRO / Sales: lead pipeline & proposal management
-  if (base === 'sales') return <CRODashboard />;
-  // Operations Coordinator: schedules jobs, dispatches, assigns teams
-  if (base === 'operations') return <OpsManagerDashboard />;
-  // Supervisor (PCO field lead): sees own assigned visits & meetings
-  if (base === 'team_leader') return <OperationPersonDashboard />;
-  // Technician: sees only their own jobs
-  if (base === 'technician') return <TechnicianDashboard />;
-  // Super Admin / Admin / Management: full overview
-  return <AdminDashboard />;
+  const body =
+    // CRO / Sales: lead pipeline & proposal management
+    base === 'sales' ? <CRODashboard />
+    // Operations Manager: schedules jobs, dispatches, assigns teams
+    : base === 'operations' ? <OpsManagerDashboard />
+    // Supervisor (PCO field lead): sees own assigned visits & meetings
+    : base === 'team_leader' ? <OperationPersonDashboard />
+    // Technician: sees only their own jobs
+    : base === 'technician' ? <TechnicianDashboard />
+    // Super Admin / Admin / Management / Finance: full overview
+    : <AdminDashboard />;
+  return (
+    <>
+      <MyTodayBar />
+      {body}
+    </>
+  );
 };

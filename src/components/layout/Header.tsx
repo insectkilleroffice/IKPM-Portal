@@ -110,7 +110,13 @@ export const Header: React.FC<{ onMenu: () => void }> = ({ onMenu }) => {
   const sync = !isOnline
     ? { cls: 'pending', icon: CloudOff, label: 'Offline · changes saved on device', title: 'You are offline. Changes are stored on this device and sync automatically.' }
     : cloud.status === 'error'
-      ? { cls: 'error', icon: AlertTriangle, label: 'Cloud sync blocked', title: cloud.lastError?.message || 'Firestore refused access' }
+      ? {
+          cls: 'error',
+          icon: AlertTriangle,
+          // Name what couldn't load, e.g. "Cloud sync blocked: contracts"
+          label: cloud.blocked?.length ? `Cloud sync blocked: ${cloud.blocked.join(', ')}` : 'Cloud sync blocked',
+          title: `${cloud.blocked?.length ? `Not loaded: ${cloud.blocked.join(', ')}. ` : ''}${cloud.lastError?.message || 'Firestore refused access'}`,
+        }
       : cloud.pendingWrites > 0
         ? { cls: 'pending', icon: RefreshCw, label: `Saving ${cloud.pendingWrites}…`, title: 'Writing changes to Cloud Firestore' }
         : cloud.status === 'connecting'

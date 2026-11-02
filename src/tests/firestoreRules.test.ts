@@ -15,26 +15,38 @@ const block = (match: string) => {
 describe('firestore.rules: folders', () => {
   it('company files need company_files access; client files need files access', () => {
     const docs = block('documents');
-    expect(docs).toMatch(/ownerKind\(resource\.data\) == 'library' && canViewCompanyFiles\(\)/);
-    expect(docs).toMatch(/isClientKind\(resource\.data\) && canView\('files'\) && inScope/);
-    expect(docs).toMatch(/owner\.kind == 'library' && canEditCompanyFiles\(\)/);
+    expect(rules).toMatch(/ownerKind\(resource\.data\) == 'library' && \(isSA\(w\) \|\| \(w\.active && companyFiles\(w\) in \['view', 'edit'\]\)\)/);
+    expect(rules).toMatch(/isClientKind\(resource\.data\) && canV\(w, 'files'\) && inScope/);
+    expect(rules).toMatch(/owner\.kind == 'library' && \(isSA\(w\) \|\| companyFiles\(w\) == 'edit'\)/);
     // Roles saved before company_files existed fall back to 'documents'
-    expect(rules).toMatch(/get\('company_files', roleModules\(\)\.get\('documents', 'none'\)\)/);
+    expect(rules).toMatch(/w\.mods\.get\('company_files', w\.mods\.get\('documents', 'none'\)\)/);
   });
 
   it('template versions are create-only; commercial wording is super admin only', () => {
     const t = block('template_versions');
     expect(t).toMatch(/allow update, delete: if false/);
-    expect(t).toMatch(/kind == 'commercial' && isSuperAdmin\(\)/);
-    expect(t).toMatch(/kind == 'wording' && canEditWordingTemplates\(\)/);
+    expect(rules).toMatch(/kind == 'commercial' && isSA\(w\)/);
+    expect(rules).toMatch(/kind == 'wording'\s*&& \(isSA\(w\) \|\| w\.mods\.get\('templates'/);
   });
+
+  // Rule logic lives in named functions (each rule reads the caller once through who())
+  const fn = (name: string) => {
+    const start = rules.indexOf(`function ${name}(`);
+    expect(start, `function ${name} exists`).toBeGreaterThan(-1);
+    return rules.slice(start, rules.indexOf('\n    }', start));
+  };
 
   it('ownerScope must match the owner on create and update', () => {
-    expect(block('documents').match(/scopeMatchesOwner\(request\.resource\.data\)/g)?.length).toBe(2);
+    expect(fn('documentCreate')).toMatch(/scopeMatchesOwner\(request\.resource\.data\)/);
+    expect(fn('documentUpdate')).toMatch(/scopeMatchesOwner\(request\.resource\.data\)/);
   });
 
-  it.each(['documents', 'invoices', 'document_packs'])('%s keep ownerScope / clientId on update', (c) => {
-    expect(block(c)).toMatch(/folderOwnerKept\(\)/);
+  it.each([['documents', 'documentUpdate'], ['invoices', 'invoiceUpdate']])('%s keep ownerScope / clientId on update', (_c, f) => {
+    expect(fn(f)).toMatch(/folderOwnerKept\(\)/);
+  });
+
+  it('document packs keep ownerScope / clientId on update', () => {
+    expect(block('document_packs')).toMatch(/folderOwnerKept\(\)/);
   });
 
   it.each(['proposals', 'contracts'])('%s keep ownerScope / clientId (via updateMod)', (c) => {
@@ -48,18 +60,18 @@ describe('firestore.rules: folders', () => {
   });
 
   it('technicians cannot change folder fields on their jobs', () => {
-    expect(block('service_jobs')).toMatch(/'ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory'/);
+    expect(rules).toMatch(/function jobUpdate[\s\S]*?'ownerScope', 'clientId', 'clientType', 'branchId', 'folderPath', 'fileCategory'/);
   });
 
   it('posted invoices stay immutable and audit logs append-only', () => {
-    expect(block('invoices')).toMatch(/isPosted', false\) != true/);
+    expect(rules).toMatch(/function invoiceUpdate[\s\S]*?isPosted', false\) != true/);
     expect(block('invoices')).toMatch(/allow delete: if false/);
     expect(block('audit_logs')).toMatch(/allow update, delete: if false/);
   });
 
   it('payments and outreach logs only change by being filed', () => {
-    expect(block('payments')).toMatch(/allow update: if canEdit\('invoices'\) && filingOnly\(\)/);
-    expect(block('outreach_logs')).toMatch(/allow update: if filingOnly\(\)/);
+    expect(block('payments')).toMatch(/allow update: if canE\(who\(\), 'invoices'\) && filingOnly\(who\(\)\)/);
+    expect(block('outreach_logs')).toMatch(/allow update: if filingOnly\(who\(\)\)/);
   });
 });
 
@@ -70,12 +82,12 @@ describe('firestore.rules: complaints', () => {
 
   it('complaints require complaints module access to read', () => {
     const c = block('complaints');
-    expect(c).toMatch(/canView\('complaints'\)/);
+    expect(c).toMatch(/readMod\(who\(\), 'complaints'\)/);
   });
 
   it('complaints require edit access to create', () => {
     const c = block('complaints');
-    expect(c).toMatch(/canEdit\('complaints'\)/);
+    expect(c).toMatch(/canE\(who\(\), 'complaints'\)|createMod\(who\(\), 'complaints'\)/);
   });
 
   it('complaints are scoped (inScope check on read)', () => {
@@ -85,7 +97,7 @@ describe('firestore.rules: complaints', () => {
 
   it('complaints can only be deleted by super admin', () => {
     const c = block('complaints');
-    expect(c).toMatch(/isSuperAdmin\(\)/);
+    expect(c).toMatch(/allow delete: if isSA\(who\(\)\)/);
   });
 
   it('defaultModulesFor includes complaints for management, sales, operations', () => {
@@ -115,39 +127,40 @@ describe('firestore.rules: complaints', () => {
 
   it('approvals rules: managers can update; nobody can approve own request', () => {
     expect(rules).toMatch(/match \/approvals\/\{id\}/);
-    expect(rules).toMatch(/canEdit\('approvals'\)/);
+    expect(rules).toMatch(/canE\(who\(\), 'approvals'\)/);
     expect(rules).toMatch(/resource\.data\.ownerUid != request\.auth\.uid/);
   });
 
   it('approvals rules: requesters can only read their own; managers read all', () => {
     const appBlock = rules.match(/match \/approvals\/\{id\}[\s\S]*?allow delete/)?.[0];
     expect(appBlock).toBeTruthy();
-    expect(appBlock).toMatch(/canEdit\('approvals'\)/);
+    expect(appBlock).toMatch(/canE\(who\(\), 'approvals'\)/);
     expect(appBlock).toMatch(/resource\.data\.ownerUid == request\.auth\.uid/);
   });
 
   it('contracts rule allows canEdit write (required for approval-triggered cancel/reactivate)', () => {
     const contractBlock = block('contracts');
-    expect(contractBlock).toMatch(/canEdit\('contracts'\)/);
+    expect(rules).toMatch(/function contractUpdate[\s\S]*?canE\(w, 'contracts'\)/);
     expect(contractBlock).toMatch(/allow (create|update|write)/);
   });
 
   it('contracts are protected by updateMod (folder ownership preserved on update)', () => {
-    expect(block('contracts')).toMatch(/updateMod\(/);
+    expect(rules).toMatch(/function contractUpdate\(w\) \{\s*return updateMod\(w, 'contracts'\)/);
   });
 
   it('new module rules: coordinator cannot read employee_private; finance can read employee_pay; technician cannot read other attendance', () => {
     // CNIC / bank data: HR and the CEO only, checked by role so an 'hr' module grant never exposes it
     const privBlock = block('employee_private');
-    expect(privBlock).toMatch(/allow read: if isHrOrCeo\(\)/);
-    expect(privBlock).toMatch(/allow create, update: if isHrOrCeo\(\)/);
-    expect(privBlock).not.toMatch(/canEdit\('hr'\)|operations/);
-    expect(rules).toMatch(/function isHrOrCeo\(\) \{\s*return isSuperAdmin\(\) \|\| \(active\(\) && role\(\) == 'hr'\);/);
+    expect(privBlock).toMatch(/allow read: if isHrOrCeo\(who\(\)\)/);
+    expect(privBlock).toMatch(/allow create, update: if isHrOrCeo\(who\(\)\)/);
+    expect(privBlock).not.toMatch(/canE\(who\(\), 'hr'\)|operations/);
+    // By role (or the role it is based on), never by module level
+    expect(rules).toMatch(/function isHrOrCeo\(w\) \{\s*return isSA\(w\) \|\| isBase\(w, 'hr'\);/);
 
     const payBlock = block('employee_pay');
-    expect(payBlock).toMatch(/canView\('payroll'\) \|\| canEdit\('payroll'\)/);
+    expect(payBlock).toMatch(/canV\(who\(\), 'payroll'\)/);
 
     const attBlock = block('attendance');
-    expect(attBlock).toMatch(/role\(\) == 'technician' && resource\.data\.get\('employeeId', ''\) == me\(\)\.get\('employeeId', ''\)/);
+    expect(rules).toMatch(/isBase\(w, 'technician'\) && resource\.data\.get\('employeeId', ''\) == get\(profilePath\(\)\)\.data\.get\('employeeId', ''\)/);
   });
 });

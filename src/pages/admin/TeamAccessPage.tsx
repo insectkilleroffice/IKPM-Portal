@@ -64,7 +64,13 @@ interface PersonForm extends Omit<NewStaffInput, 'password'> {
   uid?: string;
   password: string;
   confirmPassword: string;
+  /** This person's own module levels (null = exactly what the chosen role gives). */
+  customAccess?: Partial<Record<ModuleKey, AccessLevel>> | null;
 }
+
+const personalRoleId = (uid: string) => `person_${uid}`;
+const sameAccess = (a: Partial<Record<ModuleKey, AccessLevel>>, b: Partial<Record<ModuleKey, AccessLevel>>) =>
+  MODULES.every((m) => (a[m.key] ?? 'none') === (b[m.key] ?? 'none'));
 
 const blankPerson = (): PersonForm => ({
   displayName: '',
@@ -110,7 +116,9 @@ export const TeamAccessPage: React.FC = () => {
   const users = store.getUsers();
   const teams = store.getTeams();
   store.getRoles(); // keep role list reactive
-  const roles = getRoleDefinitions();
+  const allRoleDefs = getRoleDefinitions();
+  // Personal access profiles are per person: they never appear as roles to pick or manage
+  const roles = allRoleDefs.filter((r) => !r.personalFor);
   // Only the super admin can hand out the Super Admin role
   // PCOs have no portal login (they are HR employees), so the Technician role isn't offered to new people
   const assignableRoles = roles.filter((r) => (isSuperAdmin || (r.id !== 'super_admin' && !r.isHidden)) && r.id !== 'technician');
@@ -142,7 +150,9 @@ export const TeamAccessPage: React.FC = () => {
     setPerson(blankPerson());
   };
 
-  const openEditPerson = (u: UserProfile) =>
+  const openEditPerson = (u: UserProfile) => {
+    // Someone with a personal access profile shows the role it came from, with their own levels
+    const personal = allRoleDefs.find((r) => r.id === u.role && r.personalFor);
     setPerson({
       uid: u.uid,
       displayName: u.displayName,
@@ -151,11 +161,35 @@ export const TeamAccessPage: React.FC = () => {
       confirmPassword: '',
       businessEmail: u.businessEmail || u.email,
       phone: u.phone || '',
-      role: u.role,
+      role: personal ? (personal.templateRoleId || personal.basedOn) : u.role,
       dataScope: u.dataScope,
       teamId: u.teamId || '',
       designationTitle: u.designationTitle || '',
+      customAccess: personal ? { ...personal.modules } : null,
     });
+  };
+
+  /** Saves (or clears) the person's own access profile and returns the role id their account uses. */
+  const applyPersonalAccess = async (uid: string, p: PersonForm): Promise<string> => {
+    const template = allRoleDefs.find((r) => r.id === p.role);
+    if (!template || !p.customAccess || p.role === 'super_admin' || sameAccess(p.customAccess, template.modules)) return p.role;
+    const id = personalRoleId(uid);
+    const existing = allRoleDefs.find((r) => r.id === id);
+    await staffService.saveRole({
+      id,
+      name: `${template.name} · ${p.displayName.trim()}`,
+      description: `Personal access for ${p.displayName.trim()}, customised from ${template.name}`,
+      color: template.color,
+      basedOn: template.basedOn,
+      modules: { ...p.customAccess },
+      defaultScope: template.defaultScope,
+      isHidden: true,
+      personalFor: uid,
+      templateRoleId: template.id,
+      createdAt: existing?.createdAt,
+    });
+    return id;
+  };
 
   const personProblems = (p: PersonForm): string[] => {
     const out: string[] = [];
@@ -176,11 +210,12 @@ export const TeamAccessPage: React.FC = () => {
     setSaving(true);
     try {
       if (person.uid) {
+        const roleId = await applyPersonalAccess(person.uid, person);
         await staffService.updateStaff(person.uid, {
           displayName: person.displayName.trim(),
           businessEmail: (person.businessEmail || person.email).trim().toLowerCase(),
           phone: person.phone?.trim() || '',
-          role: person.role,
+          role: roleId,
           dataScope: person.dataScope,
           teamId: person.teamId || undefined,
           designationTitle: person.designationTitle?.trim() || '',
@@ -188,6 +223,9 @@ export const TeamAccessPage: React.FC = () => {
         success('Saved', `${person.displayName}'s access was updated. It applies to them immediately.`);
       } else {
         const res = await staffService.createStaff({ ...person, teamId: person.teamId || undefined });
+        // Own access chosen for this person: save it and switch their account to it
+        const roleId = await applyPersonalAccess(res.uid, person);
+        if (roleId !== person.role) await staffService.updateStaff(res.uid, { role: roleId });
         success(
           'Login created',
           `${person.displayName} can now sign in with ${person.email.trim().toLowerCase()} and the password you set.${res.resetEmailSent ? ' A link to change it was also emailed.' : ''}`
@@ -649,7 +687,7 @@ export const TeamAccessPage: React.FC = () => {
                       name="role"
                       checked={person.role === r.id}
                       disabled={person.uid === userProfile?.uid}
-                      onChange={() => setPerson({ ...person, role: r.id, dataScope: person.uid ? person.dataScope : r.defaultScope })}
+                      onChange={() => setPerson({ ...person, role: r.id, dataScope: person.uid ? person.dataScope : r.defaultScope, customAccess: person.customAccess ? { ...r.modules } : null })}
                       style={{ marginTop: 3 }}
                     />
                     <span>
@@ -660,6 +698,82 @@ export const TeamAccessPage: React.FC = () => {
                 ))}
               </div>
             </div>
+
+            {/* What this person can see and edit: the role's levels, or their own */}
+            {person.role !== 'super_admin' && (() => {
+              const template = roles.find((r) => r.id === person.role);
+              if (!template) return null;
+              const levels = person.customAccess ?? template.modules;
+              const custom = !!person.customAccess && !sameAccess(person.customAccess, template.modules);
+              const setLevel = (key: ModuleKey, lvl: AccessLevel) =>
+                setPerson({ ...person, customAccess: { ...(person.customAccess ?? template.modules), [key]: lvl } });
+              return (
+                <div className="form-group">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.4rem' }}>
+                    <label className="form-label" style={{ margin: 0 }}>What can they see and edit?</label>
+                    {custom && <span className="badge badge-amber">Customised for this person</span>}
+                    {canManageRoles ? (
+                      person.customAccess ? (
+                        <button type="button" className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} onClick={() => setPerson({ ...person, customAccess: null })}>
+                          Reset to {template.name} defaults
+                        </button>
+                      ) : (
+                        <button type="button" className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }} onClick={() => setPerson({ ...person, customAccess: { ...template.modules } })}>
+                          Customise access
+                        </button>
+                      )
+                    ) : (
+                      <span className="cell-sub" style={{ marginLeft: 'auto' }}>Only the super admin can customise access</span>
+                    )}
+                  </div>
+                  <div className="form-hint" style={{ marginBottom: '0.4rem' }}>
+                    {person.customAccess
+                      ? 'Choose None, View or Edit for each area. Only this person gets these levels; the role stays unchanged for everyone else.'
+                      : `Uses the ${template.name} role as it is. Click “Customise access” to change what this person can see or edit.`}
+                  </div>
+                  <div className="table-container" style={{ maxHeight: 340, overflowY: 'auto' }}>
+                    <table className="data-table">
+                      <tbody>
+                        {MODULES.map((m, i) => {
+                          const lvl = levels[m.key] ?? 'none';
+                          const newGroup = i === 0 || MODULES[i - 1].group !== m.group;
+                          return (
+                            <React.Fragment key={m.key}>
+                              {newGroup && (
+                                <tr>
+                                  <td colSpan={2} style={{ background: 'var(--bg-surface-alt)', fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', padding: '0.35rem 0.75rem' }}>{m.group}</td>
+                                </tr>
+                              )}
+                              <tr>
+                                <td style={{ padding: '0.4rem 0.75rem' }}>
+                                  <div className="cell-title" style={{ fontSize: '0.84rem' }}>{m.label}</div>
+                                </td>
+                                <td style={{ padding: '0.3rem 0.75rem', width: 230 }}>
+                                  <div className="view-toggle" style={{ borderRadius: 8, opacity: person.customAccess ? 1 : 0.6 }}>
+                                    {LEVELS.map((l) => (
+                                      <button
+                                        key={l.value}
+                                        type="button"
+                                        disabled={!person.customAccess}
+                                        className={lvl === l.value ? 'active' : ''}
+                                        style={{ width: 66, fontSize: '0.75rem', fontWeight: 600 }}
+                                        onClick={() => setLevel(m.key, l.value)}
+                                      >
+                                        {l.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </td>
+                              </tr>
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Data access</label>

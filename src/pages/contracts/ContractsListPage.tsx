@@ -87,7 +87,7 @@ export const ContractsListPage: React.FC = () => {
 
   const canEdit = canEditModule(effectiveRole, 'contracts');
   const canDirectAction = canEditModule(effectiveRole, 'approvals');
-  const canAdminAction = ['super_admin', 'admin'].includes(effectiveRole ?? '');
+  const canAdminAction = ['super_admin', 'admin'].includes(baseRoleOf(effectiveRole) ?? '');
   // Operations coordinators manage scheduling/assignment but don't own financials.
   const isOpsRole = baseRoleOf(effectiveRole) === 'operations';
   const canCreateContract = canEditModule(effectiveRole, 'crm') || canAdminAction;

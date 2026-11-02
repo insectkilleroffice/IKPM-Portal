@@ -50,6 +50,12 @@ export interface RoleDefinition {
   isSystem?: boolean;
   /** Hidden from the default role picker; only Super Admin can assign this role. */
   isHidden?: boolean;
+  /**
+   * Personal access profile: one person's own module levels, made in Team & Access by customising
+   * a role for them. personalFor = their uid; templateRoleId = the role it was customised from.
+   */
+  personalFor?: string;
+  templateRoleId?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -69,7 +75,7 @@ export const MODULES: { key: ModuleKey; label: string; group: string; hint?: str
   { key: 'templates', label: 'Document templates', group: 'Administration', hint: 'Edit = proposal, scope and SOP wording. Commercial / legal wording stays super admin only' },
   { key: 'team', label: 'Manage staff & teams', group: 'Administration', hint: 'Add people, set passwords, build teams' },
   { key: 'roles', label: 'Customize roles', group: 'Administration', hint: 'Change what each role can do' },
-  { key: 'complaints', label: 'Complaints', group: 'Field operations', hint: 'CRO logs, Ops Manager resolves, re-service visits' },
+  { key: 'complaints', label: 'Complaints', group: 'Field operations', hint: 'CRO logs, Operations Manager resolves, re-service visits' },
   { key: 'approvals', label: 'Approvals queue', group: 'Administration', hint: 'Manager approves discounts, voids, cancellations and refunds. Others can view their own requests.' },
   { key: 'hr', label: 'Employee management', group: 'Human resources', hint: 'Staff profiles, sensitive HR data, onboarding and probation' },
   { key: 'attendance', label: 'Daily attendance', group: 'Field operations', hint: 'Supervisor marks daily PCO attendance' },
@@ -161,10 +167,12 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     color: '#9A3412',
     description: 'Field supervisor. Submits meeting reports and job reports. Leads PCO technicians on site. Manages challans and daily attendance.',
     modules: {
-      ...all('edit', ['dashboard', 'inspections', 'jobs', 'files', 'complaints', 'challans', 'attendance', 'search', 'calendar', 'contracts', 'pco']),
-      customers: 'view',
+      // Field work only: visits, reports, challans, attendance of their own PCOs. Contracts, HR and
+      // dispatch (new jobs, assigning, rescheduling) belong to the Operations Manager.
+      // No client accounts or client file browser: job details carry the site, address and contact
+      // they need, and challans / photos they upload are filed automatically.
+      ...all('edit', ['dashboard', 'inspections', 'jobs', 'complaints', 'challans', 'attendance', 'search', 'calendar', 'pco']),
       company_files: 'view',
-      hr: 'view',
     },
   },
   {
@@ -179,7 +187,7 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
   },
   {
     id: 'finance',
-    name: 'Accounts / Finance',
+    name: 'Finance',
     basedOn: 'finance',
     isSystem: true,
     defaultScope: 'company',
@@ -224,9 +232,6 @@ export const SYSTEM_ROLE_IDS = DEFAULT_ROLES.map((r) => r.id) as SystemRole[];
 // ---------- Live registry (defaults, overridden by the Firestore `roles` collection) ----------
 let registry = new Map<string, RoleDefinition>(DEFAULT_ROLES.map((r) => [r.id, r]));
 
-/** Earlier display names of built-in roles (Team Leader is now "Supervisor", Sales is "CRO"). */
-const OLD_ROLE_NAMES = ['Team Leader', 'Operations Coordinator', 'Operation Coordinator', 'Sales', 'Sales Executive', 'Sales / CRO'];
-
 export function setRoleDefinitions(fromCloud: RoleDefinition[]) {
   const next = new Map<string, RoleDefinition>(DEFAULT_ROLES.map((r) => [r.id, r]));
   fromCloud.forEach((r) => {
@@ -241,9 +246,10 @@ export function setRoleDefinitions(fromCloud: RoleDefinition[]) {
           Object.entries({ ...baseModules, ...r.modules }).filter(([k]) => k in baseModules)
         ) as Partial<Record<ModuleKey, AccessLevel>>
       : { ...baseModules, ...r.modules };
-    // Built-in roles saved under their old names show the current name instead
-    const renamed = base?.isSystem && OLD_ROLE_NAMES.includes(r.name) ? base.name : r.name;
-    next.set(r.id, { ...base, ...r, name: renamed, modules: mergedModules });
+    // Built-in roles always show their standard name (CRO, Operations Manager, Supervisor, Finance,
+    // HR…), whatever name an older saved copy carries, so the same role never appears under two names
+    const name = base?.isSystem ? base.name : r.name;
+    next.set(r.id, { ...base, ...r, name, modules: mergedModules });
   });
   registry = next;
 }
@@ -273,7 +279,9 @@ export const canViewCompanyFiles = (role: UserRole | null | undefined) => canAcc
 export const canEditCompanyFiles = (role: UserRole | null | undefined) => canEditModule(role, 'company_files');
 
 /** The super admin and anyone given company-wide data access see every record. */
-export const seesAllRecords = (role: UserRole, scope: DataScope) => role === 'super_admin' || scope === 'company';
+/** Company-wide data: CEO, anyone set to "Entire company", and the Operations Manager (oversees all operations work). */
+export const seesAllRecords = (role: UserRole, scope: DataScope) =>
+  role === 'super_admin' || scope === 'company' || baseRoleOf(role) === 'operations';
 
 export const roleLabel = (id: UserRole | null | undefined) => {
   const key = resolveRoleKey(id);

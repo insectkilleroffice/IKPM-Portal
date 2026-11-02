@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Calendar, Check, Clock, AlertTriangle, Save, CheckCircle2,
+  Calendar, Check, Clock, AlertTriangle, Save,
   CalendarRange, Users, Filter, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -12,6 +12,7 @@ import { baseRoleOf, canEditModule } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
 import type { AttendanceRecord, AttendanceStatus, Employee } from '../../types/hr';
+import { companyProfile } from '../../services/companyProfile';
 
 const STATUS_OPTIONS: { value: AttendanceStatus; label: string; badgeClass: string }[] = [
   { value: 'present', label: 'Present', badgeClass: 'badge-teal' },
@@ -30,10 +31,12 @@ function getTodayStr() {
 interface RowState {
   employeeId: string;
   employeeName: string;
-  /** '' = not marked yet (never assume present) */
-  status: AttendanceStatus | '';
+  /** Present unless the Supervisor marks an exception (late, absent, leave…) */
+  status: AttendanceStatus;
   arrivalTime: string;
   lateMinutes: number;
+  /** Extra hours worked; paid from the person's salary in payroll */
+  overtimeHours: string;
   remarks: string;
   isExisting: boolean;
 }
@@ -41,23 +44,25 @@ interface RowState {
 export const AttendancePage: React.FC = () => {
   const store = useDataStore();
   const { effectiveRole, userProfile, currentUser } = useAuth();
-  const { success, error, info } = useNotification();
+  const { success, error } = useNotification();
 
-  const canEdit = canEditModule(effectiveRole, 'attendance') || effectiveRole === 'super_admin' || effectiveRole === 'admin';
+  const canEdit = canEditModule(effectiveRole, 'attendance') || ['super_admin', 'admin'].includes(baseRoleOf(effectiveRole) ?? '');
 
   const [selectedDate, setSelectedDate] = useState<string>(getTodayStr());
   const [rows, setRows] = useState<RowState[]>([]);
   const [saving, setSaving] = useState(false);
   // A Supervisor marks only their own team; managers / HR can see everyone
   const isTeamLeader = baseRoleOf(effectiveRole) === 'team_leader';
-  const [roleFilter, setRoleFilter] = useState<'my_team' | 'pco' | 'all'>(isTeamLeader ? 'my_team' : 'pco');
+  // Attendance and overtime apply to every employee; Supervisors see only their own PCOs
+  const [roleFilter, setRoleFilter] = useState<'my_team' | 'pco' | 'all'>(isTeamLeader ? 'my_team' : 'all');
+  const workStart = companyProfile.get().payrollRules?.workStartTime || '08:30';
 
   const employees: Employee[] = store.getEmployees ? store.getEmployees() : [];
   const myTeamIds = new Set(store.getTeamPcos(currentUser?.uid).map((e) => e.id));
   const existingAttendance: AttendanceRecord[] = store.getAttendance ? store.getAttendance(undefined, selectedDate, selectedDate) : [];
 
   // Check 2-day editing barrier for coordinator (unless super_admin / admin)
-  const isSuperAdmin = effectiveRole === 'super_admin' || effectiveRole === 'admin';
+  const isSuperAdmin = ['super_admin', 'admin'].includes(baseRoleOf(effectiveRole) ?? '');
   const today = getTodayStr();
   const daysDiff = Math.floor((new Date(today).getTime() - new Date(selectedDate).getTime()) / (1000 * 60 * 60 * 24));
   const isLocked = !isSuperAdmin && daysDiff > 2;
@@ -78,8 +83,9 @@ export const AttendancePage: React.FC = () => {
           employeeId: emp.id,
           employeeName: emp.name,
           status: match.status,
-          arrivalTime: match.arrivalTime || '08:30',
+          arrivalTime: match.arrivalTime || workStart,
           lateMinutes: match.lateMinutes || 0,
+          overtimeHours: match.overtimeHours ? String(match.overtimeHours) : '',
           remarks: match.remarks || '',
           isExisting: true,
         };
@@ -87,9 +93,10 @@ export const AttendancePage: React.FC = () => {
       return {
         employeeId: emp.id,
         employeeName: emp.name,
-        status: '',
-        arrivalTime: '08:30',
+        status: 'present', // automatic: everyone is present unless marked otherwise
+        arrivalTime: workStart,
         lateMinutes: 0,
+        overtimeHours: '',
         remarks: '',
         isExisting: false,
       };
@@ -106,8 +113,9 @@ export const AttendancePage: React.FC = () => {
         // Auto-calculate late minutes if status is late or arrival time changes
         if (updates.arrivalTime !== undefined || updates.status === 'late') {
           const [h, m] = next.arrivalTime.split(':').map(Number);
-          // Official start time 08:30
-          const startM = 8 * 60 + 30;
+          // Work start time from Settings → Payroll (default 08:30)
+          const [sh, sm] = workStart.split(':').map(Number);
+          const startM = (sh || 0) * 60 + (sm || 0);
           const curM = (h || 0) * 60 + (m || 0);
           if (curM > startM) {
             next.lateMinutes = curM - startM;
@@ -122,25 +130,21 @@ export const AttendancePage: React.FC = () => {
     );
   };
 
-  // Only fills people not marked yet, so it never overwrites a Late / Absent already chosen
-  const handleMarkAllPresent = () => {
-    setRows((prev) =>
-      prev.map((r) => (r.status ? r : { ...r, status: 'present', arrivalTime: '08:30', lateMinutes: 0 }))
-    );
-    info('Marked Present', 'Everyone not yet marked is now Present. Change the exceptions, then click Save.');
-  };
-
   const handleSaveAll = async () => {
     if (isLocked) {
       error('Locked', 'Editing past records older than 2 days is restricted to Super Admin.');
       return;
     }
-    const marked = rows.filter((r): r is RowState & { status: AttendanceStatus } => r.status !== '');
-    if (marked.length === 0) {
-      error('Nothing marked', 'Choose a status for each person (or use Mark All Present), then save.');
+    const badOt = rows.find((r) => r.overtimeHours.trim() && !(Number(r.overtimeHours) > 0 && Number(r.overtimeHours) <= 16));
+    if (badOt) {
+      error('Check overtime', `${badOt.employeeName}: overtime must be between 0.5 and 16 hours (or empty).`);
       return;
     }
-    const unmarked = rows.length - marked.length;
+    if (rows.some((r) => Number(r.overtimeHours) > 0 && (r.status === 'absent' || r.status === 'off' || r.status === 'leave'))) {
+      error('Check overtime', 'Overtime can only be entered for people who worked that day.');
+      return;
+    }
+    const marked = rows;
 
     setSaving(true);
     try {
@@ -154,6 +158,7 @@ export const AttendancePage: React.FC = () => {
           status: row.status,
           arrivalTime: row.arrivalTime,
           lateMinutes: row.lateMinutes,
+          overtimeHours: Number(row.overtimeHours) > 0 ? Number(row.overtimeHours) : undefined,
           remarks: row.remarks ? row.remarks.trim() : undefined,
           markedBy: currentUser?.uid || 'coordinator',
           markedByName: userProfile?.displayName || 'Supervisor',
@@ -161,7 +166,9 @@ export const AttendancePage: React.FC = () => {
         };
         await dataService.saveAttendance(record, userProfile?.email || 'coordinator');
       }
-      success('Attendance Saved', `Saved ${marked.length} ${marked.length === 1 ? 'person' : 'people'}.${unmarked ? ` ${unmarked} still not marked.` : ''}`);
+      const exceptions = marked.filter((r) => r.status !== 'present').length;
+      const otPeople = marked.filter((r) => Number(r.overtimeHours) > 0).length;
+      success('Attendance saved', `${marked.length} ${marked.length === 1 ? 'person' : 'people'} · ${exceptions} not present${otPeople ? ` · ${otPeople} with overtime` : ''}.`);
     } catch (err: unknown) {
       error('Save failed', (err instanceof Error ? err.message : String(err)));
     } finally {
@@ -190,16 +197,13 @@ export const AttendancePage: React.FC = () => {
           <h1>Daily Attendance</h1>
           <p className="page-subtitle">
             {isTeamLeader
-              ? 'Mark today’s attendance for your PCOs. Feeds the 30-day payroll cycle.'
-              : 'Daily attendance for PCOs and field staff, marked by each Supervisor. Feeds the 30-day payroll cycle.'}
+              ? 'Everyone is present automatically. Only mark who was late, absent or on leave, and add overtime hours. Feeds the 30-day payroll.'
+              : 'Everyone is present automatically. Supervisors mark their PCOs; HR / managers mark other staff. Only exceptions and overtime need entering.'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
           {canEdit && !isLocked && (
             <>
-              <button type="button" className="btn btn-secondary" onClick={handleMarkAllPresent}>
-                <CheckCircle2 size={16} /> Mark All Present
-              </button>
               <button type="button" className="btn btn-primary" onClick={handleSaveAll} disabled={saving}>
                 <Save size={16} /> {saving ? 'Saving...' : 'Save Attendance'}
               </button>
@@ -262,7 +266,9 @@ export const AttendancePage: React.FC = () => {
           <span className="badge badge-amber">Late: {lateCount}</span>
           <span className="badge badge-rose">Absent: {absentCount}</span>
           <span className="badge badge-blue">Leave/Half: {leaveCount}</span>
-          {rows.some((r) => !r.status) && <span className="badge badge-slate">Not marked: {rows.filter((r) => !r.status).length}</span>}
+          {rows.some((r) => Number(r.overtimeHours) > 0) && (
+            <span className="badge badge-indigo">Overtime: {rows.reduce((s, r) => s + (Number(r.overtimeHours) || 0), 0)} h</span>
+          )}
           <span className="cell-sub">Total: {rows.length}</span>
         </div>
       </div>
@@ -284,7 +290,8 @@ export const AttendancePage: React.FC = () => {
                 <th>Employee Name</th>
                 <th style={{ width: '160px' }}>Status</th>
                 <th style={{ width: '130px' }}>Arrival Time</th>
-                <th style={{ width: '110px' }}>Late (min)</th>
+                <th style={{ width: '90px' }}>Late (min)</th>
+                <th style={{ width: '110px' }}>Overtime (h)</th>
                 <th>Remarks / Reason</th>
                 <th style={{ width: '90px', textAlign: 'center' }}>Saved</th>
               </tr>
@@ -306,7 +313,6 @@ export const AttendancePage: React.FC = () => {
                       disabled={isLocked || !canEdit}
                       onChange={(e) => updateRow(r.employeeId, { status: e.target.value as AttendanceStatus })}
                     >
-                      <option value="" disabled>— Mark —</option>
                       {STATUS_OPTIONS.map((opt) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
@@ -335,6 +341,20 @@ export const AttendancePage: React.FC = () => {
                   </td>
                   <td>
                     <input
+                      type="number"
+                      min={0}
+                      max={16}
+                      step={0.5}
+                      className="form-input"
+                      style={{ minHeight: 32, padding: '2px 6px' }}
+                      placeholder="0"
+                      value={r.overtimeHours}
+                      disabled={isLocked || !canEdit || r.status === 'absent' || r.status === 'off' || r.status === 'leave'}
+                      onChange={(e) => updateRow(r.employeeId, { overtimeHours: e.target.value })}
+                    />
+                  </td>
+                  <td>
+                    <input
                       className="form-input"
                       style={{ minHeight: 32, padding: '2px 8px' }}
                       placeholder="Optional notes or excuse…"
@@ -349,8 +369,8 @@ export const AttendancePage: React.FC = () => {
                         <Check size={16} color="var(--ikpm-emerald-600)" />
                       </span>
                     ) : (
-                      <span className="cell-sub" title="Unsaved changes">
-                        Pending
+                      <span className="cell-sub" title="Counted as present automatically until you save a change">
+                        Auto
                       </span>
                     )}
                   </td>

@@ -179,7 +179,7 @@ export function computeNotifications(
   if (role === 'sales') {
     leads.forEach((l) => {
       const i = l.inspection;
-      // Ops Manager (or someone else) assigned a person to a meeting this CRO booked
+      // Operations Manager (or someone else) assigned a person to a meeting this CRO booked
       if (i?.status === 'scheduled' && i.assignedTeamLeaderId && i.assignedTeamLeaderId !== uid
         && (l.assignedToUserId || (l as { ownerUid?: string }).ownerUid) === uid) {
         out.push({
@@ -219,7 +219,7 @@ export function computeNotifications(
     });
   }
 
-  // ── Anyone assigned to a meeting (Supervisor, Ops Manager, CRO who took it himself…) ─
+  // ── Anyone assigned to a meeting (Supervisor, Operations Manager, CRO who took it himself…) ─
   // The id includes the date so a new assignment or a reschedule shows as unread again.
   leads
     .filter((l) => l.inspection?.status === 'scheduled'
@@ -438,7 +438,7 @@ export function computeNotifications(
     });
   }
 
-  // ── Accounts / Finance — QC Verified Jobs ready for Statutory Tax Invoicing ──
+  // ── Finance — QC Verified Jobs ready for Statutory Tax Invoicing ──
   if (role === 'finance' || isAdmin) {
     jobs.forEach((j) => {
       if (j.supervisorVerification?.isVerified) {

@@ -38,6 +38,7 @@ const ChallansPage = lazy(() => import('./pages/operations/ChallansPage').then((
 const EmployeesPage = lazy(() => import('./pages/hr/EmployeesPage').then((m) => ({ default: m.EmployeesPage })));
 const AttendancePage = lazy(() => import('./pages/operations/AttendancePage').then((m) => ({ default: m.AttendancePage })));
 const PayrollPage = lazy(() => import('./pages/hr/PayrollPage').then((m) => ({ default: m.PayrollPage })));
+const MyCalendarPage = lazy(() => import('./pages/calendar/MyCalendarPage').then((m) => ({ default: m.MyCalendarPage })));
 const SearchPage = lazy(() => import('./pages/search/SearchPage').then((m) => ({ default: m.SearchPage })));
 
 function App() {
@@ -62,6 +63,7 @@ function App() {
                 }
               >
                 <Route path="/" element={guard('dashboard', <DashboardPage />)} />
+                <Route path="/my-calendar" element={guard('dashboard', <MyCalendarPage />)} />
 
                 {/* Customers & sales pipeline */}
                 <Route path="/customers" element={guard('customers', <CustomerListPage />)} />

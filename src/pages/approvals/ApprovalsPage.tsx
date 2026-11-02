@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, XCircle, Clock, Ban, Filter } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -37,6 +37,13 @@ export const ApprovalsPage: React.FC = () => {
   const all = canApprove
     ? dataService.getApprovals()
     : dataService.getApprovals(uid);
+
+  // Bring the queue in step with proposals waiting for approval (approvers only)
+  const proposalVersion = dataService.getProposals().map((p) => `${p.id}:${p.status}`).join('|');
+  useEffect(() => {
+    if (canApprove) dataService.syncProposalApprovals(userProfile?.email || 'admin');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canApprove, proposalVersion]);
 
   const [statusFilter, setStatusFilter] = useState<ApprovalStatus | 'all'>('all');
   const [typeFilter, setTypeFilter] = useState<ApprovalType | 'all'>('all');

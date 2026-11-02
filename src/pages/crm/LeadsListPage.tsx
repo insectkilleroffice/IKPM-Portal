@@ -40,7 +40,7 @@ import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
 import { LeadFormModal } from '../../features/leads/LeadFormModal';
 import { ImportLeadsModal } from '../../features/leads/ImportLeadsModal';
 import { InspectionFindingsModal, LogContactModal, MeetingReportModal, PEST_OPTIONS, ScheduleInspectionModal, ScheduleSiteInspectionModal, SiteInspectionFindingsModal } from '../../features/leads/LeadActionModals';
-import { canEditModule } from '../../lib/permissions';
+import { canEditModule, baseRoleOf } from '../../lib/permissions';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { usePdfAction } from '../../hooks/usePdfAction';
 import { formatDate, formatDateTime } from '../../lib/formatters';
@@ -115,7 +115,7 @@ export const LeadsListPage: React.FC = () => {
   const canEdit = canEditModule(effectiveRole, 'crm');
   const canEditPco = canEditModule(effectiveRole, 'pco');
   const canEditInspections = canEditModule(effectiveRole, 'inspections');
-  const isOpsRole = ['operations', 'team_leader', 'admin', 'super_admin'].includes(effectiveRole || '');
+  const isOpsRole = ['operations', 'team_leader', 'admin', 'super_admin'].includes(baseRoleOf(effectiveRole) ?? '');
 
   const [tab, setTab] = useState<Tab>((searchParams.get('stage') as Tab) || 'all');
   const [query, setQuery] = useState('');
@@ -234,7 +234,7 @@ export const LeadsListPage: React.FC = () => {
     const action = availableActions(lead).find((a) => a.id === id);
     if (!action) return;
     if (!action.enabled) return warning('Not available', action.disabledReason || 'This step is not allowed at the current stage.');
-    const isPcoAction = ['record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection', 'schedule_negotiation_meeting'].includes(id);
+    const isPcoAction = ['schedule_inspection', 'record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection', 'schedule_negotiation_meeting'].includes(id);
     if (!canEdit && !READ_ONLY_ACTIONS.includes(id) && !(isPcoAction && (canEditPco || canEditInspections))) return openDetail(lead.id);
     switch (id) {
       case 'edit': return setFormLead(lead);
@@ -270,7 +270,7 @@ export const LeadsListPage: React.FC = () => {
     }
   };
 
-  const runNext = (lead: Lead) => runAction(lead, nextStep(lead).action);
+  const runNext = (lead: Lead) => runAction(lead, nextStep(lead, userProfile?.uid).action);
 
   /** "⋮" menu items: every allowed action except the one already on the primary button. */
   const menuItems = (lead: Lead, exclude?: LeadActionId): RowMenuItem[] =>
@@ -279,7 +279,7 @@ export const LeadsListPage: React.FC = () => {
         if (a.id === exclude) return false;
         if (canEdit) return true;
         if (READ_ONLY_ACTIONS.includes(a.id)) return true;
-        const isPco = ['record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection', 'schedule_negotiation_meeting'].includes(a.id);
+        const isPco = ['schedule_inspection', 'record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection', 'schedule_negotiation_meeting'].includes(a.id);
         return isPco && (canEditPco || canEditInspections);
       })
       .map((a) => ({
@@ -401,7 +401,7 @@ export const LeadsListPage: React.FC = () => {
               {visible.map((l) => {
                 const p = primaryContact(l);
                 const extra = contactsOf(l).length - 1;
-                const step = nextStep(l);
+                const step = nextStep(l, userProfile?.uid);
                 const due = isFollowUpDue(l);
                 const st = stageOf(l);
                 return (
@@ -467,7 +467,7 @@ export const LeadsListPage: React.FC = () => {
                     <td className="cell-sub">{ownerOf(l)}</td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="cell-actions" style={{ position: 'relative' }}>
-                        {(canEdit || READ_ONLY_ACTIONS.includes(step.action) || (['record_meeting','record_site_inspection','reschedule_inspection','schedule_site_inspection','schedule_negotiation_meeting'].includes(step.action) && (canEditPco || canEditInspections))) && (
+                        {(canEdit || READ_ONLY_ACTIONS.includes(step.action) || (['schedule_inspection','record_meeting','record_site_inspection','reschedule_inspection','schedule_site_inspection','schedule_negotiation_meeting'].includes(step.action) && (canEditPco || canEditInspections))) && (
                           <button className="btn btn-sm btn-secondary" onClick={() => runNext(l)}>
                             {step.label} <ArrowRight size={13} />
                           </button>
@@ -496,7 +496,7 @@ export const LeadsListPage: React.FC = () => {
           canEditInspections={canEditInspections}
           onClose={() => openDetail(null)}
           onAction={(id) => runAction(detail, id)}
-          menuItems={menuItems(detail, nextStep(detail).action)}
+          menuItems={menuItems(detail, nextStep(detail, userProfile?.uid).action)}
         />
       )}
 
@@ -751,12 +751,13 @@ interface DetailProps {
 const channelLabel = (a: LeadActivity) => CHANNELS.find((c) => c.value === a.channel)?.label || a.channel;
 
 // Actions gated by pco or inspections module (supervisors can use these)
-const PCO_ACTIONS: LeadActionId[] = ['record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection', 'schedule_negotiation_meeting'];
+const PCO_ACTIONS: LeadActionId[] = ['schedule_inspection', 'record_meeting', 'record_site_inspection', 'reschedule_inspection', 'schedule_site_inspection', 'schedule_negotiation_meeting'];
 
 const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, canEditPco, canEditInspections, onClose, onAction, menuItems }) => {
   const st = stageOf(lead);
   const contacts = contactsOf(lead);
-  const step = nextStep(lead);
+  const { userProfile } = useAuth();
+  const step = nextStep(lead, userProfile?.uid);
   const activities = lead.activities ?? [];
   const pdfAction = usePdfAction();
   const sitePhotos = [...(lead.inspection?.photos ?? []), ...(lead.sitePhotos ?? [])];
@@ -968,7 +969,7 @@ const LeadDetail: React.FC<DetailProps> = ({ lead, canEdit, canEditPco, canEditI
                 ) : null;
               })()}
               <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-                {allowed('reschedule_inspection') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('reschedule_inspection')}><CalendarClock size={14} /> Reschedule meeting</button>}
+                {allowed('reschedule_inspection') && <button className="btn btn-sm btn-secondary" onClick={() => onAction('reschedule_inspection')}><CalendarClock size={14} /> {lead.inspection.assignedTeamLeaderId ? 'Reschedule / reassign meeting' : 'Assign Supervisor'}</button>}
                 {allowed('schedule_negotiation_meeting') && (() => {
                   const a = actions.find((x) => x.id === 'schedule_negotiation_meeting');
                   return <button className="btn btn-sm btn-secondary" onClick={() => onAction('schedule_negotiation_meeting')}><CalendarClock size={14} /> {a?.label ?? 'Schedule meeting'}</button>;
