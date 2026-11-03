@@ -307,6 +307,13 @@ export const baseRoleOf = (id: UserRole | null | undefined): SystemRole | undefi
   return key ? registry.get(key)?.basedOn : undefined;
 };
 
+/**
+ * Who approves invoices before they reach the client: admin and super admin (and roles based on them).
+ * Mirrors isInvoiceApprover() in firestore.rules.
+ */
+export const canApproveInvoices = (id: UserRole | null | undefined): boolean =>
+  ['super_admin', 'admin'].includes(baseRoleOf(id) ?? '');
+
 export const SCOPE_LABELS: Partial<Record<DataScope, string>> = {
   own: 'Own records only',
   team: 'Own team’s records',

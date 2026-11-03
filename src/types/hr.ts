@@ -144,3 +144,69 @@ export interface SalaryCycle {
   createdAt: string;
   updatedAt: string;
 }
+
+// ---------- Employee letters: offer → employment contract → probation confirmation ----------
+
+export type EmployeeLetterKind = 'offer_letter' | 'employment_contract' | 'confirmation_letter';
+
+/** issued = printed / handed over; signed = the employee signed it (signed copy may be attached). */
+export type EmployeeLetterStatus = 'issued' | 'signed' | 'withdrawn';
+
+export const EMPLOYEE_LETTER_LABELS: Record<EmployeeLetterKind, string> = {
+  offer_letter: 'Offer Letter',
+  employment_contract: 'Employment Contract',
+  confirmation_letter: 'Confirmation Letter',
+};
+
+/** When each letter is given. */
+export const EMPLOYEE_LETTER_STAGE: Record<EmployeeLetterKind, string> = {
+  offer_letter: 'At hiring',
+  employment_contract: 'On joining',
+  confirmation_letter: 'End of probation',
+};
+
+/** Terms printed on a letter, frozen when it is issued (later salary or profile edits don't change it). */
+export interface EmployeeLetterTerms {
+  designation: string;
+  department: string;
+  reportingTo?: string;
+  joiningDate: string;
+  probationMonths: number;
+  probationEndDate?: string;
+  /** Monthly pay: basic + allowances. */
+  basicSalary: number;
+  allowances: { label: string; amount: number }[];
+  grossSalary: number;
+  workingHours: string;
+  /** Offer letter: last day to accept. */
+  offerValidUntil?: string;
+  /** Notice either side may give: during probation / after confirmation (days). */
+  noticeDaysProbation: number;
+  noticeDaysPermanent: number;
+  /** Confirmation letter: date the employee becomes permanent, and any revised gross pay. */
+  confirmationDate?: string;
+  revisedGrossSalary?: number;
+  /** Extra clauses HR adds for this employee (one per line). */
+  extraTerms?: string;
+}
+
+export interface EmployeeLetter {
+  id: string; // e.g. EMP-0007_offer_letter_1
+  employeeId: string;
+  employeeName: string;
+  kind: EmployeeLetterKind;
+  /** Reference printed on the letter, e.g. IKPM/HR/OL/2026/0007. */
+  refNo: string;
+  status: EmployeeLetterStatus;
+  terms: EmployeeLetterTerms;
+  issuedAt: string;
+  issuedBy: string;
+  issuedByName: string;
+  signedAt?: string;
+  /** Scan / photo of the signed copy. */
+  signedCopy?: { url: string; fileName: string; fileType: string };
+  withdrawnReason?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}

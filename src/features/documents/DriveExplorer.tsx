@@ -50,7 +50,7 @@ import {
   type FolderNode,
 } from '../../lib/folders';
 import type { PortalDocument } from '../../types/document';
-import { collectFolderItems, itemSearchText, KIND_LABEL, prettyPath, type FolderItem } from './folderItems';
+import { collectFolderItems, itemSearchText, remapLeadItems, KIND_LABEL, prettyPath, type FolderItem } from './folderItems';
 import { FolderUploadModal, type UploadTarget } from './FolderUploadModal';
 import { MoveDocumentModal } from './MoveDocumentModal';
 
@@ -63,6 +63,8 @@ interface Props {
   ensurePaths?: string[];
   /** Folder to open first (unlocked explorer). */
   initialPath?: string;
+  /** The customer's lead ids: their files are shown in this customer's folders (locked root only). */
+  leadIds?: string[];
 }
 
 const UNFILED_PATH = `/${UNFILED_ROOT}`;
@@ -110,7 +112,7 @@ function itemIcon(item: FolderItem) {
   return <FileText size={20} color="var(--ikpm-navy-700)" />;
 }
 
-export const DriveExplorer: React.FC<Props> = ({ rootPath, rootTitle, ensurePaths = [], initialPath }) => {
+export const DriveExplorer: React.FC<Props> = ({ rootPath, rootTitle, ensurePaths = [], initialPath, leadIds = [] }) => {
   const store = useDataStore();
   const version = store.getVersion();
   const navigate = useNavigate();
@@ -136,10 +138,10 @@ export const DriveExplorer: React.FC<Props> = ({ rootPath, rootTitle, ensurePath
   // Everything the person may see, limited to the locked root when there is one
   const items = useMemo(() => {
     const all = collectFolderItems().filter((i) => canSeeCompany || i.ownerScope !== 'company');
-    return rootPath ? all.filter((i) => isInFolder(i.folderPath, rootPath)) : all;
+    return rootPath ? remapLeadItems(all, rootPath, leadIds).filter((i) => isInFolder(i.folderPath, rootPath)) : all;
     // version: recompute when Firestore data arrives
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version, rootPath, canSeeCompany]);
+  }, [version, rootPath, canSeeCompany, leadIds.join('|')]);
 
   const tree = useMemo(() => {
     const full = getFolderTree(items, { ensurePaths: rootPath ? [rootPath, ...ensurePaths] : ensurePaths, includeCompany: canSeeCompany && !rootPath });

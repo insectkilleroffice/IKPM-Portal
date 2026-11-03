@@ -28,10 +28,16 @@ interface Props {
   onAssign?: () => void;
   /** CRO / admin edits this draft in place (e.g. after "Changes requested"). */
   onEdit?: () => void;
+  /** Approver edits the proposal and approves it, with a note of the changes for the client. */
+  onEditAndApprove?: () => void;
+  /** PDF download: approved proposals only, and only for the super admin (others send it from the portal). */
+  canDownload?: boolean;
 }
 
 /** Proposal details with approval, client decision, contract / job hand-off and sharing. */
-export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, canAccept, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onRequestChanges, onSubmitForApproval, onAccept, onDecline, onSend, onAssign, onEdit }) => {
+export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, canAccept, pdfBusy, onClose, onExportPdf, onFilePdf, onApprove, onReject, onRequestChanges, onSubmitForApproval, onAccept, onDecline, onSend, onAssign, onEdit, onEditAndApprove, canDownload = false }) => {
+  // Approvers decide proposals waiting for approval, and can approve drafts directly
+  const decidable = canApprove && (p.status === 'pending_approval' || p.status === 'draft');
   const navigate = useNavigate();
   const isPlan = Boolean(p.servicePlan?.length);
   const pricing = isPlan
@@ -43,24 +49,31 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
       isOpen
       onClose={onClose}
       title={`Proposal ${p.id} (R${p.revisionNumber})`}
-      subtitle={`${p.customerName}${p.branchName ? ` · ${p.branchName}` : ''} · ${p.status.replace(/_/g, ' ')} · ${formatDate(p.createdAt)}`}
+      subtitle={`${p.customerName}${p.branchName ? ` · ${p.branchName}` : ''} · ${String(p.status ?? '').replace(/_/g, ' ')} · ${formatDate(p.createdAt)}`}
       maxWidth="760px"
       footer={
         <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button className="btn btn-secondary" onClick={onExportPdf} disabled={pdfBusy}>
-              <Download size={14} /> <span>PDF</span>
-            </button>
+            {canDownload && (
+              <button className="btn btn-secondary" onClick={onExportPdf} disabled={pdfBusy} title="Super admin only">
+                <Download size={14} /> <span>PDF</span>
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={onFilePdf} disabled={pdfBusy} title="Save the PDF in the client's Proposals folder">
               <FolderUp size={14} /> <span>Save to client folder</span>
             </button>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            {p.status === 'pending_approval' && canApprove && (
+            {decidable && (
               <>
-                <button className="btn btn-danger" onClick={onReject}>Reject</button>
+                {p.status === 'pending_approval' && <button className="btn btn-danger" onClick={onReject}>Reject</button>}
                 {onRequestChanges && (
                   <button className="btn btn-secondary" onClick={onRequestChanges}>Request changes</button>
+                )}
+                {onEditAndApprove && (
+                  <button className="btn btn-secondary" onClick={onEditAndApprove} title="Change the proposal, note what changed for the client, and approve">
+                    <Pencil size={14} /> <span>Edit &amp; approve</span>
+                  </button>
                 )}
                 <button className="btn btn-primary" onClick={onApprove}><CheckCircle2 size={15} /> <span>Approve</span></button>
               </>
@@ -123,6 +136,8 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
           <div className={p.approval.status === 'approved' ? 'info-hint' : 'error-hint'}>
             <strong>Approval:</strong> {p.approval.status} ({p.approval.ruleId}). {p.approval.ruleDescription}
             {p.approval.rejectionReason && <div><strong>Reason:</strong> {p.approval.rejectionReason}</div>}
+            {p.approval.status === 'approved' && p.approval.decisionByName && <div>Approved by {p.approval.decisionByName}{p.approval.decisionAt ? ` on ${formatDate(p.approval.decisionAt)}` : ''}.</div>}
+            {p.approval.changesNote && <div><strong>Changes on approval (sent to the client):</strong> {p.approval.changesNote}</div>}
           </div>
         )}
         {p.status === 'draft' && p.approval?.status === 'changes_requested' && (
@@ -171,7 +186,7 @@ export const ProposalDetailModal: React.FC<Props> = ({ proposal: p, canApprove, 
                   {p.lineItems.map((li) => (
                     <tr key={li.id}>
                       <td><strong>{li.serviceName}</strong><div className="cell-sub">{li.chemicalsSuggested}</div></td>
-                      <td>{li.targetPest.replace(/_/g, ' ')}</td>
+                      <td>{String(li.targetPest ?? '').replace(/_/g, ' ')}</td>
                       <td>{li.quantity}</td>
                       <td style={{ fontWeight: 700 }}>{formatPKR(li.totalPrice)}</td>
                     </tr>

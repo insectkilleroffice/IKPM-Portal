@@ -17,6 +17,8 @@ export async function fileGenerated(
     fileName: string;
     subPath?: string;
     user: { email?: string; displayName?: string };
+    /** Client documents (invoices): never save a copy to the user's computer when cloud storage is off. */
+    noLocalDownload?: boolean;
   } & TemplateStamp
 ): Promise<PortalDocument | null> {
   let stored: StoredFile = {
@@ -40,7 +42,7 @@ export async function fileGenerated(
     } catch (err) {
       console.warn('Cloudinary upload fallback to local:', err);
     }
-  } else {
+  } else if (!opts.noLocalDownload) {
     if (typeof window !== 'undefined') {
       try {
         downloadBlob(blob, opts.fileName);

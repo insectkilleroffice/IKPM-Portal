@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   FileSignature,
@@ -22,12 +22,16 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { baseRoleOf, canEditModule } from '../../lib/permissions';
 import { effectiveContractStatus } from '../../lib/contractUtils';
-import type { Contract, ContractType, ServiceFrequency } from '../../types/operations';
+import { CONTRACT_CANCEL_CATEGORY_LABELS } from '../../types/operations';
+import type { Contract, ContractCancelCategory, ContractType, ServiceFrequency } from '../../types/operations';
 import type { Approval } from '../../types/approvals';
 import { getContractNextAction } from '../../lib/workflow';
 import { frequencyForVisits } from '../../lib/proposalPlan';
 import { packStatus } from '../../lib/onboarding';
 import { ScheduleGeneratorModal } from '../../features/schedule/ScheduleGeneratorModal';
+import { CancellationSettlementModal } from '../../features/invoices/CancellationSettlementModal';
+import { BillingCycleInput } from '../../features/proposals/BillingCycleInput';
+import { billingCycleLabel } from '../../lib/billingCycle';
 import type { Proposal } from '../../types/proposal';
 
 const isoDay = (d: Date) => d.toISOString().split('T')[0];
@@ -47,6 +51,7 @@ function fromProposal(p: Proposal) {
     frequency: (plan ? frequencyForVisits(p.serviceVisitsPerMonth) : 'monthly') as ServiceFrequency,
     totalContractValue: p.totalAmount,
     billingTerm: 'monthly_billing' as const,
+    billingCycleDays: p.billingCycleDays ?? 0,
     serviceScope: plan ? (p.scopeSections ?? []).map((s) => `${s.key}. ${s.title}`).join(' · ') || p.scopeOfWork : p.scopeOfWork,
     warrantyPeriodMonths: p.warrantyPeriodMonths || 0,
   };
@@ -67,6 +72,7 @@ function planFieldsFrom(p: Proposal | undefined): Partial<Contract> {
     taxPercent: p.taxPercent,
     tenureMonths: p.tenureMonths,
     paymentTermsDays: p.paymentTermsDays,
+    billingCycleDays: p.billingCycleDays,
     terms: p.terms,
     exclusions: p.exclusions,
     deviceOwnership: p.deviceOwnership,
@@ -105,7 +111,17 @@ export const ContractsListPage: React.FC = () => {
   const [assignOpsModal, setAssignOpsModal] = useState<Contract | null>(null);
   const [selectedOpsUserId, setSelectedOpsUserId] = useState('');
   const [cancelModal, setCancelModal] = useState<Contract | null>(null);
+  // Cancelled contract settlement (?settle=ID opens it, e.g. from the Approvals page)
+  const [settleContract, setSettleContract] = useState<Contract | null>(null);
+  const settleParam = searchParams.get('settle');
+  useEffect(() => {
+    if (!settleParam) return;
+    const c = dataService.getContractById(settleParam);
+    if (c) setSettleContract(c);
+  }, [settleParam]);
   const [cancelReason, setCancelReason] = useState('');
+  const [cancelCategory, setCancelCategory] = useState<ContractCancelCategory>('client_request');
+  const [cancelEffectiveDate, setCancelEffectiveDate] = useState(isoDay(new Date()));
   const [reactivateModal, setReactivateModal] = useState<Contract | null>(null);
   const [reactivateNote, setReactivateNote] = useState('');
 
@@ -132,6 +148,7 @@ export const ContractsListPage: React.FC = () => {
           frequency: 'monthly' as ServiceFrequency,
           totalContractValue: 0,
           billingTerm: 'monthly_billing' as const,
+          billingCycleDays: 0,
           serviceScope: 'Integrated Pest Management (IPM) maintenance',
           warrantyPeriodMonths: 0,
           assignedTeamLeaderId: '',
@@ -188,8 +205,23 @@ export const ContractsListPage: React.FC = () => {
     return eff === statusFilter;
   });
 
+  // One save at a time (the contract number comes from the server; repeat clicks made duplicates)
+  const creatingRef = useRef(false);
+  const [creatingContract, setCreatingContract] = useState(false);
   const handleCreateContract = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    setCreatingContract(true);
+    try {
+      await createContract();
+    } finally {
+      creatingRef.current = false;
+      setCreatingContract(false);
+    }
+  };
+
+  const createContract = async () => {
     // Guard: block if this proposal already has a contract
     if (newContract.proposalId) {
       const propConflict = dataService.getContracts().find(
@@ -256,6 +288,7 @@ export const ContractsListPage: React.FC = () => {
       frequency: newContract.frequency,
       totalContractValue: Number(newContract.totalContractValue),
       billingTerm: newContract.billingTerm,
+      billingCycleDays: Number(newContract.billingCycleDays) || 0,
       serviceScope: newContract.serviceScope,
       warrantyPeriodMonths: Number(newContract.warrantyPeriodMonths),
       totalJobsScheduled: 0,
@@ -276,6 +309,8 @@ export const ContractsListPage: React.FC = () => {
   };
 
   // Opens the schedule planner (Step 14): review and edit visits before jobs are created
+  // Planning the visit schedule is dispatch work: Operations Manager, admin and CEO only (not CRO / Finance)
+  const canSchedule = canEditModule(effectiveRole, 'jobs') && !['team_leader', 'technician'].includes(baseRoleOf(effectiveRole) ?? '');
   const handleGenerateSchedule = (contract: Contract) => setScheduleFor(contract);
 
   // Step 15: 60 days before tenureEnd: clone contract and create renewal proposal
@@ -385,10 +420,24 @@ export const ContractsListPage: React.FC = () => {
 
   function handleCancelContract() {
     if (!cancelModal || !cancelReason.trim()) { error('Reason required', 'Please state the cancellation reason.'); return; }
+    if (!cancelEffectiveDate) { error('Date required', 'Choose the last day of service.'); return; }
+    const reasonText = cancelReason.trim();
     if (canDirectAction) {
-      const updated: Contract = { ...cancelModal, status: 'cancelled', updatedAt: new Date().toISOString() };
-      dataService.saveContract(updated, userProfile?.email);
-      success('Contract cancelled', `${cancelModal.id} has been cancelled.`);
+      const ts = new Date().toISOString();
+      const before = dataService.getJobs().filter((j) => j.contractId === cancelModal.id && j.status === 'scheduled').length;
+      dataService.cancelContract(cancelModal.id, {
+        category: cancelCategory,
+        reason: reasonText,
+        effectiveDate: cancelEffectiveDate,
+        requestedBy: userProfile?.email ?? '',
+        requestedByName: userProfile?.displayName ?? 'Admin',
+        requestedAt: ts,
+        approvedBy: userProfile?.email ?? '',
+        approvedByName: userProfile?.displayName ?? 'Admin',
+        cancelledAt: ts,
+      }, userProfile?.email);
+      const after = dataService.getJobs().filter((j) => j.contractId === cancelModal.id && j.status === 'scheduled').length;
+      success('Contract cancelled', `${cancelModal.id} has been cancelled. ${before - after} scheduled visit(s) after ${formatDate(cancelEffectiveDate)} were cancelled.`);
     } else {
       const approvalId = `AP-${new Date().getFullYear()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
       const approval: Approval = {
@@ -401,13 +450,26 @@ export const ContractsListPage: React.FC = () => {
         requestedBy: userProfile?.email ?? '',
         requestedByName: userProfile?.displayName ?? 'Staff',
         requestedAt: new Date().toISOString(),
-        reason: cancelReason,
+        reason: `[${CONTRACT_CANCEL_CATEGORY_LABELS[cancelCategory]}] ${reasonText} (last service day ${formatDate(cancelEffectiveDate)})`,
+        cancelCategory,
+        effectiveDate: cancelEffectiveDate,
         status: 'pending',
         updatedAt: new Date().toISOString(),
       };
       dataService.saveApproval(approval, userProfile?.email);
       success('Cancellation requested', `Approval ${approvalId} submitted — awaiting manager decision.`);
     }
+    closeCancelModal();
+  }
+
+  function openCancelModal(c: Contract) {
+    setCancelModal(c);
+    setCancelReason('');
+    setCancelCategory('client_request');
+    setCancelEffectiveDate(isoDay(new Date()));
+  }
+
+  function closeCancelModal() {
     setCancelModal(null);
     setCancelReason('');
   }
@@ -628,7 +690,7 @@ export const ContractsListPage: React.FC = () => {
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                      <button
+                      {canSchedule && <button
                         className={hasJobs ? 'btn btn-secondary' : 'btn btn-primary'}
                         style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
                         title={hasJobs ? 'Edit or regenerate the visit schedule for this contract' : 'Generate all scheduled visit jobs across contract term'}
@@ -636,7 +698,7 @@ export const ContractsListPage: React.FC = () => {
                       >
                         <Calendar size={12} />
                         <span>{hasJobs ? 'Edit Schedule' : 'Generate Schedule'}</span>
-                      </button>
+                      </button>}
 
                       <button
                         className="btn btn-secondary"
@@ -658,7 +720,7 @@ export const ContractsListPage: React.FC = () => {
                           className="btn btn-secondary"
                           style={{ padding: '0.25rem 0.5rem', fontSize: '0.72rem', color: 'var(--ikpm-rose-600)' }}
                           title="Cancel contract"
-                          onClick={() => { setCancelModal(c); setCancelReason(''); }}
+                          onClick={() => openCancelModal(c)}
                         >
                           <Ban size={12} />
                         </button>
@@ -857,6 +919,15 @@ export const ContractsListPage: React.FC = () => {
             </div>
 
             <div className="form-group">
+              <label className="form-label">Invoice every</label>
+              <BillingCycleInput
+                value={newContract.billingCycleDays ?? 0}
+                onChange={(days) => setNewContract({ ...newContract, billingCycleDays: days })}
+              />
+              <span className="cell-sub">From the proposal. One invoice per cycle covers all visits done in it.</span>
+            </div>
+
+            <div className="form-group">
               <label className="form-label">Total Contract Value (PKR)</label>
               <input
                 type="number"
@@ -938,7 +1009,7 @@ export const ContractsListPage: React.FC = () => {
                 <button type="button" className="btn btn-secondary" onClick={() => setShowNewContractModal(false)}>
                   Cancel
                 </button>
-                <button type="submit" className="btn btn-primary" disabled={hasActiveConflict} title={hasActiveConflict ? 'An active contract already exists for this client / branch' : undefined}>
+                <button type="submit" className="btn btn-primary" disabled={hasActiveConflict || creatingContract} title={hasActiveConflict ? 'An active contract already exists for this client / branch' : undefined}>
                   <FileSignature size={15} />
                   <span>Register & Activate Contract</span>
                 </button>
@@ -969,7 +1040,28 @@ export const ContractsListPage: React.FC = () => {
               )}
               {!canReviseContract && <span />}
 
-              <button
+              {selectedContract.status === 'cancelled' && (canEditModule(effectiveRole, 'invoices') || baseRoleOf(effectiveRole) === 'super_admin') && (
+                <button
+                  className="btn btn-primary"
+                  title={baseRoleOf(effectiveRole) === 'super_admin' ? 'Decide the final invoice: done services only or the full month' : 'Report the cancellation settlement to the super admin'}
+                  onClick={() => { setSettleContract(selectedContract); setSelectedContract(null); }}
+                >
+                  <Ban size={14} />
+                  <span>Cancellation settlement</span>
+                </button>
+              )}
+              {selectedContract.status !== 'cancelled' && canEditModule(effectiveRole, 'invoices') && (
+                <button
+                  className="btn btn-secondary"
+                  title={`Invoice this contract's billing periods (${billingCycleLabel(selectedContract.billingCycleDays).toLowerCase()}): visits done in each period on one invoice`}
+                  onClick={() => navigate('/finance/invoices?tab=jobs')}
+                >
+                  <Calendar size={14} />
+                  <span>Bill contract</span>
+                </button>
+              )}
+
+              {canSchedule && <button
                 className="btn btn-primary"
                 onClick={() => {
                   handleGenerateSchedule(selectedContract);
@@ -978,11 +1070,21 @@ export const ContractsListPage: React.FC = () => {
               >
                 <Calendar size={14} />
                 <span>{selectedContract.totalJobsScheduled > 0 ? 'Edit Visit Schedule' : 'Generate Visit Schedule'}</span>
-              </button>
+              </button>}
             </div>
           }
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', fontSize: '0.85rem' }}>
+            {selectedContract.status === 'cancelled' && selectedContract.cancellation && (
+              <div style={{ padding: '0.75rem', backgroundColor: 'var(--ikpm-rose-100)', color: '#991B1B', borderRadius: 'var(--radius-md)' }}>
+                <strong>Cancelled — {CONTRACT_CANCEL_CATEGORY_LABELS[selectedContract.cancellation.category] || selectedContract.cancellation.category}.</strong>{' '}
+                {selectedContract.cancellation.reason}
+                <div className="cell-sub" style={{ marginTop: '0.25rem' }}>
+                  Last service day {formatDate(selectedContract.cancellation.effectiveDate)} · requested by {selectedContract.cancellation.requestedByName}
+                  {selectedContract.cancellation.approvedByName ? ` · approved by ${selectedContract.cancellation.approvedByName}` : ''}
+                </div>
+              </div>
+            )}
             {selectedContract.servicePlan?.length ? (
               <div>
                 <div className="section-title" style={{ marginTop: 0 }}>Monthly IPM service plan</div>
@@ -997,6 +1099,7 @@ export const ContractsListPage: React.FC = () => {
                 <dl className="detail-list" style={{ marginTop: '0.75rem' }}>
                   <dt>Visits / month</dt><dd>{selectedContract.serviceVisitsPerMonth ?? '—'} service · {selectedContract.followUpVisitsPerMonth ?? 0} follow-up</dd>
                   {canSeeFinancials && selectedContract.monthlyRate ? (<><dt>Monthly rate</dt><dd>{formatPKR(selectedContract.monthlyRate)} ({selectedContract.taxMode === 'inclusive' ? 'incl.' : 'excl.'} {selectedContract.taxPercent ?? 0}% tax)</dd></>) : null}
+                  {canSeeFinancials ? (<><dt>Invoiced</dt><dd>{billingCycleLabel(selectedContract.billingCycleDays)}</dd></>) : null}
                   {canSeeFinancials && selectedContract.paymentTermsDays ? (<><dt>Payment</dt><dd>Within {selectedContract.paymentTermsDays} days of invoice</dd></>) : null}
                   {selectedContract.exclusions && (<><dt>Exclusions</dt><dd>{selectedContract.exclusions}</dd></>)}
                 </dl>
@@ -1010,7 +1113,7 @@ export const ContractsListPage: React.FC = () => {
               <div>
                 <span style={{ color: 'var(--text-muted)' }}>Contract Type:</span>
                 <div style={{ fontWeight: 600, textTransform: 'capitalize' }}>
-                  {selectedContract.contractType.replace('_', ' ')} ({selectedContract.frequency})
+                  {String(selectedContract.contractType ?? '').replace('_', ' ')} ({selectedContract.frequency})
                 </div>
               </div>
               {canSeeFinancials && (
@@ -1038,18 +1141,22 @@ export const ContractsListPage: React.FC = () => {
       )}
       {scheduleFor && <ScheduleGeneratorModal contract={scheduleFor} onClose={() => setScheduleFor(null)} />}
 
+      {settleContract && (
+        <CancellationSettlementModal contract={settleContract} onClose={() => setSettleContract(null)} />
+      )}
+
       {/* Modal: Cancel Contract */}
       {cancelModal && (
         <Modal
           isOpen
-          onClose={() => { setCancelModal(null); setCancelReason(''); }}
+          onClose={closeCancelModal}
           title={canDirectAction ? 'Cancel Contract' : 'Request Contract Cancellation'}
           subtitle={`${cancelModal.id} — ${cancelModal.customerName}`}
-          maxWidth="440px"
+          maxWidth="480px"
           footer={
             <>
-              <button className="btn btn-secondary" onClick={() => { setCancelModal(null); setCancelReason(''); }}>Back</button>
-              <button className="btn btn-danger" onClick={handleCancelContract} disabled={!cancelReason.trim()}>
+              <button className="btn btn-secondary" onClick={closeCancelModal}>Back</button>
+              <button className="btn btn-danger" onClick={handleCancelContract} disabled={!cancelReason.trim() || !cancelEffectiveDate}>
                 <Ban size={14} /> {canDirectAction ? 'Cancel contract' : 'Submit for approval'}
               </button>
             </>
@@ -1061,11 +1168,29 @@ export const ContractsListPage: React.FC = () => {
                 A cancellation request will be sent to the manager for approval. The contract status will only change once approved.
               </p>
             )}
-            <div className="form-group">
-              <label className="form-label">Cancellation reason <span className="required">*</span></label>
-              <textarea className="form-input" rows={3} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}
-                placeholder="Why is this contract being cancelled?" />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Reason category <span className="required">*</span></label>
+                <select className="form-select" value={cancelCategory} onChange={(e) => setCancelCategory(e.target.value as ContractCancelCategory)}>
+                  {(Object.keys(CONTRACT_CANCEL_CATEGORY_LABELS) as ContractCancelCategory[]).map((k) => (
+                    <option key={k} value={k}>{CONTRACT_CANCEL_CATEGORY_LABELS[k]}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Last day of service <span className="required">*</span></label>
+                <input type="date" className="form-input" value={cancelEffectiveDate} min={cancelModal.startDate}
+                  onChange={(e) => setCancelEffectiveDate(e.target.value)} />
+              </div>
             </div>
+            <div className="form-group">
+              <label className="form-label">Cancellation details <span className="required">*</span></label>
+              <textarea className="form-input" rows={3} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="What happened? This is kept on the contract and shown on the final invoice." />
+            </div>
+            <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Visits scheduled after the last day of service are cancelled. Visits already done stay billable.
+            </p>
           </div>
         </Modal>
       )}

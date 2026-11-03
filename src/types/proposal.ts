@@ -95,6 +95,8 @@ export interface ApprovalRequest {
   decisionByName?: string;
   rejectionReason?: string;
   comments?: string;
+  /** What the approver changed before approving. Shown to the client in the message the proposal is sent with. */
+  changesNote?: string;
 }
 
 export interface Proposal extends FolderMeta, TemplateStamp {
@@ -165,6 +167,8 @@ export interface Proposal extends FolderMeta, TemplateStamp {
   tenureEnd?: string;
   /** Invoices payable within this many days (default 15). */
   paymentTermsDays?: number;
+  /** How often the contract is invoiced: 0 / unset = calendar month, else every N days (e.g. 15). */
+  billingCycleDays?: number;
   /** Who owns / pays for mechanical devices. */
   deviceOwnership?: string;
   /** Products to be used (Fendona, K-Othrine…); the onboarding pack needs an MSDS for each. */

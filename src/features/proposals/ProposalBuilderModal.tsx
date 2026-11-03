@@ -1,6 +1,6 @@
 import { FieldError } from '../../components/common/FieldError';
 import { emailProblem, phoneProblem } from '../../lib/validation';
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Check, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { dataService } from '../../services/dataService';
@@ -32,6 +32,9 @@ import { SiteTreatments, treatmentSummary } from './SiteTreatments';
 import { TreatmentDatalists } from './TreatmentDatalists';
 import { mergeRatsAndMice, withCleanFormulas, servicesMissingFormula, treatmentLabel, TREATMENT_TYPES } from '../../lib/treatments';
 import { fileProposalPdf } from './proposalFiles';
+import { initialApproval } from './proposalApproval';
+import { BillingCycleInput } from './BillingCycleInput';
+import { billingCycleLabel } from '../../lib/billingCycle';
 
 export interface ProposalPrefill {
   fromLead?: string;
@@ -85,7 +88,7 @@ function oneTimeLines(pests: string[]): ProposalLineItem[] {
 
 /** New proposal: a monthly IPM service plan (quotation format) or a one-time treatment. */
 export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill = {}, onCreated }) => {
-  const { userProfile } = useAuth();
+  const { userProfile, canApproveProposals } = useAuth();
   const { success, warning, error } = useNotification();
   const companies = dataService.getCompanies();
   const clients = dataService.getClients();
@@ -148,6 +151,8 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
   const [tenureMonths, setTenureMonths] = useState(12);
   const [tenureStart, _setTenureStart] = useState(defaultTenureStart());
   const [paymentTermsDays, setPaymentTermsDays] = useState(15);
+  // How often the contract will be invoiced (0 = calendar month)
+  const [billingCycleDays, setBillingCycleDays] = useState(0);
   const [discountPercent, setDiscountPercent] = useState(0);
   const [exclusions, setExclusions] = useState(DEFAULT_EXCLUSIONS);
   const [deviceOwnership, setDeviceOwnership] = useState(() => documentTemplates.get().deviceOwnership);
@@ -241,7 +246,23 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
     setTaxPct(taxRateFor(rules, jur).percent);
   };
 
-  const create = async () => {
+  // One save at a time: the new proposal number comes from the server, and clicks during that wait
+  // used to create the same proposal several times
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const once = (fn: () => Promise<void>) => async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await fn();
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
+  const create = once(async () => {
     if (problems.length) return;
     // Guard: warn if an active proposal already exists for this lead
     if (prefill.fromLead) {
@@ -252,7 +273,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
       if (live) {
         warning(
           'Proposal already exists',
-          `${live.id} (${live.status.replace(/_/g, ' ')}) is already linked to this lead. Use "Revise" on that proposal instead of creating a new one.`
+          `${live.id} (${String(live.status ?? '').replace(/_/g, ' ')}) is already linked to this lead. Use "Revise" on that proposal instead of creating a new one.`
         );
         return;
       }
@@ -314,8 +335,10 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
       taxAmount,
       totalAmount,
       validityDays: 30,
-      paymentTerms: isPlan ? `Payable within ${paymentTermsDays} days of the monthly invoice` : `Payable within ${paymentTermsDays} days of invoice`,
-      status: discountPercent > 10 ? 'pending_approval' : 'draft',
+      paymentTerms: isPlan ? `Invoiced ${billingCycleLabel(billingCycleDays).toLowerCase()}; payable within ${paymentTermsDays} days of each invoice` : `Payable within ${paymentTermsDays} days of invoice`,
+      billingCycleDays,
+      // Admins / super admin approve their own proposals; others wait for approval
+      ...initialApproval(canApproveProposals(), discountPercent, userProfile),
       revisionsHistory: [{ revisionNumber: 0, timestamp: now, changedBy: userProfile?.email || 'admin', changedByName: userProfile?.displayName || 'Staff', changeReason: 'Initial proposal', subtotal, discountPercent, totalAmount }],
       ...(isPlan
         ? {
@@ -357,6 +380,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
       return;
     }
     if (proposal.status === 'pending_approval') warning('Approval required (AP-01)', `Discount ${discountPercent}% is above 10%. Sent for CRO Manager / CEO approval.`);
+    else if (proposal.status === 'approved') success('Proposal created and approved', `${proposal.id} is ready to send to the client.`);
     else success('Proposal created', `${proposal.id} is saved. The PDF is being filed in the client's Proposals folder.`);
     fileProposalPdf(proposal, { email: userProfile?.email, displayName: userProfile?.displayName })
       .then((doc) => {
@@ -365,7 +389,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
       .catch((err) => warning('PDF not filed', err instanceof Error ? err.message : String(err)));
     onCreated?.(proposal);
     onClose();
-  };
+  });
 
 
   return (
@@ -378,7 +402,7 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
       footer={
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary" onClick={create} disabled={problems.length > 0} title={problems.join('\n')}>Create proposal</button>
+          <button type="button" className="btn btn-primary" onClick={create} disabled={saving || problems.length > 0} title={problems.join('\n')}>{saving ? 'Creating…' : 'Create proposal'}</button>
         </>
       }
     >
@@ -652,6 +676,11 @@ export const ProposalBuilderModal: React.FC<Props> = ({ isOpen, onClose, prefill
             <div className="form-group">
               <label className="form-label">Payment within (days)</label>
               <input type="number" min={0} className="form-input" value={paymentTermsDays} onChange={(e) => setPaymentTermsDays(Number(e.target.value))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Invoice every</label>
+              <BillingCycleInput value={billingCycleDays} onChange={setBillingCycleDays} />
+              <div className="form-hint" style={{ marginTop: '0.2rem' }}>One invoice per cycle, for all visits done in it</div>
             </div>
           </div>
 

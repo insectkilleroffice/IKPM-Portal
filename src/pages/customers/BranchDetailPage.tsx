@@ -4,13 +4,10 @@ import {
   MapPin,
   Phone,
   Truck,
-  FileSpreadsheet,
-  FileSignature,
-  Receipt,
-  Paperclip,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
+import { SectionSelect } from '../../components/common/SectionSelect';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { formatPKR, formatDate } from '../../lib/formatters';
 import { useAuth } from '../../contexts/AuthContext';
@@ -125,62 +122,20 @@ export const BranchDetailPage: React.FC = () => {
       </div>
 
       {/* Branch Tabs */}
-      <div className="tab-bar">
-        <button
-          className={`tab-btn ${activeTab === 'overview' ? 'active' : ''}`}
-          onClick={() => setActiveTab('overview')}
-        >
-          Branch Overview
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'sites' ? 'active' : ''}`}
-          onClick={() => setActiveTab('sites')}
-        >
-          <MapPin size={14} />
-          Branch Premises ({sites.length})
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'jobs' ? 'active' : ''}`}
-          onClick={() => setActiveTab('jobs')}
-        >
-          <Truck size={14} />
-          Service Jobs ({jobs.length})
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'proposals' ? 'active' : ''}`}
-          onClick={() => setActiveTab('proposals')}
-        >
-          <FileSpreadsheet size={14} />
-          Proposals ({proposals.length})
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'contracts' ? 'active' : ''}`}
-          onClick={() => setActiveTab('contracts')}
-        >
-          <FileSignature size={14} />
-          Contracts ({contracts.length})
-        </button>
-        {hasRole(['super_admin', 'team_leader', 'finance']) && (
-          <button
-            className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`}
-            onClick={() => setActiveTab('invoices')}
-          >
-            <Receipt size={14} />
-            Invoices & Billing ({invoices.length})
-          </button>
-        )}
-        <button
-          className={`tab-btn ${activeTab === 'documents' ? 'active' : ''}`}
-          onClick={() => setActiveTab('documents')}
-        >
-          <Paperclip size={14} />
-          Files
-        </button>
-        <button className={`tab-btn ${activeTab === 'devices' ? 'active' : ''}`} onClick={() => setActiveTab('devices')}>
-          <MapPin size={14} />
-          Devices
-        </button>
-      </div>
+      <SectionSelect<typeof activeTab>
+        value={activeTab}
+        onChange={setActiveTab}
+        options={[
+          { value: 'overview', label: 'Branch Overview' },
+          { value: 'sites', label: `Branch Premises (${sites.length})` },
+          { value: 'jobs', label: `Service Jobs (${jobs.length})` },
+          { value: 'proposals', label: `Proposals (${proposals.length})` },
+          { value: 'contracts', label: `Contracts (${contracts.length})` },
+          { value: 'invoices', label: `Invoices & Billing (${invoices.length})`, hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
+          { value: 'documents', label: 'Files — all documents' },
+          { value: 'devices', label: 'Devices' },
+        ]}
+      />
 
       {/* Tab: Overview */}
       {activeTab === 'overview' && (

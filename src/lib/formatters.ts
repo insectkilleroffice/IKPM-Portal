@@ -44,8 +44,9 @@ export function formatDateTime(dateString: string | undefined | null): string {
 /**
  * Normalizes Pakistani phone numbers to +923XXXXXXXXX format for exact duplicate detection
  */
-export function normalizePakistaniPhone(phone: string): string {
-  if (!phone) return '';
+export function normalizePakistaniPhone(phone: string | number | undefined | null): string {
+  if (phone === undefined || phone === null || phone === '') return '';
+  phone = String(phone); // spreadsheet imports can store numbers
   const digits = phone.replace(/\D/g, '');
   if (digits.startsWith('92')) {
     return `+${digits}`;
@@ -62,29 +63,31 @@ export function normalizePakistaniPhone(phone: string): string {
 /**
  * Formats Pakistani CNIC to 42101-1234567-1 format
  */
-export function formatCNIC(cnic: string): string {
-  const digits = cnic.replace(/\D/g, '');
+export function formatCNIC(cnic: string | undefined | null): string {
+  if (!cnic) return '';
+  const digits = String(cnic).replace(/\D/g, '');
   if (digits.length === 13) {
     return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
   }
-  return cnic;
+  return String(cnic);
 }
 
 /**
  * Formats Pakistani NTN to 1234567-8 format
  */
-export function formatNTN(ntn: string): string {
-  const digits = ntn.replace(/\D/g, '');
+export function formatNTN(ntn: string | undefined | null): string {
+  if (!ntn) return '';
+  const digits = String(ntn).replace(/\D/g, '');
   if (digits.length === 8) {
     return `${digits.slice(0, 7)}-${digits.slice(7)}`;
   }
-  return ntn;
+  return String(ntn);
 }
 
 /**
  * Generates human-friendly permanent IDs (e.g. CL-2026-0042)
  */
-export function generatePermanentId(prefix: 'CL' | 'CO' | 'BR' | 'SITE' | 'LD' | 'P' | 'CT' | 'JOB' | 'INV' | 'REC' | 'CMP', seqNumber: number): string {
+export function generatePermanentId(prefix: 'CL' | 'CO' | 'BR' | 'SITE' | 'LD' | 'P' | 'CT' | 'JOB' | 'INV' | 'REC' | 'CMP' | 'ST', seqNumber: number): string {
   const year = new Date().getFullYear();
   const padded = String(seqNumber).padStart(4, '0');
   return `${prefix}-${year}-${padded}`;

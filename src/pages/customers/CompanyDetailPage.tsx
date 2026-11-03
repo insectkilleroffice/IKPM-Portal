@@ -2,25 +2,17 @@ import React, { useState, useMemo } from 'react';
 import { treatmentTypeLabel } from '../../lib/treatments';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  GitFork,
   MapPin,
   Phone,
   Plus,
-  FileSpreadsheet,
-  FileSignature,
   Truck,
-  Receipt,
-  FileText,
-  FileCheck2,
-  Paperclip,
-  History,
-  ClipboardList,
   ChevronRight,
   AlertCircle,
   Filter,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
+import { SectionSelect } from '../../components/common/SectionSelect';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { Modal } from '../../components/common/Modal';
 import { formatPKR, formatNTN, formatDate, formatDateTime } from '../../lib/formatters';
@@ -225,7 +217,7 @@ export const CompanyDetailPage: React.FC = () => {
               <span className="badge-status badge-navy" style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
                 {company.id}
               </span>
-              <span className="badge-status badge-slate">{company.industrySegment.replace('_', ' ')}</span>
+              <span className="badge-status badge-slate">{String(company.industrySegment ?? '').replace('_', ' ')}</span>
               <span className="badge-status badge-emerald">Master Company Profile</span>
             </div>
 
@@ -356,122 +348,31 @@ export const CompanyDetailPage: React.FC = () => {
       )}
 
       {/* 10 Clearly Separated Tabs (Highest Priority Requirement) */}
-      <div className="tab-bar">
-        <button
-          className={`tab-btn ${activeTab === 'overview' ? 'active' : ''}`}
-          onClick={() => setActiveTab('overview')}
-        >
-          Overview & Contact
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'branches' ? 'active' : ''}`}
-          onClick={() => setActiveTab('branches')}
-        >
-          <GitFork size={14} />
-          Branch Hierarchy ({branches.length})
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'sites' ? 'active' : ''}`}
-          onClick={() => setActiveTab('sites')}
-        >
-          <MapPin size={14} />
-          Sites & Premises ({filteredSites.length})
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'leads' ? 'active' : ''}`}
-          onClick={() => setActiveTab('leads')}
-        >
-          <FileText size={14} />
-          Leads & Inspections ({leads.length})
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'proposals' ? 'active' : ''}`}
-          onClick={() => setActiveTab('proposals')}
-        >
-          <FileSpreadsheet size={14} />
-          Proposals & Revisions ({filteredProposals.length})
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'contracts' ? 'active' : ''}`}
-          onClick={() => setActiveTab('contracts')}
-        >
-          <FileSignature size={14} />
-          Contracts & Renewals ({filteredContracts.length})
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'jobs' ? 'active' : ''}`}
-          onClick={() => setActiveTab('jobs')}
-        >
-          <Truck size={14} />
-          Service Jobs ({filteredJobs.length})
-        </button>
-
+      <SectionSelect<CompanyTab>
+        value={activeTab}
+        onChange={setActiveTab}
+        options={[
+          { value: 'overview', label: 'Overview & Contact' },
+          { value: 'branches', label: `Branch Hierarchy (${branches.length})` },
+          { value: 'sites', label: `Sites & Premises (${filteredSites.length})` },
+          { value: 'leads', label: `Leads & Inspections (${leads.length})` },
+          { value: 'proposals', label: `Proposals & Revisions (${filteredProposals.length})` },
+          { value: 'contracts', label: `Contracts & Renewals (${filteredContracts.length})` },
+          { value: 'jobs', label: `Service Jobs (${filteredJobs.length})` },
+          { value: 'invoices', label: `Invoices & Payments (${filteredInvoices.length})`, hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
+          { value: 'statements', label: 'Ledger Statements & WHT', hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
+          { value: 'documents', label: 'Files — all documents' },
+          { value: 'devices', label: 'Devices' },
+          { value: 'onboarding', label: `Onboarding${onboardingPack ? ` (${PACK_STATUS_LABEL[packStatus(onboardingPack)]})` : ''}` },
+          { value: 'audit', label: `Audit History (${auditLogs.length})` },
+        ]}
+      >
         {openComplaints.length > 0 && (
-          <button
-            className="tab-btn"
-            onClick={() => navigate(`/complaints?action=filter&customerId=${id}`)}
-            style={{ borderColor: openComplaints.length > 0 ? 'var(--ikpm-rose-400)' : undefined }}
-          >
-            <AlertCircle size={14} color="var(--ikpm-rose-500)" />
-            Complaints ({openComplaints.length} open)
+          <button className="btn btn-sm btn-secondary" onClick={() => navigate(`/complaints?action=filter&customerId=${id}`)} style={{ borderColor: 'var(--ikpm-rose-400)' }}>
+            <AlertCircle size={14} color="var(--ikpm-rose-500)" /> Complaints ({openComplaints.length} open)
           </button>
         )}
-
-        {hasRole(['super_admin', 'team_leader', 'finance']) && (
-          <>
-            <button
-              className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`}
-              onClick={() => setActiveTab('invoices')}
-            >
-              <Receipt size={14} />
-              Invoices & Payments ({filteredInvoices.length})
-            </button>
-
-            <button
-              className={`tab-btn ${activeTab === 'statements' ? 'active' : ''}`}
-              onClick={() => setActiveTab('statements')}
-            >
-              <FileCheck2 size={14} />
-              Ledger Statements & WHT
-            </button>
-          </>
-        )}
-
-        <button
-          className={`tab-btn ${activeTab === 'documents' ? 'active' : ''}`}
-          onClick={() => setActiveTab('documents')}
-        >
-          <Paperclip size={14} />
-          Files
-        </button>
-
-        <button className={`tab-btn ${activeTab === 'devices' ? 'active' : ''}`} onClick={() => setActiveTab('devices')}>
-          <MapPin size={14} />
-          Devices
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'onboarding' ? 'active' : ''}`}
-          onClick={() => setActiveTab('onboarding')}
-        >
-          <ClipboardList size={14} />
-          Onboarding{onboardingPack ? ` (${PACK_STATUS_LABEL[packStatus(onboardingPack)]})` : ''}
-        </button>
-
-        <button
-          className={`tab-btn ${activeTab === 'audit' ? 'active' : ''}`}
-          onClick={() => setActiveTab('audit')}
-        >
-          <History size={14} />
-          Audit History ({auditLogs.length})
-        </button>
-      </div>
+      </SectionSelect>
 
       {/* Tab 1: Overview */}
       {activeTab === 'overview' && (
@@ -501,7 +402,7 @@ export const CompanyDetailPage: React.FC = () => {
               </div>
               <div>
                 <span style={{ color: 'var(--text-muted)' }}>Industry Category:</span>
-                <div style={{ fontWeight: 600 }}>{company.industrySegment.replace('_', ' ')}</div>
+                <div style={{ fontWeight: 600 }}>{String(company.industrySegment ?? '').replace('_', ' ')}</div>
               </div>
               <div>
                 <span style={{ color: 'var(--text-muted)' }}>Account Manager:</span>
@@ -631,7 +532,7 @@ export const CompanyDetailPage: React.FC = () => {
               <div key={s.id} className="card" style={{ borderTop: '3px solid var(--ikpm-emerald-500)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-primary)' }}>{s.siteName}</div>
-                  <span className="badge-status badge-slate">{s.propertyType.replace('_', ' ')}</span>
+                  <span className="badge-status badge-slate">{String(s.propertyType ?? '').replace('_', ' ')}</span>
                 </div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
                   <MapPin size={13} style={{ display: 'inline', marginRight: '4px' }} />

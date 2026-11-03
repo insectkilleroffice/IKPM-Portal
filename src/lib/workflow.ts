@@ -2,6 +2,7 @@
 // Connects Lead ─► Inspection ─► Proposal ─► Contract / One-off ─► Scheduled Job ─► PCO Visit ─► Verified Report ─► Invoice ─► Paid ─► Renewal
 
 import type { TaxJurisdiction, Invoice } from '../types/finance';
+import { isUnpostedInvoice } from '../types/finance';
 import type { ServiceJob, Contract, ChemicalUsageRecord } from '../types/operations';
 import type { Lead } from '../types/crm';
 import type { Proposal } from '../types/proposal';
@@ -332,6 +333,18 @@ export function getJobNextAction(job: ServiceJob, invoice?: Invoice): NextAction
       description: 'Generate statutory provincial sales tax invoice pre-filled from verified service data.',
       isBlocked: false,
       actionType: 'create_invoice',
+    };
+  }
+  if (invoice && isUnpostedInvoice(invoice)) {
+    return {
+      label: invoice.status === 'rejected' ? 'Invoice returned to Finance' : 'Invoice awaiting approval',
+      targetStage: 'Invoice Approval',
+      description: invoice.status === 'rejected'
+        ? `Admin returned the draft invoice: ${invoice.rejectionReason || 'see invoice'}. Finance must correct and resubmit it.`
+        : 'The draft invoice must be approved by an admin before it is sent to the client.',
+      isBlocked: true,
+      blockerReason: 'Waiting for invoice approval',
+      actionType: 'record_payment',
     };
   }
   if (invoice && invoice.balanceDue > 0) {

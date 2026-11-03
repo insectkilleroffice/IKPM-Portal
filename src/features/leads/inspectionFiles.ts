@@ -8,6 +8,17 @@ import { integrations } from '../../config/env';
 import type { Lead } from '../../types/crm';
 import type { PortalDocument, DocumentOwner, StoredFile } from '../../types/document';
 
+/**
+ * Where a lead's reports are filed: the customer account once the lead has one (a company files as
+ * 'company', not 'client'), otherwise the lead, whose files move to the customer when it converts.
+ */
+function reportOwner(lead: Lead): DocumentOwner {
+  const id = lead.existingCustomerId;
+  if (!id) return { kind: 'lead', id: lead.id };
+  const isCompany = Boolean(dataService.getCompanyById(id)) || (!dataService.getClientById(id) && lead.customerType === 'company');
+  return { kind: isCompany ? 'company' : 'client', id };
+}
+
 export async function fileInspectionReport(
   lead: Lead,
   user: { email?: string; displayName?: string }
@@ -18,9 +29,7 @@ export async function fileInspectionReport(
   try {
     const blob = await pdfGenerator.inspectionReportPDFBlob(lead);
     const fileName = pdfGenerator.inspectionReportFileName(lead);
-    const owner: DocumentOwner = lead.existingCustomerId
-      ? { kind: 'client', id: lead.existingCustomerId }
-      : { kind: 'lead', id: lead.id };
+    const owner = reportOwner(lead);
 
     let stored: StoredFile = {
       url: typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' ? URL.createObjectURL(blob) : '',
@@ -74,9 +83,7 @@ export async function fileMeetingReport(
   try {
     const blob = await pdfGenerator.meetingReportPDFBlob(lead);
     const fileName = pdfGenerator.meetingReportFileName(lead);
-    const owner: DocumentOwner = lead.existingCustomerId
-      ? { kind: 'client', id: lead.existingCustomerId }
-      : { kind: 'lead', id: lead.id };
+    const owner = reportOwner(lead);
 
     let stored: StoredFile = {
       url: typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' ? URL.createObjectURL(blob) : '',

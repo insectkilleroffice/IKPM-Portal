@@ -4,7 +4,7 @@ import { CheckCircle2, XCircle, Clock, Ban, Filter } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
 import { useNotification } from '../../contexts/NotificationContext';
-import { canEditModule } from '../../lib/permissions';
+import { baseRoleOf, canApproveInvoices, canEditModule } from '../../lib/permissions';
 import { dataService } from '../../services/dataService';
 import { formatDate } from '../../lib/formatters';
 import { APPROVAL_TYPE_LABELS, APPROVAL_STATUS_LABELS } from '../../types/approvals';
@@ -32,6 +32,13 @@ export const ApprovalsPage: React.FC = () => {
 
   const canApprove = canEditModule(effectiveRole, 'approvals');
   const uid = userProfile?.uid ?? '';
+  const pendingStatements = canApproveInvoices(effectiveRole)
+    ? dataService.getStatements().filter((s) => s.status === 'pending_approval' && (baseRoleOf(effectiveRole) === 'super_admin' || s.submittedBy !== uid))
+    : [];
+  const pendingInvoices = canApproveInvoices(effectiveRole)
+    ? dataService.getAllInvoices().filter((i) => i.status === 'pending_approval' && !i.statementId
+        && (baseRoleOf(effectiveRole) === 'super_admin' || i.submittedBy !== uid))
+    : [];
 
   // Managers see all; requesters see only their own
   const all = canApprove
@@ -99,6 +106,43 @@ export const ApprovalsPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Bulk invoices waiting for approval */}
+      {pendingStatements.length > 0 && (
+        <div className="card" style={{ marginBottom: '1rem', padding: '1rem 1.25rem', borderLeft: '4px solid var(--ikpm-amber-400)' }}>
+          <div style={{ fontWeight: 800, marginBottom: '0.5rem' }}>Bulk invoices waiting for approval ({pendingStatements.length})</div>
+          {pendingStatements.map((st) => (
+            <div key={st.id} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', fontSize: '0.84rem', marginBottom: '0.3rem' }}>
+              <strong>PKR {Math.round(st.periodTotal).toLocaleString()}</strong>
+              <span>{st.customerName} · {formatDate(st.periodStart)} – {formatDate(st.periodEnd)} · {st.invoiceIds.length} visit(s)</span>
+              <span className="cell-sub">by {st.submittedByName || 'Finance'}</span>
+              <button type="button" className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }} onClick={() => navigate('/finance/invoices?tab=invoices')}>Review &amp; approve</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Invoices drafted by Finance, waiting for an admin / super admin before they go to the client */}
+      {pendingInvoices.length > 0 && (
+        <div className="card" style={{ marginBottom: '1rem', padding: '1rem 1.25rem', borderLeft: '4px solid var(--ikpm-amber-400)' }}>
+          <div style={{ fontWeight: 800, marginBottom: '0.5rem' }}>
+            Invoices waiting for approval ({pendingInvoices.length})
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            {pendingInvoices.map((inv) => (
+              <div key={inv.id} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', fontSize: '0.84rem' }}>
+                <strong>PKR {Math.round(inv.grossPayable).toLocaleString()}</strong>
+                <span>{inv.customerName}{inv.branchName ? ` · ${inv.branchName}` : ''}</span>
+                <span className="cell-sub">by {inv.submittedByName || 'Finance'}{inv.submittedAt ? ` · ${formatDate(inv.submittedAt)}` : ''}</span>
+                <button type="button" className="btn btn-sm btn-primary" style={{ marginLeft: 'auto' }}
+                  onClick={() => navigate(`/finance/invoices?invoice=${inv.id}`)}>
+                  Review &amp; approve
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="card" style={{ marginBottom: '1rem', padding: '0.75rem 1rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
         <Filter size={15} color="var(--text-muted)" />
@@ -161,7 +205,9 @@ export const ApprovalsPage: React.FC = () => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           {filtered.map((a) => {
             const isDeciding = deciding === a.id;
-            const entityLink = ENTITY_LINKS[a.entityType];
+            // Settlement reports open the settlement screen, where the super admin creates the final invoice
+            const isSettlement = a.type === 'contract_settlement';
+            const entityLink = isSettlement ? (id: string) => `/contracts?settle=${id}` : ENTITY_LINKS[a.entityType];
             return (
               <div key={a.id} className="card" style={{ padding: '1rem 1.25rem', borderLeft: `4px solid ${a.status === 'pending' ? 'var(--ikpm-amber-400)' : a.status === 'approved' ? 'var(--ikpm-emerald-400)' : 'var(--border-subtle)'}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
@@ -196,10 +242,10 @@ export const ApprovalsPage: React.FC = () => {
                         className="btn btn-sm btn-secondary"
                         onClick={() => navigate(entityLink(a.entityId))}
                       >
-                        View record
+                        {isSettlement ? (baseRoleOf(effectiveRole) === 'super_admin' && a.status === 'pending' ? 'Decide & invoice' : 'Open settlement') : 'View record'}
                       </button>
                     )}
-                    {canApprove && a.status === 'pending' && a.ownerUid !== uid && (
+                    {canApprove && !isSettlement && a.status === 'pending' && a.ownerUid !== uid && (
                       <button
                         type="button"
                         className="btn btn-sm btn-primary"

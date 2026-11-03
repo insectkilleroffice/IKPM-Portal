@@ -8,7 +8,7 @@ interface Opts {
   label?: string;
 }
 
-const digitsOf = (v: string) => v.replace(/\D/g, '');
+const digitsOf = (v: string | undefined | null) => String(v ?? '').replace(/\D/g, '');
 const empty = (v?: string | null) => !v || !v.trim();
 
 export const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;

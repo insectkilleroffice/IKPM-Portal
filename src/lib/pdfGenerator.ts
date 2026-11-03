@@ -9,7 +9,7 @@ import QRCode from 'qrcode';
 import { autoTable, type UserOptions } from 'jspdf-autotable';
 import type { Proposal } from '../types/proposal';
 import type { ServiceJob, SitePhoto } from '../types/operations';
-import { billingAccountOf, type Invoice, type PaymentReceipt, type TaxJurisdiction } from '../types/finance';
+import { billingAccountOf, type ClientStatement, type Invoice, type PaymentReceipt, type TaxJurisdiction } from '../types/finance';
 import type { Lead } from '../types/crm';
 import { formatDate } from './formatters';
 import { companyProfile, DEFAULT_ACCENT_COLOR, DEFAULT_BRAND_COLOR, type CompanyProfile } from '../services/companyProfile';
@@ -19,6 +19,7 @@ import { fillSop } from './sopTemplate';
 import { fillTemplate } from './templateFill';
 import { documentTemplates } from '../services/documentTemplates';
 import type { SopInput } from '../types/document';
+import type { EmployeeLetter } from '../types/hr';
 
 // ---------------------------------------------------------------------------
 // Palette & layout (mm, A4 portrait)
@@ -1285,6 +1286,18 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
     b.photos(photos);
   }
 
+  // Signed service challan: its number and the scanned copy (PDF scans can't be embedded, so the number is shown)
+  if (job.challanNumber || job.challanFileUrl) {
+    const isPdf = /\.pdf($|\?)/i.test(job.challanFileUrl || '') || /^data:application\/pdf/i.test(job.challanFileUrl || '');
+    const challanImg = job.challanFileUrl && !isPdf ? await loadImage(job.challanFileUrl, 1200) : null;
+    b.section('Signed service challan', challanImg ? 72 : 18);
+    b.keyValues([
+      ['Challan No.', job.challanNumber || 'Not recorded'],
+      ['Copy', challanImg ? 'Attached below' : job.challanFileUrl ? 'Scanned copy filed in the client folder' : 'Not attached'],
+    ]);
+    if (challanImg) b.photos([{ img: challanImg, caption: `Signed challan${job.challanNumber ? ` No. ${job.challanNumber}` : ''}` }]);
+  }
+
   // Only a passed QC is shown to the client; send-backs are internal
   if (verified) {
     const v = job.supervisorVerification!;
@@ -1311,6 +1324,278 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
   b.signatures([
     { label: 'Supervisor', name: tlName || ' ', sub: profile.pcoLicense ? `${profile.shortName || profile.legalName} · PCO Licence: ${profile.pcoLicense}` : profile.shortName || profile.legalName },
     { label: 'Client representative', name: so?.acknowledgedByName || ' ', sub: so?.customerDesignation || 'Name, signature & stamp', image: signature },
+  ]);
+  return b.finish();
+}
+
+/**
+ * Job sheet (work order) for a visit that is not finished yet: what the team must do on site.
+ * The full service report is only available once the visit is done and has passed the quality check.
+ */
+async function buildJobSheet(job: ServiceJob): Promise<jsPDF> {
+  const { b } = await builder('Job Sheet', job.id, 'WORK ORDER');
+  const visitTime = job.windowStart && job.windowEnd ? `${job.windowStart} - ${job.windowEnd}` : job.scheduledTime;
+  b.titleBand(
+    [
+      { label: 'Job No.', value: job.id },
+      { label: 'Visit date', value: formatDate(job.scheduledDate) },
+      { label: 'Time', value: visitTime || statusLabel(job.timeSlot) },
+      { label: 'Visit type', value: job.visitKind === 'follow_up' ? 'Follow-up' : 'Service' },
+      { label: 'Status', value: statusLabel(job.status) },
+    ],
+    'What to do on this visit'
+  );
+
+  const branch = job.branchId ? dataService.getBranchById(job.branchId) : undefined;
+  const pcos = dataService.pcoNames(job.assignedPcoEmployeeIds?.length ? job.assignedPcoEmployeeIds : job.performedByPcoIds);
+  const tlName = job.assignedTeamLeaderName || (job.leadPcoName !== 'Unassigned' ? job.leadPcoName : '');
+  b.parties(clientParty(job.customerType, job.customerId, job.customerName, job.branchId), {
+    heading: 'Service location',
+    name: branch?.branchName || job.branchName || job.siteName,
+    lines: [
+      branch?.physicalAddress || job.siteAddress,
+      branch?.branchManagerName && `On-site contact: ${branch.branchManagerName}${branch.branchManagerPhone ? ` (${branch.branchManagerPhone})` : ''}`,
+      job.contractId && `Contract: ${job.contractId}`,
+    ],
+  });
+
+  b.keyValues([
+    ['Services to perform', job.visitServices?.length ? job.visitServices.join(', ') : job.serviceType],
+    ['Target pests', job.targetPests.length ? job.targetPests.map((p) => statusLabel(p)).join(', ') : undefined],
+    ['Supervisor', tlName || 'To be assigned'],
+    ['Technicians (PCOs)', pcos.length ? pcos.join(', ') : 'As assigned by the Supervisor'],
+  ]);
+
+  // Treatments and formulas agreed in the contract
+  const contract = job.contractId ? dataService.getContractById(job.contractId) : undefined;
+  if (contract?.servicePlan?.length) {
+    b.section('Agreed treatments (contract service plan)');
+    b.table(
+      ['#', 'Treatment', 'Formula / product', 'Frequency'],
+      contract.servicePlan.map((r, i) => [i + 1, r.service, r.formula || '', r.frequency || '']),
+      { columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 1: { fontStyle: 'bold' } } }
+    );
+  }
+  if (contract?.chemicals?.length) b.keyValues([['Approved chemicals', contract.chemicals.join(', ')]], 1);
+  if (contract?.exclusions) b.keyValues([['Exclusions', contract.exclusions]], 1);
+
+  if (job.checklists.length) {
+    b.section('Tasks on site');
+    b.table(
+      ['#', 'Task', 'Done', 'Remarks'],
+      job.checklists.map((c, i) => [i + 1, c.taskDescription, '[   ]', '']),
+      { columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 2: { cellWidth: 16, halign: 'center' }, 3: { cellWidth: 50 } } }
+    );
+  }
+
+  b.noteBox('Before you start', [
+    '•  Team in uniform with safety gear (PPE); chemicals issued from the store.',
+    '•  Take "before" photos of the treated areas.',
+    '•  Follow the label dosage; keep food, people and pets away from treated areas.',
+  ]);
+  b.noteBox('Before you leave', [
+    '•  Take "after" photos and record the chemicals and quantities used in the portal.',
+    '•  Get the service challan signed and stamped by the client, and note its number.',
+    '•  Report any pest activity, damage or access problems in the findings.',
+  ]);
+  if (job.rescheduledReason) b.noteBox('Rescheduled', [job.rescheduledReason]);
+
+  b.signatures([
+    { label: 'Supervisor', name: tlName || ' ', sub: 'Name & signature' },
+    { label: 'Client representative', name: ' ', sub: 'Name, signature & stamp' },
+  ]);
+  return b.finish();
+}
+
+/**
+ * HR letters on the company letterhead: offer letter (at hiring), employment contract (on joining)
+ * and confirmation letter (end of probation). Terms come from the letter, frozen when it was issued.
+ */
+async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
+  const t = letter.terms;
+  const emp = dataService.getEmployeeById(letter.employeeId);
+  const priv = dataService.getEmployeePrivate(letter.employeeId);
+  const title = { offer_letter: 'Offer Letter', employment_contract: 'Employment Contract', confirmation_letter: 'Confirmation Letter' }[letter.kind];
+  const { b, profile } = await builder(title, letter.refNo, letter.status === 'withdrawn' ? 'WITHDRAWN' : undefined);
+  const company = profile.legalName;
+  const name = letter.employeeName;
+  const issued = formatDate(letter.issuedAt);
+  const probationEnd = t.probationEndDate ? formatDate(t.probationEndDate) : `${t.probationMonths} month(s) after joining`;
+  const extra = (t.extraTerms || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  const payRows = (gross: number) => [
+    ['Basic salary', pkr(t.basicSalary)],
+    ...t.allowances.filter((a) => a.amount > 0).map((a) => [a.label, pkr(a.amount)]),
+    ['Gross monthly salary', pkr(gross)],
+  ];
+  const subtitle = { offer_letter: 'Offer of employment', employment_contract: 'Contract of employment', confirmation_letter: 'Confirmation of employment' }[letter.kind];
+  b.titleBand([
+    { label: 'Ref. No.', value: letter.refNo },
+    { label: 'Date', value: issued },
+    { label: 'Employee ID', value: letter.employeeId },
+  ], subtitle);
+  b.parties({
+    heading: letter.kind === 'employment_contract' ? 'Employee' : 'To',
+    name,
+    lines: [
+      priv?.fatherName && `S/O, D/O: ${priv.fatherName}`,
+      priv?.cnic && `CNIC: ${priv.cnic}`,
+      priv?.residentialAddress,
+      emp?.phone && `Phone: ${emp.phone}`,
+    ],
+  });
+
+  if (letter.kind === 'offer_letter') {
+    b.paragraph(`Dear ${name},`);
+    b.paragraph(`We are pleased to offer you the position of ${t.designation} in the ${t.department} department of ${company}, on the terms set out below.`);
+    b.keyValues([
+      ['Position', t.designation],
+      ['Department', t.department],
+      ['Reports to', t.reportingTo],
+      ['Joining date', formatDate(t.joiningDate)],
+      ['Probation', `${t.probationMonths} month(s), until ${probationEnd}`],
+      ['Working hours', t.workingHours],
+    ]);
+    b.section('Monthly compensation');
+    b.table(['Component', 'Amount'], payRows(t.grossSalary), { columnStyles: { 1: { halign: 'right', cellWidth: 50 } } });
+    b.section('Terms of this offer');
+    b.numbered([
+      `During probation either side may end the employment with ${t.noticeDaysProbation} day(s) notice. On confirmation the notice period becomes ${t.noticeDaysPermanent} day(s).`,
+      'Salary is paid monthly by bank transfer on the company payroll cycle, after statutory deductions where applicable.',
+      'The attendance allowance is paid only for a month with fewer than two late marks or absences.',
+      'On joining please bring: copy of your CNIC, two passport-size photographs, educational and experience certificates, and a police character certificate.',
+      'This offer is subject to verification of the documents and information you have given. The full terms will be in the Employment Contract you sign on joining.',
+      ...extra,
+    ]);
+    b.paragraph(`To accept, please sign and return a copy of this letter${t.offerValidUntil ? ` by ${formatDate(t.offerValidUntil)}, after which this offer lapses` : ''}.`);
+    b.signatures([
+      { label: `For ${profile.shortName || company}`, name: letter.issuedByName, sub: 'Human Resources' },
+      { label: 'Accepted by', name, sub: 'Signature & date' },
+    ]);
+    return b.finish();
+  }
+
+  if (letter.kind === 'employment_contract') {
+    const parties = [
+      `This Employment Contract is made on ${issued} between ${company}${profile.address ? `, ${profile.address}` : ''} ("the Company"),`,
+      `and ${name}${priv?.fatherName ? `, son / daughter of ${priv.fatherName}` : ''}${priv?.cnic ? `, CNIC ${priv.cnic}` : ''}${priv?.residentialAddress ? `, residing at ${priv.residentialAddress}` : ''} ("the Employee").`,
+    ].join(' ');
+    b.paragraph(parties);
+    b.section('Terms and conditions');
+    b.numbered([
+      `Position and duties. The Employee is employed as ${t.designation} in the ${t.department} department${t.reportingTo ? `, reporting to ${t.reportingTo}` : ''}, and will perform the duties assigned from time to time, including field work at client sites.`,
+      `Commencement and probation. Employment starts on ${formatDate(t.joiningDate)}. The first ${t.probationMonths} month(s), until ${probationEnd}, are a probation period. During probation either party may end this contract with ${t.noticeDaysProbation} day(s) notice. Confirmation will be given in writing.`,
+      `Remuneration. The gross monthly salary is ${pkr(t.grossSalary)} as detailed below, paid monthly by bank transfer on the company payroll cycle, less income tax and other deductions required by law.`,
+      `Working hours. ${t.workingHours}. Overtime, where approved, is paid as per company policy.`,
+      'Attendance and leave. The Employee must mark attendance daily and be punctual. The attendance allowance is not paid for a month with two or more late marks or absences. Leave is granted as per company policy and applicable law.',
+      'Safety and conduct. The Employee will follow the company SOPs, wear the uniform and protective equipment (PPE) provided, and handle, store and apply pesticides strictly as per label directions and applicable regulations. Misuse or removal of chemicals is gross misconduct.',
+      'Company property. Uniforms, equipment, chemicals, devices and any vehicle provided remain company property and must be returned in good condition on request or when employment ends.',
+      'Confidentiality. Client details, prices, formulas and company records are confidential, during and after employment, and may not be used or shared except for company work.',
+      `Termination. After confirmation either party may end this contract with ${t.noticeDaysPermanent} day(s) notice or salary in lieu of notice. The Company may end employment without notice for gross misconduct (including theft, fraud, violence or a serious safety breach), after giving the Employee a chance to explain.`,
+      'Governing law. This contract is governed by the laws of Pakistan.',
+      ...extra,
+    ]);
+    b.section('Monthly compensation');
+    b.table(['Component', 'Amount'], payRows(t.grossSalary), { columnStyles: { 1: { halign: 'right', cellWidth: 50 } } });
+    b.paragraph('Both parties have read and understood this contract and sign it of their own free will.');
+    b.signatures([
+      { label: `For ${profile.shortName || company}`, name: letter.issuedByName, sub: 'Authorised signatory' },
+      { label: 'Employee', name, sub: priv?.cnic ? `CNIC ${priv.cnic}` : 'Signature & date' },
+    ]);
+    b.signatures([
+      { label: 'Witness 1', sub: 'Name, CNIC & signature' },
+      { label: 'Witness 2', sub: 'Name, CNIC & signature' },
+    ]);
+    return b.finish();
+  }
+
+  // Confirmation letter
+  const revised = Boolean(t.revisedGrossSalary && t.revisedGrossSalary > 0 && t.revisedGrossSalary !== t.grossSalary);
+  const gross = revised ? t.revisedGrossSalary! : t.grossSalary;
+  const confirmedFrom = formatDate(t.confirmationDate || letter.issuedAt);
+  b.paragraph(`Dear ${name},`);
+  b.paragraph(`We are pleased to inform you that you have successfully completed your probation period (${formatDate(t.joiningDate)} to ${probationEnd}). Your employment as ${t.designation} in the ${t.department} department is confirmed with effect from ${confirmedFrom}.`);
+  b.keyValues([
+    ['Designation', t.designation],
+    ['Department', t.department],
+    ['Confirmed from', confirmedFrom],
+    ['Gross monthly salary', `${pkr(gross)}${revised ? ' (revised)' : ''}`],
+    ['Notice period', `${t.noticeDaysPermanent} day(s)`],
+  ]);
+  if (extra.length) b.numbered(extra);
+  b.paragraph('All other terms of your Employment Contract remain unchanged. We thank you for your work so far and wish you continued success with us.');
+  b.signatures([
+    { label: `For ${profile.shortName || company}`, name: letter.issuedByName, sub: 'Human Resources' },
+    { label: 'Received by', name, sub: 'Signature & date' },
+  ]);
+  return b.finish();
+}
+
+/**
+ * Client statement: one per contract billing period. Page 1 lists the period's visit invoices,
+ * any earlier unpaid balance and the total due; then each visit invoice in detail.
+ */
+async function buildStatement(st: ClientStatement): Promise<jsPDF> {
+  const draft = st.status !== 'approved';
+  const { b, profile } = await builder('Invoice', st.statementNumber, draft ? 'DRAFT' : undefined, undefined, undefined, st.customerType !== 'company');
+  const invoices = st.invoiceIds.map((id) => dataService.getInvoiceById(id)).filter((i): i is Invoice => Boolean(i) && i!.status !== 'void_reversed');
+  const previous = st.previousInvoiceIds.map((id) => dataService.getInvoiceById(id)).filter((i): i is Invoice => Boolean(i) && i!.balanceDue > 0);
+  const cycle = !st.billingCycleDays ? 'Monthly' : st.billingCycleDays === 90 ? 'Quarterly' : `Every ${st.billingCycleDays} days`;
+  b.titleBand([
+    { label: 'Invoice No.', value: st.statementNumber },
+    { label: 'Date', value: formatDate(st.issueDate) },
+    { label: 'Period', value: `${formatDate(st.periodStart)} – ${formatDate(st.periodEnd)}` },
+    ...(st.contractId ? [{ label: 'Billing', value: cycle }] : []),
+    { label: 'Due by', value: formatDate(st.dueDate) },
+  ], st.contractId ? `Services under contract ${st.contractId}` : `${invoices.length} service job(s)`);
+  b.parties(clientParty(st.customerType, st.customerId, st.customerName, st.branchId, 'Bill to'));
+
+  b.section(`Jobs on this invoice (${invoices.length})`);
+  b.table(
+    ['#', 'Job invoice', 'Visit / services', 'Amount', 'Tax', 'Total'],
+    invoices.map((inv, i) => [
+      i + 1,
+      inv.invoiceNumber.startsWith('DRAFT-') ? 'Draft' : inv.invoiceNumber,
+      inv.lineItems.map((l) => l.description).join('; '),
+      pkr(inv.subtotal),
+      pkr(inv.taxTotal),
+      pkr(inv.grossPayable),
+    ]),
+    { columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 1: { cellWidth: 34 }, 3: { halign: 'right', cellWidth: 24 }, 4: { halign: 'right', cellWidth: 20 }, 5: { halign: 'right', cellWidth: 26 } } }
+  );
+  const periodTotal = invoices.reduce((s, i) => s + i.grossPayable, 0);
+  const periodPaid = invoices.reduce((s, i) => s + (i.amountPaid || 0) + (i.customerWhtTotal || 0), 0);
+  const previousDue = previous.reduce((s, i) => s + i.balanceDue, 0);
+  if (previous.length) {
+    b.section('Earlier unpaid invoices');
+    b.table(
+      ['Invoice No.', 'Date', 'Due', 'Balance'],
+      previous.map((i) => [i.invoiceNumber, formatDate(i.issueDate), formatDate(i.dueDate), pkr(i.balanceDue)]),
+      { columnStyles: { 3: { halign: 'right', cellWidth: 30 } } }
+    );
+  }
+  b.totals([
+    ['This period (incl. tax)', pkr(periodTotal)],
+    ...(periodPaid > 0 ? [['Received on this period', `- ${pkr(periodPaid)}`] as [string, string]] : []),
+    ...(previousDue > 0 ? [['Earlier unpaid balance', pkr(previousDue)] as [string, string]] : []),
+  ], ['Total due', periodTotal - periodPaid + previousDue]);
+  b.noteBox('Payment', [
+    `Please pay by ${formatDate(st.dueDate)}, quoting invoice ${st.statementNumber}.`,
+    'Sales tax is charged on each job invoice; this invoice totals them.',
+  ]);
+
+  // Each visit invoice in detail
+  invoices.forEach((inv) => {
+    b.section(`Invoice ${inv.invoiceNumber.startsWith('DRAFT-') ? '(draft)' : inv.invoiceNumber} · ${formatDate(inv.issueDate)}`, 40);
+    b.table(
+      ['Description', 'Qty', 'Rate', 'Tax', 'Total'],
+      inv.lineItems.map((l) => [l.description, l.quantity, pkr(l.unitPrice), `${pkr(l.taxAmount)} (${l.taxRatePercent}%)`, pkr(l.totalWithTax)]),
+      { columnStyles: { 1: { cellWidth: 12, halign: 'center' }, 2: { halign: 'right', cellWidth: 26 }, 3: { halign: 'right', cellWidth: 30 }, 4: { halign: 'right', cellWidth: 26 } } }
+    );
+  });
+
+  b.signatures([
+    { label: `For ${profile.shortName || profile.legalName}`, name: st.approvedBy || ' ', sub: draft ? 'Draft — not yet approved' : `Approved ${st.approvedAt ? formatDate(st.approvedAt) : ''}` },
+    { label: 'Received by', name: ' ', sub: 'Name, signature & stamp' },
   ]);
   return b.finish();
 }
@@ -1575,6 +1860,32 @@ export const pdfGenerator = {
   },
   async jobReportPDFBlob(job: ServiceJob): Promise<Blob> {
     return (await buildJobReport(job)).output('blob');
+  },
+  // Client statements (one per contract billing period)
+  async statementPDFBlob(statement: ClientStatement): Promise<Blob> {
+    return (await buildStatement(statement)).output('blob');
+  },
+  async generateStatementPDF(statement: ClientStatement) {
+    (await buildStatement(statement)).save(safe(`${prefix()}_Statement_${statement.statementNumber}_${statement.customerName}.pdf`));
+  },
+  // HR letters (offer letter, employment contract, confirmation letter)
+  employeeLetterFileName(letter: EmployeeLetter) {
+    const kind = { offer_letter: 'Offer_Letter', employment_contract: 'Employment_Contract', confirmation_letter: 'Confirmation_Letter' }[letter.kind];
+    return safe(`${prefix()}_${kind}_${letter.employeeId}_${letter.employeeName}.pdf`);
+  },
+  async generateEmployeeLetterPDF(letter: EmployeeLetter) {
+    (await buildEmployeeLetter(letter)).save(this.employeeLetterFileName(letter));
+  },
+  async employeeLetterPDFBlob(letter: EmployeeLetter): Promise<Blob> {
+    return (await buildEmployeeLetter(letter)).output('blob');
+  },
+  /** Work order for a visit that isn't finished / verified yet (the report itself is not available then). */
+  async generateJobSheetPDF(job: ServiceJob) {
+    (await buildJobSheet(job)).save(safe(`${prefix()}_Job_Sheet_${job.id}_${job.customerName}.pdf`));
+  },
+  /** The full service report exists only once the visit is completed and has passed the quality check. */
+  isJobReportReady(job: Pick<ServiceJob, 'status' | 'supervisorVerification'>) {
+    return job.status === 'completed' && Boolean(job.supervisorVerification?.isVerified);
   },
   /** Sample document showing the current letterhead, opened in a new tab. */
   async previewLetterhead(override?: CompanyProfile) {

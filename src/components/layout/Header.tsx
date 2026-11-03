@@ -89,13 +89,13 @@ export const Header: React.FC<{ onMenu: () => void }> = ({ onMenu }) => {
       store.getLeads()
         .filter((l) => l.title.toLowerCase().includes(q) || l.contactName.toLowerCase().includes(q) || l.id.toLowerCase().includes(q) || phoneHit(l.phone))
         .slice(0, 4)
-        .forEach((l) => out.push({ key: l.id, icon: FileText, color: 'var(--ikpm-teal-500)', title: l.title, sub: `Lead · ${l.stage.replace(/_/g, ' ')}`, to: `/crm?lead=${l.id}` }));
+        .forEach((l) => out.push({ key: l.id, icon: FileText, color: 'var(--ikpm-teal-500)', title: l.title, sub: `Lead · ${String(l.stage ?? '').replace(/_/g, ' ')}`, to: `/crm?lead=${l.id}` }));
     }
     if (can('jobs') || can('pco')) {
       store.getJobs()
         .filter((j) => j.id.toLowerCase().includes(q) || j.customerName.toLowerCase().includes(q) || j.siteName.toLowerCase().includes(q))
         .slice(0, 4)
-        .forEach((j) => out.push({ key: j.id, icon: Truck, color: 'var(--ikpm-amber-500)', title: `${j.id} · ${j.customerName}`, sub: `Service job · ${j.status.replace(/_/g, ' ')}`, to: can('jobs') ? `/operations/jobs?job=${j.id}` : '/operations/jobs' }));
+        .forEach((j) => out.push({ key: j.id, icon: Truck, color: 'var(--ikpm-amber-500)', title: `${j.id} · ${j.customerName}`, sub: `Service job · ${String(j.status ?? '').replace(/_/g, ' ')}`, to: can('jobs') ? `/operations/jobs?job=${j.id}` : '/operations/jobs' }));
     }
     if (can('invoices')) {
       store.getInvoices()

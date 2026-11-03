@@ -25,7 +25,7 @@ export const TREATMENT_TYPES = [
   { value: 'cockroach_gel', label: 'Cockroach gel' },
 ] as const;
 
-export const treatmentTypeLabel = (v: string) => TREATMENT_TYPES.find((t) => t.value === v)?.label ?? v.replace(/_/g, ' ');
+export const treatmentTypeLabel = (v: string | undefined | null) => (v ? TREATMENT_TYPES.find((t) => t.value === v)?.label ?? String(v).replace(/_/g, ' ') : 'Treatment');
 
 export const FREQUENCY_SUGGESTIONS = [
   'One-time',

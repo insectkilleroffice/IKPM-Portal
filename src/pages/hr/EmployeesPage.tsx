@@ -15,6 +15,8 @@ import { baseRoleOf, canEditModule, roleLabel } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
 import type { Employee, EmployeeStatus, EmployeeRole, EmployeePay } from '../../types/hr';
+import { EmployeeLettersPanel } from '../../features/hr/EmployeeLettersPanel';
+import { nextLetterStep } from '../../features/hr/employeeLetters';
 
 // ---- Badge colours ----
 const STATUS_BADGE: Record<EmployeeStatus, string> = {
@@ -72,7 +74,8 @@ function blankEmployee(): Omit<Employee, 'id' | 'createdAt' | 'updatedAt'> {
     role: 'pco',
     department: 'Operations',
     joiningDate: todayStr(),
-    status: 'probation',
+    // New people start at Hiring: offer letter → employment contract (probation) → confirmation
+    status: 'hiring',
     reportingToRole: '',
     reportingCoordinatorId: '',
     probationEndDate: '',
@@ -86,6 +89,8 @@ export const EmployeesPage: React.FC = () => {
 
   const canEdit = canEditModule(effectiveRole, 'hr');
   const canManageSalary = ['super_admin', 'admin', 'hr', 'finance'].includes(baseRoleOf(effectiveRole) ?? '');
+  // Offer letters, contracts and confirmations print pay and CNIC: HR and the super admin only
+  const canLetters = ['super_admin', 'hr'].includes(baseRoleOf(effectiveRole) ?? '');
 
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<EmployeeStatus | 'all'>('all');
@@ -259,14 +264,19 @@ export const EmployeesPage: React.FC = () => {
         updatedAt: now,
       };
       await dataService.saveEmployee(emp);
-      success('Saved', editingId ? 'Employee record updated.' : 'Employee enrolled successfully.');
+      success('Saved', editingId ? 'Employee record updated.' : `Employee enrolled.${canLetters ? ' Next: issue the employment letters below.' : ''}`);
       setShowForm(false);
+      // A new employee opens on their record, where the offer letter / contract is issued
+      if (!editingId && canLetters) setSelected(emp);
     } catch (err: unknown) {
       error('Save failed', (err instanceof Error ? err.message : String(err)));
     } finally {
       setSaving(false);
     }
   };
+
+  // The record shown in the details view, kept live (issuing a letter can change the status)
+  const selectedLive = selected ? employees.find((e) => e.id === selected.id) ?? selected : null;
 
   // Count by status
   const countByStatus = (s: EmployeeStatus) => employees.filter((e) => e.status === s).length;
@@ -303,6 +313,16 @@ export const EmployeesPage: React.FC = () => {
           </button>
         ))}
       </div>
+
+      {canLetters && (() => {
+        const due = employees.filter((e) => nextLetterStep(e, dataService.getEmployeeLetters(e.id))?.overdue);
+        return due.length ? (
+          <div className="alert-banner alert-banner-amber" style={{ marginBottom: '1rem' }}>
+            <Calendar size={15} />
+            <span>Probation ended without a confirmation letter: {due.map((e) => e.name).join(', ')}.</span>
+          </div>
+        ) : null;
+      })()}
 
       {onProbation > 0 && (
         <div className="alert-banner alert-banner-amber" style={{ marginBottom: '1rem' }}>
@@ -395,7 +415,16 @@ export const EmployeesPage: React.FC = () => {
                     </td>
                     <td>{formatDate(emp.joiningDate)}</td>
                     <td>{emp.probationEndDate ? formatDate(emp.probationEndDate) : <span className="cell-sub">—</span>}</td>
-                    <td><span className={`badge ${STATUS_BADGE[emp.status]}`}>{STATUS_LABELS[emp.status]}</span></td>
+                    <td>
+                      <span className={`badge ${STATUS_BADGE[emp.status]}`}>{STATUS_LABELS[emp.status]}</span>
+                      {canLetters && (() => {
+                        const step = nextLetterStep(emp, dataService.getEmployeeLetters(emp.id));
+                        return step ? (
+                          <button type="button" className="cell-sub" style={{ display: 'block', background: 'none', border: 0, padding: 0, marginTop: 3, cursor: 'pointer', textAlign: 'left', color: step.overdue ? '#B45309' : undefined, fontWeight: step.overdue ? 700 : undefined }}
+                            onClick={() => setSelected(emp)}>{step.label}</button>
+                        ) : null;
+                      })()}
+                    </td>
                     <td style={{ textAlign: 'right' }}>
                       <div className="cell-actions" style={{ justifyContent: 'flex-end', display: 'flex', gap: '0.35rem' }}>
                         <button type="button" className="icon-btn" title="View Details" onClick={() => setSelected(emp)}><Eye size={15} /></button>
@@ -648,10 +677,10 @@ export const EmployeesPage: React.FC = () => {
       )}
 
       {/* ---- Detail View Modal ---- */}
-      {selected && (
+      {selected && selectedLive && (
         <Modal
           isOpen={Boolean(selected)}
-          title={'Employee: ' + selected.name}
+          title={'Employee: ' + selectedLive.name}
           onClose={() => setSelected(null)}
           footer={
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
@@ -660,7 +689,7 @@ export const EmployeesPage: React.FC = () => {
                   type="button"
                   className="btn btn-secondary"
                   onClick={() => {
-                    const emp = selected;
+                    const emp = selectedLive;
                     setSelected(null);
                     openSalaryModal(emp);
                   }}
@@ -669,7 +698,7 @@ export const EmployeesPage: React.FC = () => {
                 </button>
               )}
               {canEdit && (
-                <button type="button" className="btn btn-secondary" onClick={() => { setSelected(null); openEdit(selected); }}>
+                <button type="button" className="btn btn-secondary" onClick={() => { setSelected(null); openEdit(selectedLive); }}>
                   <Edit2 size={14} /> Edit Profile
                 </button>
               )}
@@ -678,21 +707,21 @@ export const EmployeesPage: React.FC = () => {
           }
         >
           {(() => {
-            const pay = store.getEmployeePay ? store.getEmployeePay(selected.id) : undefined;
+            const pay = store.getEmployeePay ? store.getEmployeePay(selectedLive.id) : undefined;
             return (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                   {[
-                    ['Employee ID', selected.id],
-                    ['Status', STATUS_LABELS[selected.status]],
-                    ['Role', ROLE_LABELS[selected.role] || selected.role],
-                    ['Supervisor', getLeaderName(selected.reportingCoordinatorId) || 'None assigned'],
-                    ['Department', selected.department],
-                    ['Phone', selected.phone],
-                    ['Email', selected.email ?? '—'],
-                    ['Joining Date', formatDate(selected.joiningDate)],
-                    ['Probation End', selected.probationEndDate ? formatDate(selected.probationEndDate) : '—'],
-                    ['Emergency Contact', selected.emergencyContact ?? '—'],
+                    ['Employee ID', selectedLive.id],
+                    ['Status', STATUS_LABELS[selectedLive.status]],
+                    ['Role', ROLE_LABELS[selectedLive.role] || selectedLive.role],
+                    ['Supervisor', getLeaderName(selectedLive.reportingCoordinatorId) || 'None assigned'],
+                    ['Department', selectedLive.department],
+                    ['Phone', selectedLive.phone],
+                    ['Email', selectedLive.email ?? '—'],
+                    ['Joining Date', formatDate(selectedLive.joiningDate)],
+                    ['Probation End', selectedLive.probationEndDate ? formatDate(selectedLive.probationEndDate) : '—'],
+                    ['Emergency Contact', selectedLive.emergencyContact ?? '—'],
                   ].map(([label, value]) => (
                     <div key={label}>
                       <div className="cell-sub" style={{ marginBottom: 2 }}>{label}</div>
@@ -700,6 +729,14 @@ export const EmployeesPage: React.FC = () => {
                     </div>
                   ))}
                 </div>
+
+                {canLetters && (
+                  <EmployeeLettersPanel
+                    employee={selectedLive}
+                    designation={ROLE_LABELS[selectedLive.role] || selectedLive.role}
+                    reportingTo={getLeaderName(selectedLive.reportingCoordinatorId) || undefined}
+                  />
+                )}
 
                 <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
                   <h4 style={{ margin: '0 0 0.5rem 0', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.9rem' }}>

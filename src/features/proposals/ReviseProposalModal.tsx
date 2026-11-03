@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Modal } from '../../components/common/Modal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -6,6 +6,7 @@ import { dataService } from '../../services/dataService';
 import { formatPKR } from '../../lib/formatters';
 import { planPricing, tenureEnd } from '../../lib/proposalPlan';
 import { fileProposalPdf } from './proposalFiles';
+import { approverStamp, initialApproval } from './proposalApproval';
 import type { Proposal, ProposalLineItem, ProposalBranchBreakdown, TemplateType } from '../../types/proposal';
 import type { ServicePlanItem } from '../../lib/proposalPlan';
 import type { PestType } from '../../types/crm';
@@ -22,13 +23,16 @@ interface Props {
   /**
    * 'revise' (default): a new revision R+1 with its own id, for a proposal already sent.
    * 'edit': change this draft in place (e.g. after "Changes requested") — same id and revision.
+   * 'approve': the admin edits a proposal waiting for approval in place and approves it; the note of
+   *   changes is kept on the approval and shown to the client when the proposal is sent.
    */
-  mode?: 'revise' | 'edit';
+  mode?: 'revise' | 'edit' | 'approve';
 }
 
 export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onRevised, mode = 'revise' }) => {
-  const editing = mode === 'edit';
-  const { userProfile } = useAuth();
+  const approving = mode === 'approve';
+  const editing = mode === 'edit' || approving;
+  const { userProfile, canApproveProposals } = useAuth();
   const { success, error, warning } = useNotification();
 
   const isPlan = Boolean(p.servicePlan?.length);
@@ -75,6 +79,7 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
 
   const problems: string[] = [];
   if (!editing && !changeReason.trim()) problems.push('Enter a reason for this revision.');
+  if (approving && !changeReason.trim()) problems.push('Write a short note of the changes (the client sees it with the proposal).');
   if (isPlan && !(effectiveRate > 0)) problems.push('Monthly charges must be greater than zero.');
   if (isPlan && !plan.some((r) => r.service.trim())) problems.push('Add at least one service row.');
   if (!isPlan) {
@@ -97,7 +102,23 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
   }
 
 
-  const handleSave = async () => {
+  // One save at a time: the new proposal number comes from the server, and clicks during that wait
+  // used to create the same proposal several times
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const once = (fn: () => Promise<void>) => async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await fn();
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
+  const handleSave = once(async () => {
     if (problems.length) return;
     const now = new Date().toISOString();
     const proposals = dataService.getProposals();
@@ -119,9 +140,13 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
       revisionNumber: newRev,
       // Editing keeps the draft's status and the approver's feedback (it can then be sent);
       // a discount above 10% still goes back for approval (saveProposal)
-      ...(editing
+      ...(approving
+        // Approver's edit: approved now, with the note of changes for the client
+        ? { status: 'approved' as const, approval: approverStamp(userProfile, note, p.approval) }
+        : editing
         ? { status: p.status, approval: p.approval }
-        : { parentProposalId: p.parentProposalId || p.id, status: discountPercent > 10 ? 'pending_approval' as const : 'draft' as const, approval: undefined }),
+        // Revisions by an admin / super admin are approved straight away
+        : { parentProposalId: p.parentProposalId || p.id, ...initialApproval(canApproveProposals(), discountPercent, userProfile) }),
       sentDate: undefined,
       acceptedDate: undefined,
       pdfUrl: undefined,
@@ -133,7 +158,7 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
       revisionsHistory: editing
         // Same revision: its history line gets the new totals (and what was changed)
         ? p.revisionsHistory.map((h) => h.revisionNumber === p.revisionNumber
-            ? { ...h, subtotal, discountPercent, totalAmount, timestamp: now, changedBy: userProfile?.email || h.changedBy, changedByName: userProfile?.displayName || h.changedByName, changeReason: note ? `${h.changeReason} · Edited: ${note}` : `${h.changeReason} · Edited` }
+            ? { ...h, subtotal, discountPercent, totalAmount, timestamp: now, changedBy: userProfile?.email || h.changedBy, changedByName: userProfile?.displayName || h.changedByName, changeReason: note ? `${h.changeReason} · ${approving ? 'Edited on approval' : 'Edited'}: ${note}` : `${h.changeReason} · Edited` }
             : h)
         : [
         ...p.revisionsHistory,
@@ -206,6 +231,10 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
 
     if (revised.status === 'pending_approval') {
       warning('Approval required (AP-01)', `Discount ${discountPercent}% is above 10%. Sent for CRO Manager / CEO approval.`);
+    } else if (approving) {
+      success('Edited and approved', `${id} is approved. Your note of changes goes to the client with the proposal.`);
+    } else if (!editing && revised.status === 'approved') {
+      success('Revision created and approved', `${id} (R${newRev}) is ready to send.`);
     } else if (editing) {
       success('Proposal updated', `${id} is saved. You can send it to the client now.`);
     } else {
@@ -218,20 +247,20 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
 
     onRevised(revised);
     onClose();
-  };
+  });
 
   return (
     <Modal
       isOpen
       onClose={onClose}
-      title={editing ? `Edit proposal ${p.id}` : `Revise proposal ${p.id}`}
+      title={approving ? `Edit & approve proposal ${p.id}` : editing ? `Edit proposal ${p.id}` : `Revise proposal ${p.id}`}
       subtitle={editing ? `${p.customerName} · R${p.revisionNumber}` : `${p.customerName} · R${p.revisionNumber} → R${p.revisionNumber + 1}`}
       maxWidth="700px"
       footer={
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary" onClick={handleSave} disabled={problems.length > 0} title={problems.join('\n')}>
-            {editing ? 'Save changes' : 'Create revision'}
+          <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saving || problems.length > 0} title={problems.join('\n')}>
+            {approving ? 'Save & approve' : editing ? 'Save changes' : 'Create revision'}
           </button>
         </>
       }
@@ -250,14 +279,17 @@ export const ReviseProposalModal: React.FC<Props> = ({ proposal: p, onClose, onR
         {/* Change reason */}
         <div className="form-group" style={{ marginBottom: 0 }}>
           <label className="form-label">
-            {editing ? <>What did you change? <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional)</span></> : <>Reason for revision <span className="required">*</span></>}
+            {approving
+              ? <>Note of changes for the client <span className="required">*</span></>
+              : editing ? <>What did you change? <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional)</span></> : <>Reason for revision <span className="required">*</span></>}
           </label>
           <input
             className="form-input"
             value={changeReason}
             onChange={(e) => setChangeReason(e.target.value)}
-            placeholder={editing ? 'e.g. Added the missing formulas' : 'e.g. Client requested price reduction, added one site'}
+            placeholder={approving ? 'e.g. Monthly rate revised to PKR 45,000 and quarterly fumigation added' : editing ? 'e.g. Added the missing formulas' : 'e.g. Client requested price reduction, added one site'}
           />
+          {approving && <div className="cell-sub" style={{ marginTop: 4 }}>Shown to the client in the message the proposal is sent with, and kept on the proposal.</div>}
         </div>
 
         {/* ── Plan-specific fields ── */}

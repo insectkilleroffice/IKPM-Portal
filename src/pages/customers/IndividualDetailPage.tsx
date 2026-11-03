@@ -9,14 +9,12 @@ import {
   Truck,
   Receipt,
   FileText,
-  FileCheck2,
-  Paperclip,
   History,
   CreditCard,
-  ClipboardList,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
+import { SectionSelect } from '../../components/common/SectionSelect';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { formatPKR, formatCNIC, formatDate, formatDateTime } from '../../lib/formatters';
 import { useAuth } from '../../contexts/AuthContext';
@@ -76,7 +74,7 @@ export const IndividualDetailPage: React.FC = () => {
         date: p.paymentDate,
         type: 'Receipt',
         reference: p.receiptNumber,
-        description: `Payment against ${p.invoiceNumber} (${p.paymentMode.replace('_', ' ')})`,
+        description: `Payment against ${p.invoiceNumber} (${String(p.paymentMode ?? '').replace('_', ' ')})`,
         debit: 0,
         credit: p.totalCreditApplied,
       })),
@@ -130,7 +128,7 @@ export const IndividualDetailPage: React.FC = () => {
                 {client.id}
               </span>
               <span className={`badge-status ${client.taxStatus === 'active_filer' ? 'badge-emerald' : 'badge-slate'}`}>
-                {client.taxStatus.replace('_', ' ')}
+                {String(client.taxStatus ?? '').replace('_', ' ')}
               </span>
               <span className="badge-status badge-slate">Individual Client</span>
             </div>
@@ -176,45 +174,23 @@ export const IndividualDetailPage: React.FC = () => {
       </div>
 
       {/* 10 Individual Tabs */}
-      <div className="tab-bar">
-        <button className={`tab-btn ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>
-          Overview & Identity
-        </button>
-        <button className={`tab-btn ${activeTab === 'sites' ? 'active' : ''}`} onClick={() => setActiveTab('sites')}>
-          <MapPin size={14} /> Sites & Residences ({sites.length})
-        </button>
-        <button className={`tab-btn ${activeTab === 'leads' ? 'active' : ''}`} onClick={() => setActiveTab('leads')}>
-          <FileText size={14} /> Inquiries & Inspections ({leads.length})
-        </button>
-        <button className={`tab-btn ${activeTab === 'proposals' ? 'active' : ''}`} onClick={() => setActiveTab('proposals')}>
-          <FileSpreadsheet size={14} /> Proposals ({proposals.length})
-        </button>
-        <button className={`tab-btn ${activeTab === 'contracts' ? 'active' : ''}`} onClick={() => setActiveTab('contracts')}>
-          <FileSignature size={14} /> Service Contracts ({contracts.length})
-        </button>
-        <button className={`tab-btn ${activeTab === 'jobs' ? 'active' : ''}`} onClick={() => setActiveTab('jobs')}>
-          <Truck size={14} /> Field Jobs ({jobs.length})
-        </button>
-        {hasRole(['super_admin', 'team_leader', 'finance']) && (
-          <>
-            <button className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`} onClick={() => setActiveTab('invoices')}>
-              <Receipt size={14} /> Invoices & Receipts ({invoices.length})
-            </button>
-            <button className={`tab-btn ${activeTab === 'statements' ? 'active' : ''}`} onClick={() => setActiveTab('statements')}>
-              <FileCheck2 size={14} /> Ledger & Statements
-            </button>
-          </>
-        )}
-        <button className={`tab-btn ${activeTab === 'onboarding' ? 'active' : ''}`} onClick={() => setActiveTab('onboarding')}>
-          <ClipboardList size={14} /> Onboarding{onboardingPack ? ` (${PACK_STATUS_LABEL[packStatus(onboardingPack)]})` : ''}
-        </button>
-        <button className={`tab-btn ${activeTab === 'documents' ? 'active' : ''}`} onClick={() => setActiveTab('documents')}>
-          <Paperclip size={14} /> Files
-        </button>
-        <button className={`tab-btn ${activeTab === 'audit' ? 'active' : ''}`} onClick={() => setActiveTab('audit')}>
-          <History size={14} /> Audit Trail ({auditLogs.length})
-        </button>
-      </div>
+      <SectionSelect<ClientTab>
+        value={activeTab}
+        onChange={setActiveTab}
+        options={[
+          { value: 'overview', label: 'Overview & Identity' },
+          { value: 'sites', label: `Sites & Residences (${sites.length})` },
+          { value: 'leads', label: `Inquiries & Inspections (${leads.length})` },
+          { value: 'proposals', label: `Proposals (${proposals.length})` },
+          { value: 'contracts', label: `Service Contracts (${contracts.length})` },
+          { value: 'jobs', label: `Field Jobs (${jobs.length})` },
+          { value: 'invoices', label: `Invoices & Receipts (${invoices.length})`, hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
+          { value: 'statements', label: 'Ledger & Statements', hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
+          { value: 'onboarding', label: `Onboarding${onboardingPack ? ` (${PACK_STATUS_LABEL[packStatus(onboardingPack)]})` : ''}` },
+          { value: 'documents', label: 'Files — all documents' },
+          { value: 'audit', label: `Audit Trail (${auditLogs.length})` },
+        ]}
+      />
 
       {/* Overview Tab */}
       {activeTab === 'overview' && (
@@ -281,7 +257,7 @@ export const IndividualDetailPage: React.FC = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-primary)' }}>{s.siteName}</div>
                   <span className={`badge-status ${s.isActive ? 'badge-emerald' : 'badge-slate'}`}>
-                    {s.propertyType.replace('_', ' ')}
+                    {String(s.propertyType ?? '').replace('_', ' ')}
                   </span>
                 </div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
@@ -336,7 +312,7 @@ export const IndividualDetailPage: React.FC = () => {
                     <td>
                       <div style={{ fontWeight: 600 }}>{l.title}</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        {l.source.replace(/_/g, ' ')} · {formatDate(l.createdAt)}
+                        {String(l.source ?? '').replace(/_/g, ' ')} · {formatDate(l.createdAt)}
                       </div>
                     </td>
                     <td>

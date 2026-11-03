@@ -34,6 +34,7 @@ import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { EmptyState } from '../../components/common/EmptyState';
 import { RowMenu, type RowMenuItem } from '../../components/common/RowMenu';
 import { useDataStore } from '../../hooks/useDataStore';
+import { dataService } from '../../services/dataService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { SendDocumentsModal } from '../../features/outreach/SendDocumentsModal';
@@ -139,6 +140,7 @@ export const LeadsListPage: React.FC = () => {
   const [sendLead, setSendLead] = useState<Lead | null>(null);
   const [stuckLead, setStuckLead] = useState<Lead | null>(null);
   const [changeStageLead, setChangeStageLead] = useState<Lead | null>(null);
+  const [forwardLead, setForwardLead] = useState<Lead | null>(null);
   const [meetingReportLead, setMeetingReportLead] = useState<Lead | null>(null);
   const [siteScheduleLead, setSiteScheduleLead] = useState<Lead | null>(null);
   const [siteInspFindingsLead, setSiteInspFindingsLead] = useState<Lead | null>(null);
@@ -272,8 +274,21 @@ export const LeadsListPage: React.FC = () => {
 
   const runNext = (lead: Lead) => runAction(lead, nextStep(lead, userProfile?.uid).action);
 
+  // Forward a lead to another CRO: its owner (or whoever it is assigned to) and admins / the super admin
+  const canForward = (lead: Lead) => {
+    if (!canEdit || ['won', 'lost'].includes(stageOf(lead))) return false;
+    const base = baseRoleOf(effectiveRole);
+    if (base === 'super_admin' || base === 'admin') return true;
+    return (lead as Lead & { ownerUid?: string }).ownerUid === userProfile?.uid;
+  };
+
   /** "⋮" menu items: every allowed action except the one already on the primary button. */
-  const menuItems = (lead: Lead, exclude?: LeadActionId): RowMenuItem[] =>
+  const menuItems = (lead: Lead, exclude?: LeadActionId): RowMenuItem[] => [
+    ...menuActionItems(lead, exclude),
+    ...(canForward(lead) ? [{ icon: Users2, label: 'Forward to another CRO', run: () => setForwardLead(lead) }] : []),
+  ];
+
+  const menuActionItems = (lead: Lead, exclude?: LeadActionId): RowMenuItem[] =>
     availableActions(lead)
       .filter((a) => {
         if (a.id === exclude) return false;
@@ -582,6 +597,17 @@ export const LeadsListPage: React.FC = () => {
         />
       )}
 
+      {forwardLead && (
+        <ForwardLeadModal
+          lead={forwardLead}
+          onClose={() => setForwardLead(null)}
+          onForwarded={(updated, stillVisible) => {
+            setForwardLead(null);
+            if (detailId === updated.id) openDetail(stillVisible ? updated.id : null);
+          }}
+        />
+      )}
+
       {changeStageLead && (
         <ChangeStageModal
           lead={changeStageLead}
@@ -593,6 +619,67 @@ export const LeadsListPage: React.FC = () => {
         />
       )}
     </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Forward Lead Modal: hand a lead over to another CRO
+// ---------------------------------------------------------------------------
+const ForwardLeadModal: React.FC<{ lead: Lead; onClose: () => void; onForwarded: (updated: Lead, stillVisible: boolean) => void }> = ({ lead, onClose, onForwarded }) => {
+  const { userProfile, effectiveRole } = useAuth();
+  const { success, error } = useNotification();
+  const currentOwner = (lead as Lead & { ownerUid?: string }).ownerUid;
+  // CROs: active staff whose role is (based on) Sales, other than the current owner
+  const cros = dataService.getStaff().filter((u) => baseRoleOf(u.role) === 'sales' && u.uid !== currentOwner);
+  const [toUid, setToUid] = useState('');
+  const [note, setNote] = useState('');
+
+  const handleForward = () => {
+    const to = cros.find((u) => u.uid === toUid);
+    if (!to) return error('Choose a CRO', 'Pick who should take over this lead.');
+    try {
+      const updated = dataService.forwardLead(lead.id, { uid: to.uid, name: to.displayName || to.email, email: to.email, teamId: to.teamId }, note, userProfile?.email);
+      const base = baseRoleOf(effectiveRole);
+      success('Lead forwarded', `${lead.title} is now with ${to.displayName || to.email}.`);
+      onForwarded(updated, base === 'super_admin' || base === 'admin' || to.uid === userProfile?.uid);
+    } catch (err) {
+      error('Could not forward the lead', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title="Forward lead to another CRO"
+      subtitle={`${lead.title} · current owner: ${ownerOf(lead)}`}
+      maxWidth="460px"
+      footer={
+        <>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleForward} disabled={!toUid}>
+            <Users2 size={14} /> <span>Forward</span>
+          </button>
+        </>
+      }
+    >
+      <div className="form-group">
+        <label className="form-label">Forward to <span className="required">*</span></label>
+        <select className="form-select" value={toUid} onChange={(e) => setToUid(e.target.value)}>
+          <option value="">Choose a CRO…</option>
+          {cros.map((u) => (
+            <option key={u.uid} value={u.uid}>{u.displayName || u.email}</option>
+          ))}
+        </select>
+        {!cros.length && <div className="cell-sub" style={{ marginTop: 4 }}>No other active CRO found.</div>}
+      </div>
+      <div className="form-group" style={{ marginBottom: 0 }}>
+        <label className="form-label">Handover note</label>
+        <textarea className="form-textarea" rows={3} value={note} onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. Client is in their area; follow up on the proposal next week" />
+        <div className="cell-sub" style={{ marginTop: 4 }}>The new CRO becomes the owner. The handover is kept in the lead's activity log.</div>
+      </div>
+    </Modal>
   );
 };
 

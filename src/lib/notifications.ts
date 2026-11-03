@@ -4,6 +4,7 @@
 import type { Lead } from '../types/crm';
 import type { ServiceJob, Contract } from '../types/operations';
 import type { Proposal } from '../types/proposal';
+import type { ClientStatement, Invoice } from '../types/finance';
 import type { UserProfile } from '../types';
 import type { UserRole } from '../types';
 import { baseRoleOf } from './permissions';
@@ -37,13 +38,69 @@ export function computeNotifications(
   proposals: Proposal[] = [],
   contracts: Contract[] = [],
   complaints: Complaint[] = [],
-  complaintEscalationHours = DEFAULT_COMPLAINT_ESCALATION_HOURS
+  complaintEscalationHours = DEFAULT_COMPLAINT_ESCALATION_HOURS,
+  /** All invoices including drafts (dataService.getAllInvoices()). */
+  invoices: Invoice[] = [],
+  /** Client statements (dataService.getStatements()). */
+  statements: ClientStatement[] = []
 ): AppNotification[] {
   const role = baseRoleOf(effectiveRole);
   const uid = profile.uid;
   const out: AppNotification[] = [];
 
   const isAdmin = role === 'super_admin' || role === 'admin';
+
+  // ── Bulk invoices: admins approve; the preparer hears when one comes back ──
+  statements.forEach((st) => {
+    if (isAdmin && st.status === 'pending_approval' && (role === 'super_admin' || st.submittedBy !== uid)) {
+      out.push({
+        id: `st_approval_${st.id}_${st.submittedAt || ''}`,
+        category: 'action_needed',
+        title: 'Bulk invoice needs approval',
+        body: `${st.customerName} · ${st.periodStart} – ${st.periodEnd} · PKR ${Math.round(st.periodTotal).toLocaleString()}`,
+        link: '/finance/invoices?tab=invoices',
+        entityId: st.id,
+        createdAt: st.submittedAt || st.updatedAt,
+      });
+    }
+    if (st.status === 'rejected' && st.submittedBy === uid) {
+      out.push({
+        id: `st_rejected_${st.id}_${st.rejectedAt || ''}`,
+        category: 'action_needed',
+        title: 'Bulk invoice returned by admin',
+        body: `${st.customerName} · ${st.rejectionReason || ''}`,
+        link: '/finance/invoices?tab=invoices',
+        entityId: st.id,
+        createdAt: st.rejectedAt || st.updatedAt,
+      });
+    }
+  });
+
+  // ── Invoice approval: admins review drafts; the preparer hears when one comes back ──
+  invoices.forEach((inv) => {
+    if (isAdmin && inv.status === 'pending_approval' && (role === 'super_admin' || inv.submittedBy !== uid)) {
+      out.push({
+        id: `inv_approval_${inv.id}_${inv.submittedAt || ''}`,
+        category: 'action_needed',
+        title: 'Invoice needs approval',
+        body: `${inv.customerName} · PKR ${Math.round(inv.grossPayable).toLocaleString()} · by ${inv.submittedByName || 'Finance'}`,
+        link: `/finance/invoices?invoice=${inv.id}`,
+        entityId: inv.id,
+        createdAt: inv.submittedAt || inv.updatedAt,
+      });
+    }
+    if (inv.status === 'rejected' && (inv.submittedBy === uid || (role === 'finance' && !inv.submittedBy))) {
+      out.push({
+        id: `inv_rejected_${inv.id}_${inv.rejectedAt || ''}`,
+        category: 'action_needed',
+        title: 'Invoice returned by admin',
+        body: `${inv.customerName} · ${inv.rejectionReason || ''}`,
+        link: `/finance/invoices?invoice=${inv.id}`,
+        entityId: inv.id,
+        createdAt: inv.rejectedAt || inv.updatedAt,
+      });
+    }
+  });
 
   // ── Operations Manager — all scheduled meetings + assign nudges ──────────
   if (role === 'operations') {

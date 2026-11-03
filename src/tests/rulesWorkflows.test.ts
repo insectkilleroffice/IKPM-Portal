@@ -262,9 +262,46 @@ describe.skipIf(!HOST)('firestore.rules: real portal workflows per role', () => 
     expect(await list('u_cro', 'approvals', 'ownerUid', 'EQUAL', 'u_cro')).toBe(OK);
     expect(await list('u_sup', 'contracts', 'assignedTeamLeaderId', 'EQUAL', 'u_sup')).toBe(OK);
   });
-  it('Finance creates an invoice; a CRO cannot', async () => {
-    expect(await create('u_fin', 'invoices/INV_NEW', { invoiceNumber: 'IKPM-CM-2026-0001', customerId: 'C1', status: 'posted', isPosted: true })).toBe(OK);
-    expect(await create('u_cro', 'invoices/INV_X', { invoiceNumber: 'X', customerId: 'C1', status: 'posted' })).toBe(DENIED);
+  it('Finance creates a draft invoice but cannot post one; a CRO cannot create any', async () => {
+    expect(await create('u_fin', 'invoices/INV_NEW', { invoiceNumber: 'DRAFT-INV_NEW', customerId: 'C1', status: 'pending_approval', isPosted: false })).toBe(OK);
+    expect(await create('u_fin', 'invoices/INV_POSTED', { invoiceNumber: 'IKPM-CM-2026-0001', customerId: 'C1', status: 'posted', isPosted: true })).toBe(DENIED);
+    expect(await create('u_cro', 'invoices/INV_X', { invoiceNumber: 'X', customerId: 'C1', status: 'draft' })).toBe(DENIED);
+  });
+  it('A CRO forwards their own lead to another CRO, but not someone else\'s', async () => {
+    await seed('leads/L_FWD', { title: 'Forward me', stage: 'contacted', ownerUid: 'u_cro', contacts: [], activities: [], updatedAt: NOW });
+    // Forwarding must not change anything else on the lead
+    expect(await save('u_cro', 'leads/L_FWD', { ownerUid: 'u_cro2', ownerName: 'CRO 2', stage: 'won', updatedAt: NOW })).toBe(DENIED);
+    expect(await save('u_cro', 'leads/L_FWD', { ownerUid: 'u_cro2', ownerName: 'CRO 2', assignedToUserId: 'u_cro2', activities: [{ note: 'forwarded' }], updatedAt: NOW })).toBe(OK);
+    expect(await save('u_cro', 'leads/L_CRO2', { ownerUid: 'u_cro', updatedAt: NOW })).toBe(DENIED);
+  });
+  it('A physical challan number belongs to one job only', async () => {
+    expect(await create('u_sup', 'challan_numbers/ch0099', { jobId: 'J1', challanNumber: 'CH-0099' })).toBe(OK);
+    expect(await save('u_sup', 'challan_numbers/ch0099', { jobId: 'J_OTHER', challanNumber: 'CH-0099' })).toBe(DENIED);
+    expect(await save('u_sup', 'challan_numbers/ch0099', { jobId: 'J1', challanNumber: 'ch 0099' })).toBe(OK);
+  });
+  it('Employee letters (pay, CNIC) are HR and super admin only, and never deleted', async () => {
+    const letter = { employeeId: 'EMP-0100', kind: 'offer_letter', status: 'issued', refNo: 'IKPM/HR/OL/2026/0001' };
+    expect(await create('u_hr', 'employee_letters/EMP-0100_offer_letter_1', letter)).toBe(OK);
+    expect(await get('u_ceo', 'employee_letters/EMP-0100_offer_letter_1')).toBe(OK);
+    expect(await get('u_fin', 'employee_letters/EMP-0100_offer_letter_1')).toBe(DENIED);
+    expect(await get('u_admin', 'employee_letters/EMP-0100_offer_letter_1')).toBe(DENIED);
+    expect(await create('u_admin', 'employee_letters/EMP-0100_offer_letter_2', letter)).toBe(DENIED);
+  });
+  it('Only the super admin invoices a cancelled contract', async () => {
+    await seed('contracts/CT_CANCEL', { customerId: 'C1', status: 'cancelled', updatedAt: NOW });
+    const inv = { invoiceNumber: 'DRAFT-X', customerId: 'C1', contractId: 'CT_CANCEL', status: 'pending_approval', isPosted: false };
+    expect(await create('u_fin', 'invoices/INV_CANCEL_FIN', inv)).toBe(DENIED);
+    expect(await create('u_ceo', 'invoices/INV_CANCEL_SA', inv)).toBe(OK);
+  });
+  it('Only an admin / super admin approves a draft invoice', async () => {
+    await seed('invoices/INV_D1', { invoiceNumber: 'DRAFT-INV_D1', customerId: 'C1', status: 'pending_approval', isPosted: false, isApproved: false, lineItems: [], updatedAt: NOW });
+    await seed('invoices/INV_D2', { invoiceNumber: 'DRAFT-INV_D2', customerId: 'C1', status: 'pending_approval', isPosted: false, isApproved: false, lineItems: [], updatedAt: NOW });
+    const approve = { invoiceNumber: 'IKPM-TX-2026-0099', status: 'posted', isPosted: true, isApproved: true, updatedAt: NOW };
+    expect(await save('u_fin', 'invoices/INV_D1', approve)).toBe(DENIED);
+    expect(await save('u_fin', 'invoices/INV_D1', { status: 'rejected', rejectionReason: 'self', updatedAt: NOW })).toBe(DENIED);
+    expect(await save('u_fin', 'invoices/INV_D1', { notes: 'fixed', status: 'pending_approval', updatedAt: NOW })).toBe(OK);
+    expect(await save('u_admin', 'invoices/INV_D1', approve)).toBe(OK);
+    expect(await save('u_ceo', 'invoices/INV_D2', { status: 'rejected', rejectionReason: 'wrong rate', updatedAt: NOW })).toBe(OK);
   });
   it('Supervisor marks attendance; a CRO cannot', async () => {
     expect(await create('u_sup', 'attendance/EMP-1_2026-11-02', { employeeId: 'EMP-1', date: '2026-11-02', status: 'present' })).toBe(OK);

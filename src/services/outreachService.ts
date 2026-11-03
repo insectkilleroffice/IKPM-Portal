@@ -102,6 +102,8 @@ export function buildPitchMessage(opts: {
   senderEmail?: string;
   purpose: 'documents' | 'proposal';
   proposalRef?: string;
+  /** e.g. the approver's note of what changed in the proposal; printed after the introduction. */
+  extraNote?: string;
 }): { subject: string; message: string } {
   const first = opts.recipientName.split(' ')[0] || 'Sir/Madam';
   const subject =
@@ -119,6 +121,7 @@ export function buildPitchMessage(opts: {
     '',
     `Greetings from ${outreachEnv.companyName}.`,
     intro,
+    ...(opts.extraNote?.trim() ? ['', opts.extraNote.trim()] : []),
     '',
     'Feel free to reach out for any clarification or to schedule a site inspection.',
     '',

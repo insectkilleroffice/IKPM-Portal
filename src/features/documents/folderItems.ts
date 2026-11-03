@@ -5,7 +5,7 @@
 import { dataService } from '../../services/dataService';
 import type { PortalDocument } from '../../types/document';
 import type { FolderMeta } from '../../types/folders';
-import { parseFolderPath, UNFILED_ROOT } from '../../lib/folders';
+import { moveFolderPathToClient, parseFolderPath, UNFILED_ROOT } from '../../lib/folders';
 
 export type FolderItemKind = 'document' | 'proposal' | 'contract' | 'job' | 'invoice' | 'payment' | 'outreach';
 
@@ -48,7 +48,7 @@ export function collectFolderItems(): FolderItem[] {
     items.push({ ...meta(d), key: `document:${d.id}`, kind: 'document', id: d.id, title: d.title, sub: d.file.fileName, date: d.uploadedAt, doc: d })
   );
   dataService.getProposals().forEach((p) =>
-    items.push({ ...meta(p), key: `proposal:${p.id}`, kind: 'proposal', id: p.id, title: `Proposal ${p.id}${p.revisionNumber ? ` R${p.revisionNumber}` : ''}`, sub: `${p.customerName} · ${p.status.replace(/_/g, ' ')}`, date: p.createdAt, href: `/proposals?view=${encodeURIComponent(p.id)}` })
+    items.push({ ...meta(p), key: `proposal:${p.id}`, kind: 'proposal', id: p.id, title: `Proposal ${p.id}${p.revisionNumber ? ` R${p.revisionNumber}` : ''}`, sub: `${p.customerName} · ${String(p.status ?? '').replace(/_/g, ' ')}`, date: p.createdAt, href: `/proposals?view=${encodeURIComponent(p.id)}` })
   );
   dataService.getContracts().forEach((c) =>
     items.push({ ...meta(c), key: `contract:${c.id}`, kind: 'contract', id: c.id, title: `Contract ${c.id}`, sub: `${c.customerName} · ${c.status}`, date: c.startDate, href: `/contracts?view=${encodeURIComponent(c.id)}` })
@@ -60,7 +60,7 @@ export function collectFolderItems(): FolderItem[] {
       items.push({ ...meta(j), key: `job:${j.id}`, kind: 'job', id: j.id, title: `Service report ${j.id}`, sub: `${j.siteName || j.customerName} · ${j.supervisorVerification ? 'verified' : 'awaiting QC'}`, date: j.scheduledDate, href: `/operations/jobs?view=${encodeURIComponent(j.id)}` })
     );
   dataService.getInvoices().forEach((i) =>
-    items.push({ ...meta(i), key: `invoice:${i.id}`, kind: 'invoice', id: i.id, title: `Invoice ${i.invoiceNumber}`, sub: `${i.customerName} · ${i.status.replace(/_/g, ' ')}`, date: i.issueDate, href: `/finance/invoices?view=${encodeURIComponent(i.id)}` })
+    items.push({ ...meta(i), key: `invoice:${i.id}`, kind: 'invoice', id: i.id, title: `Invoice ${i.invoiceNumber}`, sub: `${i.customerName} · ${String(i.status ?? '').replace(/_/g, ' ')}`, date: i.issueDate, href: `/finance/invoices?view=${encodeURIComponent(i.id)}` })
   );
   dataService.getPayments().forEach((p) =>
     items.push({ ...meta(p), key: `payment:${p.id}`, kind: 'payment', id: p.id, title: `Receipt ${p.receiptNumber}`, sub: `${p.customerName} · ${p.invoiceNumber}`, date: p.paymentDate, href: `/finance/invoices?view=${encodeURIComponent(p.invoiceId)}` })
@@ -71,7 +71,22 @@ export function collectFolderItems(): FolderItem[] {
   return items;
 }
 
-export const itemSearchText = (i: FolderItem) => [i.title, i.sub, i.id, i.folderPath, i.doc?.file.fileName, i.doc?.notes].filter(Boolean).join(' ').toLowerCase();
+/**
+ * Items shown for one customer root: everything filed under it, plus files still sitting in the
+ * folder of one of the customer's leads (e.g. a meeting or inspection report filed before the lead
+ * became this customer). Those are shown as if already moved to the customer's folder.
+ */
+export function remapLeadItems(items: FolderItem[], rootPath: string, leadIds: string[]): FolderItem[] {
+  const root = parseFolderPath(rootPath);
+  if (!root?.clientId || !leadIds.length || root.branchId) return items;
+  return items.map((i) =>
+    i.ownerScope === 'client' && i.clientId && leadIds.includes(i.clientId)
+      ? { ...i, clientId: root.clientId, folderPath: moveFolderPathToClient(i.folderPath, { clientId: root.clientId!, clientName: root.clientName }) }
+      : i
+  );
+}
+
+export const itemSearchText =(i: FolderItem) => [i.title, i.sub, i.id, i.folderPath, i.doc?.file.fileName, i.doc?.notes].filter(Boolean).join(' ').toLowerCase();
 
 /** Readable folder path with live client / branch names. */
 export function prettyPath(path: string | undefined): string {

@@ -39,11 +39,13 @@ import type {
 } from '../types/customer';
 import type { ActivityChannel, ContactOutcome, InspectionAssessment, Lead, LeadActivity, LeadBranch, LeadContact, LeadStage, MeetingFollowUp, PestType, RiskFinding, SiteInspection } from '../types/crm';
 import type { Proposal, ProposalRevision } from '../types/proposal';
-import type { Contract, PhotoEvidence, ServiceJob, Challan } from '../types/operations';
-import type { Employee, EmployeePrivate, EmployeePay, AttendanceRecord, SalaryCycle } from '../types/hr';
+import type { Contract, ContractCancellation, ContractCancelCategory, PhotoEvidence, ServiceJob, Challan } from '../types/operations';
+import { CONTRACT_CANCEL_CATEGORY_LABELS } from '../types/operations';
+import type { Employee, EmployeePrivate, EmployeePay, EmployeeLetter, AttendanceRecord, SalaryCycle } from '../types/hr';
 import type { Complaint } from '../types/complaints';
 import type { Approval } from '../types/approvals';
-import type { Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
+import type { ClientStatement, Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
+import { isUnpostedInvoice, jobIdsOf } from '../types/finance';
 import type { AuditLogEntry, DataScope, RecordOwnership, Team, UserProfile, UserRole } from '../types';
 import type { DocumentOwner, DocumentPack, OutreachLog, PortalDocument } from '../types/document';
 import { formatDate, generatePermanentId, normalizePakistaniPhone } from '../lib/formatters';
@@ -121,6 +123,8 @@ interface DbState {
   employees: any[];
   employeePrivate: any[];
   employeePay: any[];
+  employeeLetters: any[];
+  statements: ClientStatement[];
   attendance: any[];
   salaryCycles: any[];
 }
@@ -156,6 +160,8 @@ const COLLECTIONS: Record<StateKey, string> = {
   employees: 'employees',
   employeePrivate: 'employee_private',
   employeePay: 'employee_pay',
+  employeeLetters: 'employee_letters',
+  statements: 'client_statements',
   attendance: 'attendance',
   salaryCycles: 'salary_cycles',
 };
@@ -173,7 +179,7 @@ const SCOPED: StateKey[] = ['companies', 'branches', 'clients', 'sites', 'leads'
 const BUSINESS_KEYS: StateKey[] = [
   'companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs',
   'invoices', 'payments', 'taxRules', 'auditLogs', 'documents', 'documentPacks', 'outreachLogs',
-  'devices', 'monitoringRecords', 'complaints', 'approvals', 'challans', 'employees', 'employeePrivate', 'employeePay', 'attendance', 'salaryCycles',
+  'devices', 'monitoringRecords', 'complaints', 'approvals', 'challans', 'employees', 'employeePrivate', 'employeePay', 'employeeLetters', 'statements', 'attendance', 'salaryCycles',
 ];
 
 /** Module that grants read access to each business collection (mirrors firestore.rules). */
@@ -195,6 +201,8 @@ const MODULE_FOR: Partial<Record<StateKey, ModuleKey>> = {
   employees: 'hr',
   employeePrivate: 'hr',
   employeePay: 'payroll',
+  employeeLetters: 'hr',
+  statements: 'invoices',
   attendance: 'attendance',
   salaryCycles: 'payroll',
 };
@@ -247,6 +255,8 @@ const emptyState = (): DbState => ({
   employees: [],
   employeePrivate: [],
   employeePay: [],
+  employeeLetters: [],
+  statements: [],
   attendance: [],
   salaryCycles: [],
 });
@@ -304,7 +314,7 @@ const COLLECTION_AREA: Record<string, string> = {
   companies: 'this client account', clients: 'this client', branches: 'this branch', sites: 'this site',
   invoices: 'this invoice', payments: 'this payment', challans: 'this challan', documents: 'this file',
   attendance: 'attendance', employees: 'employee records', employee_private: 'private HR records',
-  employee_pay: 'pay records', salary_cycles: 'payroll', complaints: 'this complaint', approvals: 'this approval',
+  employee_pay: 'pay records', employee_letters: 'employee letters', salary_cycles: 'payroll', complaints: 'this complaint', approvals: 'this approval',
   users: 'staff accounts', roles: 'roles', teams: 'teams',
 };
 
@@ -313,7 +323,7 @@ const PROTECTED_FIELDS = ['ownerUid', 'teamId', 'customerId', 'contractId', 'lin
   'taxTotal', 'invoiceNumber', 'role', 'dataScope', 'isActive', 'contacts', 'existingCustomerId'];
 
 /** Matches the rules_probe id in firestore.rules; tells whether the published rules are current. */
-export const RULES_VERSION = '2026-11-02-n';
+export const RULES_VERSION = '2026-11-03-a';
 
 class DataService {
   /**
@@ -544,7 +554,7 @@ class DataService {
     if (key === 'auditLogs') return can('settings') ? [query(col, orderBy('timestamp', 'desc'), limit(500))] : [];
 
     // Finance records aren't owner-scoped
-    if (key === 'invoices' || key === 'payments') return can('invoices') ? [col] : [];
+    if (key === 'invoices' || key === 'payments' || key === 'statements') return can('invoices') ? [col] : [];
 
     if (key === 'jobs') {
       const qs: Query[] = [];
@@ -597,6 +607,8 @@ class DataService {
     if (key === 'employees') return [col];
     // CNIC / bank / witnesses: HR and super admin only (checked by role in firestore.rules).
     if (key === 'employeePrivate') return se.role === 'super_admin' || baseRoleOf(se.role) === 'hr' ? [col] : [];
+    // Offer letters / contracts / confirmations (pay and CNIC printed on them): HR and super admin only
+    if (key === 'employeeLetters') return se.role === 'super_admin' || baseRoleOf(se.role) === 'hr' ? [col] : [];
 
     // Approvals: managers (edit) may list all; view-only roles (CRO, operations) may only read
     // their own requests. A bare collection query fails the Firestore rule for non-editors.
@@ -1103,6 +1115,45 @@ class DataService {
    * Saves a lead. A stage change must follow ALLOWED_TRANSITIONS (throws otherwise) and is
    * written to audit_logs with who, from, to and the reason.
    */
+  /**
+   * Forwards a lead to another CRO: they become its owner (and see it in "My leads"); the previous
+   * owner no longer does unless they see all records. Kept in the lead's activity log and audit log.
+   * A normal save never changes the owner (upsert keeps it), so this writes the owner fields itself.
+   */
+  public forwardLead(leadId: string, to: { uid: string; name: string; email?: string; teamId?: string }, note: string, userEmail = 'admin'): Lead {
+    const lead = this.getLeadById(leadId);
+    if (!lead) throw new Error(`Lead ${leadId} not found`);
+    const prev = lead as Lead & RecordOwnership;
+    if (prev.ownerUid === to.uid) throw new Error(`${to.name} already owns this lead.`);
+    const ts = now();
+    const fromName = prev.ownerName || lead.assignedToName || 'previous owner';
+    const activity: LeadActivity = {
+      id: `act_${Date.now()}`,
+      at: ts,
+      byUid: this.session?.uid,
+      byName: this.session?.name || userEmail,
+      channel: 'note',
+      note: `Lead forwarded from ${fromName} to ${to.name}${note.trim() ? `: ${note.trim()}` : ''}`,
+    };
+    const updated = {
+      ...lead,
+      ownerUid: to.uid,
+      ownerName: to.name,
+      ...(to.email ? { ownerEmail: to.email } : {}),
+      ...(to.teamId ? { teamId: to.teamId } : {}),
+      assignedToUserId: to.uid,
+      assignedToName: to.name,
+      activities: [...(lead.activities ?? []), activity],
+      updatedAt: ts,
+    } as Lead;
+    const idx = this.s.leads.findIndex((l) => l.id === leadId);
+    this.s.leads[idx] = updated;
+    this.commit();
+    this.write('leads', leadId, updated);
+    this.audit(userEmail, 'update', 'lead', leadId, lead.title, activity.note || 'Lead forwarded');
+    return updated;
+  }
+
   public saveLead(lead: Lead, userEmail = 'admin', reason?: string): Lead {
     const prev = this.getLeadById(lead.id);
     const from = prev ? stageOf(prev) : undefined;
@@ -2057,6 +2108,32 @@ class DataService {
   }
 
   /**
+   * Cancels a contract and records why. Used both for a direct cancellation and when a cancellation
+   * request is approved, so the two paths behave the same: the reason is kept on the contract and
+   * every visit still scheduled after the last day of service is cancelled.
+   */
+  public cancelContract(contractId: string, cancellation: ContractCancellation, userEmail = 'admin'): Contract {
+    const contract = this.getContractById(contractId);
+    if (!contract) throw new Error(`Contract ${contractId} not found`);
+    const ts = now();
+    const updated: Contract = { ...contract, status: 'cancelled', cancellation, updatedAt: ts };
+    this.upsert(this.s.contracts, updated);
+    this.write('contracts', contract.id, updated);
+    const reason = `Contract cancelled (${CONTRACT_CANCEL_CATEGORY_LABELS[cancellation.category] || cancellation.category}): ${cancellation.reason}`;
+    const stopped = this.s.jobs.filter((j) => j.contractId === contract.id && j.status === 'scheduled'
+      && (!j.scheduledDate || j.scheduledDate > cancellation.effectiveDate));
+    stopped.forEach((j) => {
+      const cancelled = { ...j, status: 'cancelled' as const, cancellationReason: reason, updatedAt: ts };
+      this.upsert(this.s.jobs, cancelled);
+      this.write('service_jobs', j.id, cancelled);
+    });
+    this.commit();
+    this.audit(userEmail, 'status_change', 'contract', contract.id, `${contract.id} — ${contract.customerName}`,
+      `${reason}. Last service day ${cancellation.effectiveDate}; ${stopped.length} scheduled visit(s) cancelled.`);
+    return updated;
+  }
+
+  /**
    * A signed contract turns the prospect into a real customer: the lead is closed as won (which
    * activates the account and adds the lead's branches / sites), the proposal is marked accepted and
    * the account's active-contract count goes up. Each step is skipped when already done.
@@ -2326,8 +2403,15 @@ class DataService {
     return this.s.jobs.find((j) => j.id === id);
   }
 
+  /** The invoice billing a job (single-job or monthly multi-job); a live one before a voided one. */
   public getInvoiceForJob(jobId: string): Invoice | undefined {
-    return this.s.invoices.find((i) => i.jobId === jobId);
+    const all = this.s.invoices.filter((i) => jobIdsOf(i).includes(jobId));
+    return all.find((i) => i.status !== 'void_reversed') ?? all[0];
+  }
+
+  /** Jobs already on an invoice that isn't voided (they must not be billed again). */
+  public billedJobIds(): Set<string> {
+    return new Set(this.s.invoices.filter((i) => i.status !== 'void_reversed').flatMap((i) => jobIdsOf(i)));
   }
 
   public saveJob(job: ServiceJob, userEmail = 'admin'): ServiceJob {
@@ -2464,6 +2548,37 @@ class DataService {
     return pay;
   }
 
+  // ---------- Private employee data (CNIC, father's name, address): HR and super admin only ----------
+  public getEmployeePrivate(employeeId: string): EmployeePrivate | undefined {
+    return ((this.s.employeePrivate || []) as EmployeePrivate[]).find((p) => p.id === employeeId);
+  }
+
+  public saveEmployeePrivate(record: EmployeePrivate, userEmail = 'admin'): EmployeePrivate {
+    const created = this.upsert(this.s.employeePrivate, record);
+    this.audit(userEmail, created ? 'create' : 'update', 'employee', record.id, record.id, `Updated private HR details of ${record.id}`);
+    this.commit();
+    this.write('employee_private', record.id, record);
+    return record;
+  }
+
+  // ---------- Employee letters (offer, employment contract, confirmation) ----------
+  public getEmployeeLetters(employeeId?: string): EmployeeLetter[] {
+    return ((this.s.employeeLetters || []) as EmployeeLetter[])
+      .filter((l) => !employeeId || l.employeeId === employeeId)
+      .sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
+  }
+
+  public saveEmployeeLetter(letter: EmployeeLetter, userEmail = 'admin'): EmployeeLetter {
+    const created = this.upsert(this.s.employeeLetters, letter);
+    this.audit(userEmail, created ? 'create' : 'update', 'employee', letter.employeeId, letter.employeeName,
+      created
+        ? `Issued ${letter.kind.replace(/_/g, ' ')} ${letter.refNo} to ${letter.employeeName}`
+        : `${letter.kind.replace(/_/g, ' ')} ${letter.refNo}: ${letter.status}`);
+    this.commit();
+    this.write('employee_letters', letter.id, letter);
+    return letter;
+  }
+
   // ---------- Challans (Change 39, 40) ----------
   public getChallans(): Challan[] {
     return (this.s.challans || []) as Challan[];
@@ -2481,8 +2596,53 @@ class DataService {
     );
   }
 
+  /** Normal form of a physical challan number: "CH-0012 " and "ch0012" are the same challan. */
+  public static challanKey(challanNumber: string): string {
+    return (challanNumber || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  /** The other job already using this physical challan number (among records this person can see). */
+  public challanNumberUsedBy(challanNumber: string, jobId: string): string | undefined {
+    const key = DataService.challanKey(challanNumber);
+    if (!key) return undefined;
+    const challan = this.getChallans().find((c) => c.status !== 'superseded' && c.jobId !== jobId
+      && (c.challanKey || DataService.challanKey(c.challanNumber)) === key);
+    if (challan) return challan.jobId;
+    return this.s.jobs.find((j) => j.id !== jobId && j.challanNumber && DataService.challanKey(j.challanNumber) === key)?.id;
+  }
+
+  /**
+   * Checks a physical challan number is free for this job, also against jobs this person can't see,
+   * through the challan number register (challan_numbers/{key}: one job per number). Throws if taken.
+   */
+  public async assertChallanNumberFree(challanNumber: string, jobId: string): Promise<void> {
+    const key = DataService.challanKey(challanNumber);
+    if (!key) throw new Error('Enter the physical challan number.');
+    const local = this.challanNumberUsedBy(challanNumber, jobId);
+    if (local) throw new Error(`Challan No. ${challanNumber} is already used on job ${local}. Each physical challan can be used once.`);
+    try {
+      const snap = await getDoc(doc(db, 'challan_numbers', key));
+      const owner = snap.exists() ? (snap.data() as { jobId?: string }).jobId : undefined;
+      if (owner && owner !== jobId) throw new Error(`Challan No. ${challanNumber} is already used on job ${owner}. Each physical challan can be used once.`);
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Challan No.')) throw err;
+      // Offline or register not readable yet: the local check above still applies
+    }
+  }
+
   public saveChallan(challan: Challan, userEmail = 'admin'): Challan {
+    const usedBy = this.challanNumberUsedBy(challan.challanNumber, challan.jobId);
+    if (usedBy) throw new Error(`Challan No. ${challan.challanNumber} is already used on job ${usedBy}. Each physical challan can be used once.`);
+    const key = DataService.challanKey(challan.challanNumber);
+    challan.challanKey = key;
+    // A job that changes its challan number frees the old one
+    const previous = this.getChallanById(challan.id);
     const created = this.upsert(this.s.challans, challan);
+    // Register the number (the database refuses it if another job holds it)
+    this.write('challan_numbers', key, { jobId: challan.jobId, challanNumber: challan.challanNumber, challanId: challan.id, updatedAt: now() });
+    if (previous && previous.challanKey && previous.challanKey !== key) {
+      this.write('challan_numbers', previous.challanKey, { jobId: '', released: true, releasedFrom: challan.jobId, updatedAt: now() });
+    }
     this.audit(
       userEmail,
       created ? 'create' : 'update',
@@ -2542,7 +2702,16 @@ class DataService {
   }
 
     // --- Invoices & Financial Controls ---
+  /**
+   * Final (approved / posted) invoices only. Drafts waiting for approval are not owed by the client yet,
+   * so ledgers, balances, dashboards and search ignore them. Use getAllInvoices() to include drafts.
+   */
   public getInvoices(customerId?: string, branchId?: string): Invoice[] {
+    return this.getAllInvoices(customerId, branchId).filter((i) => !isUnpostedInvoice(i));
+  }
+
+  /** Every invoice including drafts, pending approval and rejected (Invoices page and approval queue). */
+  public getAllInvoices(customerId?: string, branchId?: string): Invoice[] {
     return this.s.invoices.filter((i) => {
       if (customerId && i.customerId !== customerId) return false;
       if (branchId && i.branchId !== branchId) return false;
@@ -2581,6 +2750,28 @@ class DataService {
     return invoice;
   }
 
+  // --- Client statements (one per contract billing period) ---
+  public getStatements(customerId?: string): ClientStatement[] {
+    return [...(this.s.statements || [])]
+      .filter((st) => !customerId || st.customerId === customerId)
+      .sort((a, b) => b.periodStart.localeCompare(a.periodStart) || b.createdAt.localeCompare(a.createdAt));
+  }
+
+  public getStatementById(id: string): ClientStatement | undefined {
+    return (this.s.statements || []).find((st) => st.id === id);
+  }
+
+  public saveStatement(statement: ClientStatement, userEmail = 'admin'): ClientStatement {
+    const created = this.upsert(this.s.statements, statement);
+    this.audit(userEmail, created ? 'create' : 'update', 'invoice', statement.id, statement.statementNumber,
+      created
+        ? `Prepared statement ${statement.statementNumber} for ${statement.customerName} (${statement.periodStart} – ${statement.periodEnd})`
+        : `Statement ${statement.statementNumber}: ${statement.status}`);
+    this.commit();
+    this.write('client_statements', statement.id, statement);
+    return statement;
+  }
+
   // --- Payments & Receivable Withholding Tax ---
   public getPayments(customerId?: string, branchId?: string): PaymentReceipt[] {
     return this.s.payments.filter((p) => {
@@ -2593,6 +2784,9 @@ class DataService {
   public recordPayment(payment: PaymentReceipt, userEmail = 'admin'): PaymentReceipt {
     const invoice = this.getInvoiceById(payment.invoiceId);
     if (!invoice) throw new Error('Associated invoice not found.');
+    if (isUnpostedInvoice(invoice)) {
+      throw new Error(`Invoice ${invoice.invoiceNumber} is not approved yet. Payments can only be recorded on approved invoices.`);
+    }
 
     // 1. Several receipts per invoice are allowed (instalments / part payments) until the balance is 0.
     // 2. Settle status check
@@ -2701,6 +2895,27 @@ class DataService {
     const meta = this.resolveDocumentFolder({ owner, category: 'other', fileCategory: category, uploadedAt: now() });
     if (!meta.ownerScope) throw new Error('This file is not linked to a client or to IKPM, so it cannot be uploaded.');
     return { ownerScope: meta.ownerScope, clientId: meta.clientId, category };
+  }
+
+  /** Leads that became (or belong to) this customer account. */
+  public leadIdsOfCustomer(customerId: string): string[] {
+    return this.s.leads.filter((l) => l.existingCustomerId === customerId).map((l) => l.id);
+  }
+
+  /**
+   * Moves files still sitting in this customer's lead folders into the customer's folder.
+   * The move on conversion only reaches files the converting user could see (a CRO can't see the
+   * Supervisor's inspection report), so this catches the rest when someone who can see them opens
+   * the customer. Returns how many records moved.
+   */
+  public refileCustomerLeadFiles(customerId: string, userEmail = 'admin'): number {
+    const leadIds = this.leadIdsOfCustomer(customerId);
+    if (!leadIds.length) return 0;
+    const keys: StateKey[] = ['documents', 'documentPacks', 'invoices', 'payments', 'proposals', 'contracts', 'jobs', 'outreachLogs'];
+    const pending = keys.reduce((n, key) =>
+      n + (this.s[key] as unknown as FolderMeta[]).filter((r) => r.ownerScope === 'client' && r.clientId && leadIds.includes(r.clientId)).length, 0);
+    if (pending) leadIds.forEach((id) => this.refileLeadRecords(id, customerId, userEmail));
+    return pending;
   }
 
   /**
@@ -3125,23 +3340,26 @@ class DataService {
       }
     }
     // Apply contract cancel / reactivate when approved
-    if (decision === 'approved' && (updated.type === 'contract_cancel' || updated.type === 'contract_reactivate')) {
+    if (decision === 'approved' && updated.type === 'contract_cancel' && this.getContractById(updated.entityId)) {
+      // Same as a direct cancellation: reason kept on the contract, later visits cancelled
+      this.cancelContract(updated.entityId, {
+        category: (updated.cancelCategory as ContractCancelCategory) || 'other',
+        reason: updated.reason,
+        effectiveDate: updated.effectiveDate || (updated.decidedAt || now()).slice(0, 10),
+        requestedBy: updated.requestedBy,
+        requestedByName: updated.requestedByName,
+        requestedAt: updated.requestedAt,
+        approvedBy: decidedBy,
+        approvedByName: decidedByName,
+        cancelledAt: now(),
+      }, userEmail);
+    }
+    if (decision === 'approved' && updated.type === 'contract_reactivate') {
       const contract = this.s.contracts.find((c) => c.id === updated.entityId);
       if (contract) {
-        const newStatus = updated.type === 'contract_cancel' ? ('cancelled' as const) : ('active' as const);
-        const updatedContract = { ...contract, status: newStatus, updatedAt: now() };
+        const updatedContract = { ...contract, status: 'active' as const, updatedAt: now() };
         this.upsert(this.s.contracts, updatedContract);
         this.write('contracts', contract.id, updatedContract);
-        // Auto-cancel all scheduled jobs belonging to this contract
-        if (newStatus === 'cancelled') {
-          this.s.jobs
-            .filter((j) => j.contractId === contract.id && j.status === 'scheduled')
-            .forEach((j) => {
-              const cancelled = { ...j, status: 'cancelled' as const, cancellationReason: 'Contract cancelled', updatedAt: now() };
-              this.upsert(this.s.jobs, cancelled);
-              this.write('service_jobs', j.id, cancelled); // was 'jobs': no such collection, refused
-            });
-        }
       }
     }
     return updated;

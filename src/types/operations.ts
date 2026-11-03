@@ -281,11 +281,48 @@ export interface Contract extends FolderMeta, TemplateStamp {
   taxPercent?: number;
   tenureMonths?: number;
   paymentTermsDays?: number;
+  /** How often this contract is invoiced: 0 / unset = calendar month, else every N days (from the proposal). */
+  billingCycleDays?: number;
   terms?: string[];
   exclusions?: string;
   deviceOwnership?: string;
   chemicals?: string[];
 
+  /** Why and when the contract was cancelled (set when it is cancelled, directly or by approval). */
+  cancellation?: ContractCancellation;
+
   createdAt: string;
   updatedAt: string;
+}
+
+export type ContractCancelCategory =
+  | 'client_request'
+  | 'non_payment'
+  | 'service_quality'
+  | 'business_closed'
+  | 'price'
+  | 'moved_to_competitor'
+  | 'other';
+
+export const CONTRACT_CANCEL_CATEGORY_LABELS: Record<ContractCancelCategory, string> = {
+  client_request: 'Client requested',
+  non_payment: 'Non-payment',
+  service_quality: 'Service quality / complaints',
+  business_closed: 'Client business closed / relocated',
+  price: 'Price / budget',
+  moved_to_competitor: 'Moved to a competitor',
+  other: 'Other',
+};
+
+export interface ContractCancellation {
+  category: ContractCancelCategory;
+  reason: string;
+  /** Last day of service. Scheduled visits after this date are cancelled. */
+  effectiveDate: string;
+  requestedBy: string;
+  requestedByName: string;
+  requestedAt: string;
+  approvedBy?: string;
+  approvedByName?: string;
+  cancelledAt: string;
 }

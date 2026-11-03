@@ -65,6 +65,8 @@ export const JobsListPage: React.FC = () => {
     // Any Supervisor (Team Leader / Operations Coordinator) may run field steps, e.g. covering a
     // colleague's visit. Operations Manager, CRO, Finance etc. still can't.
     if (baseRoleOf(effectiveRole) === 'team_leader') return true;
+    // The super admin can run any visit (the database rules already allow it)
+    if (baseRoleOf(effectiveRole) === 'super_admin') return true;
     const me = new Set([uid, ...dataService.getEmployees().filter((e) => e.uid === uid).map((e) => e.id)]);
     return [j.assignedTeamLeaderId, j.leadPcoId, ...(j.assignedTechnicianIds ?? [])].some((id) => !!id && me.has(id));
   };
@@ -426,7 +428,7 @@ export const JobsListPage: React.FC = () => {
       jobs
     ).get('new');
     if (clash) {
-      warning('PCO already booked', `${dataService.pcoNames(clash).join(', ')} already on another visit in the ${newJob.timeSlot.replace('_', ' ')} slot on ${formatDate(newJob.scheduledDate)}. Untick them or pick another slot.`);
+      warning('PCO already booked', `${dataService.pcoNames(clash).join(', ')} already on another visit in the ${String(newJob.timeSlot ?? '').replace('_', ' ')} slot on ${formatDate(newJob.scheduledDate)}. Untick them or pick another slot.`);
       return;
     }
 
@@ -557,6 +559,7 @@ export const JobsListPage: React.FC = () => {
         fileName: pdfGenerator.jobReportFileName(updated),
         subPath: updated.id,
         user: { email: userProfile?.email, displayName: userProfile?.displayName },
+        noLocalDownload: true,
       });
     } catch (err) {
       console.warn('Auto-filing verified report background error:', err);
@@ -644,7 +647,7 @@ export const JobsListPage: React.FC = () => {
     setStartJob(null);
   };
 
-  const handleSubmitReport = () => {
+  const handleSubmitReport = async () => {
     if (!showReportModal) return;
     const job = showReportModal;
     const outcome = reportVisitOutcome;
@@ -800,6 +803,12 @@ export const JobsListPage: React.FC = () => {
     }
     if (reportChallanNumber.trim()) {
       const cNo = reportChallanNumber.trim();
+      try {
+        await dataService.assertChallanNumberFree(cNo, updatedJob.id);
+      } catch (err) {
+        error('Challan number already used', err instanceof Error ? err.message : String(err));
+        return;
+      }
       updatedJob.challanNumber = cNo;
       updatedJob.challanFileUrl = reportChallanFileUrl || undefined;
 
@@ -1080,8 +1089,8 @@ export const JobsListPage: React.FC = () => {
                       <button
                         className="btn btn-secondary"
                         style={{ padding: '0.25rem 0.45rem', fontSize: '0.72rem' }}
-                        title="Download Service Report PDF"
-                        onClick={() => pdfAction.run(j.id, () => pdfGenerator.generateJobReportPDF(j))}
+                        title={pdfGenerator.isJobReportReady(j) ? 'Download the verified service report' : 'Download the job sheet (what to do on this visit). The report is available after the visit passes the quality check.'}
+                        onClick={() => pdfAction.run(j.id, () => pdfGenerator.isJobReportReady(j) ? pdfGenerator.generateJobReportPDF(j) : pdfGenerator.generateJobSheetPDF(j))}
                         disabled={pdfAction.busy === j.id}
                       >
                         <Download size={12} />
@@ -1489,14 +1498,26 @@ export const JobsListPage: React.FC = () => {
           maxWidth="720px"
           footer={
             <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-              <button
-                className="btn btn-secondary"
-                onClick={() => pdfAction.run(selectedJob.id, () => pdfGenerator.generateJobReportPDF(selectedJob))}
-                disabled={pdfAction.busy === selectedJob.id}
-              >
-                <Download size={14} />
-                <span>Download Report PDF</span>
-              </button>
+              {pdfGenerator.isJobReportReady(selectedJob) ? (
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => pdfAction.run(selectedJob.id, () => pdfGenerator.generateJobReportPDF(selectedJob))}
+                  disabled={pdfAction.busy === selectedJob.id}
+                >
+                  <Download size={14} />
+                  <span>Download Report PDF</span>
+                </button>
+              ) : (
+                <button
+                  className="btn btn-secondary"
+                  title="The service report is available after the visit is completed and passes the quality check"
+                  onClick={() => pdfAction.run(selectedJob.id, () => pdfGenerator.generateJobSheetPDF(selectedJob))}
+                  disabled={pdfAction.busy === selectedJob.id}
+                >
+                  <Download size={14} />
+                  <span>Download Job Sheet</span>
+                </button>
+              )}
 
               <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                 {getJobNextAction(selectedJob, dataService.getInvoiceForJob(selectedJob.id)).actionType === 'create_invoice' && !canInvoice ? (
@@ -2303,9 +2324,15 @@ export const JobsListPage: React.FC = () => {
               <button className="btn btn-secondary" onClick={() => setShowAttachChallanJob(null)}>Cancel</button>
               <button
                 className="btn btn-primary"
-                onClick={() => {
+                onClick={async () => {
                   if (!attachChallanNo.trim()) {
                     warning('Challan Number Required', 'Please enter the physical challan number.');
+                    return;
+                  }
+                  try {
+                    await dataService.assertChallanNumberFree(attachChallanNo.trim(), showAttachChallanJob.id);
+                  } catch (err) {
+                    error('Challan number already used', err instanceof Error ? err.message : String(err));
                     return;
                   }
                   const now = new Date().toISOString();

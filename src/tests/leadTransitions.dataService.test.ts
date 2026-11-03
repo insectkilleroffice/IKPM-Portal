@@ -228,3 +228,22 @@ describe('risk assessment findings', () => {
     expect(i.criticalFindings).toContain('Gap under door');
   });
 });
+
+describe('forwarding a lead to another CRO', () => {
+  it('makes the other CRO the owner and logs the handover', () => {
+    const lead = newLead();
+    const fwd = dataService.forwardLead(lead.id, { uid: 'u_cro2', name: 'Sara (CRO)', email: 'sara@ikpm.pk' }, 'Client is in her area', 'tester@ikpm.pk');
+    const saved = dataService.getLeadById(lead.id) as Lead & { ownerUid?: string; ownerName?: string };
+    expect(saved.ownerUid).toBe('u_cro2');
+    expect(saved.ownerName).toBe('Sara (CRO)');
+    expect(saved.assignedToUserId).toBe('u_cro2');
+    expect(fwd.activities?.at(-1)?.note).toMatch(/forwarded .* to Sara \(CRO\): Client is in her area/);
+    expect(saved.stage).toBe(lead.stage);
+  });
+
+  it('refuses to forward to the current owner', () => {
+    const lead = newLead();
+    dataService.forwardLead(lead.id, { uid: 'u_x', name: 'X' }, '', 'tester@ikpm.pk');
+    expect(() => dataService.forwardLead(lead.id, { uid: 'u_x', name: 'X' }, '', 'tester@ikpm.pk')).toThrow(/already owns/);
+  });
+});

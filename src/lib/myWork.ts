@@ -112,7 +112,7 @@ export function myWorkItems(
         date: day(j.scheduledDate),
         time: j.scheduledTime,
         title: j.customerName,
-        detail: `${j.siteName} · ${j.assignedTeamLeaderName || 'no Supervisor'} · ${j.status.replace(/_/g, ' ')}`,
+        detail: `${j.siteName} · ${j.assignedTeamLeaderName || 'no Supervisor'} · ${String(j.status ?? '').replace(/_/g, ' ')}`,
         link: `/operations/jobs?job=${j.id}`,
         done: ['completed', 'verified', 'invoiced'].includes(j.status),
       });

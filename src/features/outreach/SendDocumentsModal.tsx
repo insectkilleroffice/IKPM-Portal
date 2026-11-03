@@ -25,6 +25,7 @@ import {
 import { dataService } from '../../services/dataService';
 import { COMPANY_DOC_CATEGORIES, type OutreachChannel, type OutreachLog, type PortalDocument } from '../../types/document';
 import type { Proposal } from '../../types/proposal';
+import { changesNoteForClient } from '../proposals/proposalApproval';
 import { expiryState, isShareable } from '../documents/documentUtils';
 
 export interface SendDocumentsModalProps {
@@ -99,6 +100,7 @@ export const SendDocumentsModal: React.FC<SendDocumentsModalProps> = ({
       senderEmail,
       purpose: proposal ? 'proposal' : 'documents',
       proposalRef: proposal ? `${proposal.id} R${proposal.revisionNumber}` : undefined,
+      extraNote: proposal ? changesNoteForClient(proposal) : undefined,
     });
     setSubject(draft.subject);
     setMessage(draft.message);

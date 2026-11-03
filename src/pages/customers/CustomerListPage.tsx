@@ -357,7 +357,7 @@ export const CustomerListPage: React.FC = () => {
                     </td>
                     <td>
                       <span className="badge-status badge-slate">
-                        {co.industrySegment.replace('_', ' ')}
+                        {String(co.industrySegment ?? '').replace('_', ' ')}
                       </span>
                     </td>
                     <td>
@@ -457,7 +457,7 @@ export const CustomerListPage: React.FC = () => {
                     <td>{cl.city}</td>
                     <td>
                       <span className={`badge-status ${cl.taxStatus === 'active_filer' ? 'badge-emerald' : 'badge-slate'}`}>
-                        {cl.taxStatus.replace('_', ' ')}
+                        {String(cl.taxStatus ?? '').replace('_', ' ')}
                       </span>
                     </td>
                     <td style={{ fontWeight: 700, color: cl.balance > 0 ? 'var(--ikpm-rose-500)' : 'var(--ikpm-emerald-600)' }}>

@@ -635,7 +635,7 @@ function OperationPersonDashboard() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
                     <strong>{p.name}</strong>
                     <span style={{ color: !att ? 'var(--text-muted)' : att.status === 'absent' ? '#DC2626' : att.status === 'late' ? '#D97706' : 'var(--ikpm-emerald-600)', textTransform: 'capitalize' }}>
-                      {att ? att.status.replace('_', ' ') : 'not marked'}
+                      {att ? String(att.status ?? '').replace('_', ' ') : 'not marked'}
                     </span>
                   </div>
                   <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>{job ? `${job.customerName} · ${job.timeSlot}` : 'No visit planned'}</div>
@@ -974,7 +974,7 @@ function AdminDashboard() {
             <div key={l.id} onClick={() => navigate(`/crm?lead=${l.id}`)}
               style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: '1px solid var(--border-subtle)', marginBottom: '0.35rem' }}>
               <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{l.title}</div>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{l.contactName} · {l.stage.replace(/_/g, ' ')}</div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{l.contactName} · {String(l.stage ?? '').replace(/_/g, ' ')}</div>
             </div>
           ))}
         </div>
@@ -1033,7 +1033,7 @@ function AdminDashboard() {
               <div key={c.id} onClick={() => navigate('/complaints')}
                 style={{ padding: '0.5rem 0.75rem', backgroundColor: 'var(--bg-surface-alt)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', border: `1px solid ${isComplaintOverdue(c) ? '#FCA5A5' : 'var(--border-subtle)'}`, marginBottom: '0.35rem' }}>
                 <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{c.customerName}</div>
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{c.category} · {c.status.replace(/_/g, ' ')}</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{c.category} · {String(c.status ?? '').replace(/_/g, ' ')}</div>
                 {isComplaintOverdue(c) && <div style={{ fontSize: '0.68rem', color: '#DC2626' }}>Overdue</div>}
               </div>
             ))}

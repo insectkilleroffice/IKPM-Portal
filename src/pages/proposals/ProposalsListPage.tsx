@@ -8,6 +8,7 @@ import { ProposalBuilderModal, type ProposalPrefill } from '../../features/propo
 import { ProposalDetailModal } from '../../features/proposals/ProposalDetailModal';
 import { ReviseProposalModal } from '../../features/proposals/ReviseProposalModal';
 import { fileProposalPdf } from '../../features/proposals/proposalFiles';
+import { approverStamp } from '../../features/proposals/proposalApproval';
 import { dataService } from '../../services/dataService';
 import { uploadFile } from '../../lib/cloudinary';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
@@ -65,6 +66,11 @@ export const ProposalsListPage: React.FC = () => {
   const [editTarget, setEditTarget] = useState<Proposal | null>(null);
   // CRO and admins edit draft proposals (same id, same revision)
   const canEditDraft = (p: Proposal) => canAccept && p.status === 'draft';
+  // Approver edits a proposal waiting for approval and approves it with a note for the client
+  const [approveEditTarget, setApproveEditTarget] = useState<Proposal | null>(null);
+  // Proposals leave the portal only by being sent to the client; the owner (super admin) alone may
+  // download a copy, and never before it is approved
+  const canDownload = (p: Proposal) => isSuperAdmin && !['draft', 'pending_approval', 'rejected'].includes(p.status);
 
   const proposals = dataService.getProposals();
   const contracts = dataService.getContracts();
@@ -164,7 +170,8 @@ export const ProposalsListPage: React.FC = () => {
         status,
         approval: selected.approval
           ? { ...selected.approval, status, decisionAt: new Date().toISOString(), decisionBy: userProfile?.email, decisionByName: userProfile?.displayName, ...(reason ? { rejectionReason: reason } : {}) }
-          : undefined,
+          // A draft approved directly by an admin / super admin (it never went through the queue)
+          : status === 'approved' ? approverStamp(userProfile) : undefined,
       },
       () => (status === 'approved' ? success('Approved', `${selected.id} is ready to send.`) : warning('Rejected', `${selected.id} was rejected.`))
     );
@@ -309,9 +316,11 @@ export const ProposalsListPage: React.FC = () => {
                         <RotateCw size={12} /> <span>Revise</span>
                       </button>
                     )}
-                    <button className="icon-btn" title="Download PDF" onClick={() => pdfAction.run(p.id, () => pdfGenerator.generateProposalPDF(p))} disabled={pdfAction.busy === p.id}>
-                      <Download size={15} />
-                    </button>
+                    {canDownload(p) && (
+                      <button className="icon-btn" title="Download PDF (super admin only)" onClick={() => pdfAction.run(p.id, () => pdfGenerator.generateProposalPDF(p))} disabled={pdfAction.busy === p.id}>
+                        <Download size={15} />
+                      </button>
+                    )}
                     {canSend(p) && (
                       <button className="icon-btn" title="Send proposal and company documents" onClick={() => setSendTarget(p)}>
                         <Send size={15} />
@@ -369,6 +378,17 @@ export const ProposalsListPage: React.FC = () => {
           onDecline={() => save({ ...selected, status: 'declined' }, () => warning('Declined', selected.leadId ? `Lead ${selected.leadId} moved to Negotiation. Schedule a negotiation meeting as the next step.` : 'Proposal declined by the client.'))}
           onSend={canSend(selected) ? () => setSendTarget(selected) : undefined}
           onEdit={canEditDraft(selected) ? () => { setEditTarget(selected); setSelectedId(null); } : undefined}
+          onEditAndApprove={canApproveProposals() && ['pending_approval', 'draft'].includes(selected.status) ? () => { setApproveEditTarget(selected); setSelectedId(null); } : undefined}
+          canDownload={canDownload(selected)}
+        />
+      )}
+
+      {approveEditTarget && (
+        <ReviseProposalModal
+          mode="approve"
+          proposal={approveEditTarget}
+          onClose={() => setApproveEditTarget(null)}
+          onRevised={(edited) => { setApproveEditTarget(null); setSelectedId(edited.id); }}
         />
       )}
 

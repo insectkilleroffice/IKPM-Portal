@@ -321,7 +321,7 @@ export const DispatchCalendarPage: React.FC = () => {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>{job.customerName}</span>
                           <span className="badge-status badge-slate" style={{ fontSize: '0.65rem' }}>
-                            {job.timeSlot.replace('_', ' ')}
+                            {String(job.timeSlot ?? '').replace('_', ' ')}
                           </span>
                         </div>
 

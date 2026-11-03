@@ -306,6 +306,10 @@ service cloud.firestore {
 
     function leadUpdate(w) {
       return updateMod(w, 'crm')
+        // A CRO forwards their own lead to another CRO: owner fields and the activity log entry only
+        || (canE(w, 'crm') && resource.data.get('ownerUid', '') == request.auth.uid
+            && request.resource.data.get('ownerUid', '') != request.auth.uid
+            && changed().hasOnly(['ownerUid', 'ownerName', 'ownerEmail', 'teamId', 'assignedToUserId', 'assignedToName', 'activities', 'updatedAt']))
         // Assigned inspectors record findings, but can't reassign the lead or change its contacts
         || (canE(w, 'inspections') && request.auth.uid in resource.data.get('inspectorIds', [])
             && !changed().hasAny(['ownerUid', 'teamId', 'inspectorIds', 'contacts', 'companyName', 'title', 'customerType', 'existingCustomerId']))
@@ -424,10 +428,33 @@ service cloud.firestore {
     }
 
     // ---------- Finance ----------
+    // Invoices are approved by an admin or the super admin (mirrors canApproveInvoices in src/lib/permissions.ts)
+    function isInvoiceApprover(w) {
+      return isSA(w) || isBase(w, 'admin');
+    }
+
+    // Finance prepares drafts only: draft → pending approval. Only an approver can post / approve an
+    // invoice or return it with a reason (a returned invoice may be edited as long as it stays returned).
+    function invoiceDraftOnly() {
+      return request.resource.data.get('isPosted', false) != true
+        && request.resource.data.get('isApproved', false) != true
+        && (request.resource.data.get('status', 'draft') in ['draft', 'pending_approval']
+            || (request.resource.data.get('status', '') == 'rejected' && resource != null
+                && resource.data.get('status', '') == 'rejected'
+                && !changed().hasAny(['rejectedBy', 'rejectedAt', 'rejectionReason'])));
+    }
+
+    function invoiceForCancelledContract() {
+      return request.resource.data.get('contractId', '') != ''
+        && exists(/databases/$(database)/documents/contracts/$(request.resource.data.get('contractId', '')))
+        && get(/databases/$(database)/documents/contracts/$(request.resource.data.get('contractId', ''))).data.get('status', '') == 'cancelled';
+    }
+
     function invoiceUpdate(w) {
+      // Unposted: drafts by Finance, anything by an approver.
       // Posted invoices are immutable except for a credit-note reversal or recording payment settlement
       return (canE(w, 'invoices') || isBase(w, 'admin')) && folderOwnerKept() && (
-        resource.data.get('isPosted', false) != true
+        (resource.data.get('isPosted', false) != true && (invoiceDraftOnly() || isInvoiceApprover(w)))
           || (request.resource.data.status == 'void_reversed'
               && !changed().hasAny(['ownerScope', 'clientId', 'folderPath', 'fileCategory']))
           || (request.resource.data.status in ['paid', 'partially_paid', 'posted', 'issued', 'sent']
@@ -436,11 +463,38 @@ service cloud.firestore {
       );
     }
 
+    // Client statements: one per contract billing period. Finance prepares, resubmits, cancels,
+    // records payments and sends; only an admin / super admin approves (numbers it) or rejects.
+    function statementUpdate(w) {
+      return (canE(w, 'invoices') || isBase(w, 'admin')) && (
+        isInvoiceApprover(w)
+        || (!changed().hasAny(['statementNumber', 'approvedBy', 'approvedAt', 'rejectedBy', 'rejectedAt', 'rejectionReason'])
+            && (request.resource.data.status == resource.data.status
+                || (resource.data.status in ['draft', 'rejected'] && request.resource.data.status == 'pending_approval')
+                || (resource.data.status in ['draft', 'pending_approval', 'rejected'] && request.resource.data.status == 'cancelled'))));
+    }
+
+    match /client_statements/{id} {
+      allow get: if signedIn() && resource == null;
+      allow read: if canV(who(), 'invoices');
+      allow create: if (canE(who(), 'invoices') || isBase(who(), 'admin'))
+        && (isInvoiceApprover(who()) || request.resource.data.get('status', 'draft') in ['draft', 'pending_approval']);
+      allow update: if statementUpdate(who());
+      allow delete: if false;
+    }
+
     match /invoices/{id} {
       // Anyone signed in may look up an id that doesn't exist yet (new-number check, reveals nothing)
       allow get: if signedIn() && resource == null;
       allow read: if canV(who(), 'invoices');
-      allow create: if canE(who(), 'invoices') || isBase(who(), 'admin');
+      // New invoices start as drafts; only an approver may create one already approved / posted.
+      // A cancelled contract is invoiced only by the super admin (its settlement).
+      allow create: if (canE(who(), 'invoices') || isBase(who(), 'admin'))
+        && (!invoiceForCancelledContract() || isSA(who()))
+        && (isInvoiceApprover(who())
+            || (request.resource.data.get('isPosted', false) != true
+                && request.resource.data.get('isApproved', false) != true
+                && request.resource.data.get('status', 'draft') in ['draft', 'pending_approval']));
       allow update: if invoiceUpdate(who());
       allow delete: if false;
     }
@@ -576,6 +630,21 @@ service cloud.firestore {
       allow delete: if isSA(who());
     }
 
+    // ---------- Physical challan numbers: one job per number ----------
+    // Doc id = the normalised number. Taking a number that another job holds is refused; a job may
+    // release its own number (jobId '') when its challan number changes.
+    match /challan_numbers/{key} {
+      allow get: if who().active;
+      allow list: if false;
+      allow create: if (canE(who(), 'challans') || canE(who(), 'jobs') || isSupervisor(who()))
+        && request.resource.data.jobId is string && request.resource.data.jobId != '';
+      allow update: if (canE(who(), 'challans') || canE(who(), 'jobs') || isSupervisor(who()))
+        && (resource.data.get('jobId', '') == ''
+            || resource.data.jobId == request.resource.data.get('jobId', '')
+            || (request.resource.data.get('jobId', '') == '' && resource.data.jobId == request.resource.data.get('releasedFrom', '')));
+      allow delete: if isSA(who());
+    }
+
     // ---------- Challans ----------
     match /challans/{id} {
       allow read: if canV(who(), 'challans') || canV(who(), 'jobs') || canV(who(), 'invoices');
@@ -598,6 +667,14 @@ service cloud.firestore {
     }
 
     match /employee_private/{id} {
+      allow read: if isHrOrCeo(who());
+      allow create, update: if isHrOrCeo(who());
+      allow delete: if false;
+    }
+
+    // Employee letters (offer, employment contract, confirmation): they print pay and CNIC,
+    // so HR and the CEO only. Issued letters are never deleted (withdrawn instead).
+    match /employee_letters/{id} {
       allow read: if isHrOrCeo(who());
       allow create, update: if isHrOrCeo(who());
       allow delete: if false;
@@ -655,7 +732,7 @@ service cloud.firestore {
     // Lets the portal check which rules are live (dataService.rulesAreCurrent). Change this id
     // together with RULES_VERSION in src/services/dataService.ts whenever the rules change.
     match /rules_probe/{version} {
-      allow get: if version == '2026-11-02-n';
+      allow get: if version == '2026-11-03-a';
     }
 
     match /audit_logs/{id} {
