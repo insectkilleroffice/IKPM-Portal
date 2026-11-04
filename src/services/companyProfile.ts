@@ -60,6 +60,8 @@ export interface CompanyProfile {
     overtimeMultiplier?: number;
     /** Official start time used to mark people late (HH:mm). */
     workStartTime?: string;
+    /** Minutes after the start time before someone counts as late (default 0). */
+    lateGraceMinutes?: number;
   };
   /** Custom logo (PNG/JPG URL). Empty = the portal's built-in logo. */
   logoUrl?: string;
@@ -85,6 +87,10 @@ export interface CompanyProfile {
   proposalHighlights?: string;
   /** SRS 5.6 / 19: hours a complaint may stay open before the CEO is alerted (default 48). */
   complaintEscalationHours?: number;
+  /** Days between quality audits of a site; random audits pick sites not audited for this long (default 30). */
+  auditIntervalDays?: number;
+  /** Standard prices (PKR, before tax) for one-off jobs without a proposal price, e.g. "Cockroach treatment – 2 bed flat". */
+  priceList?: { service: string; price: number }[];
   updatedAt?: string;
   updatedBy?: string;
 }

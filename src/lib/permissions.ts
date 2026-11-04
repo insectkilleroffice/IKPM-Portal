@@ -33,6 +33,7 @@ export type ModuleKey =
   | 'attendance'
   | 'payroll'
   | 'challans'
+  | 'audits'
   | 'search';
 
 export type AccessLevel = 'none' | 'view' | 'edit';
@@ -81,6 +82,7 @@ export const MODULES: { key: ModuleKey; label: string; group: string; hint?: str
   { key: 'attendance', label: 'Daily attendance', group: 'Field operations', hint: 'Supervisor marks daily PCO attendance' },
   { key: 'payroll', label: '30-day payroll', group: 'Accounts', hint: 'Calculate salary, approve cycles, record payment and salary slips' },
   { key: 'challans', label: 'Delivery & service challans', group: 'Field operations', hint: 'Signed challan records and register' },
+  { key: 'audits', label: 'Quality audits', group: 'Field operations', hint: 'Schedule and verify entomologist audit visits. Staff marked "Entomologist" in Team & Access always see the audits assigned to them' },
   { key: 'search', label: 'Global search', group: 'General', hint: 'Search across all records, documents and folders' },
 ];
 
@@ -225,7 +227,8 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
       documents: 'view',
       search: 'view',
     },
-  },];
+  },
+];
 
 export const SYSTEM_ROLE_IDS = DEFAULT_ROLES.map((r) => r.id) as SystemRole[];
 
@@ -322,6 +325,7 @@ export const SCOPE_LABELS: Partial<Record<DataScope, string>> = {
 
 const MODULE_HOME: Partial<Record<ModuleKey, string>> = {
   dashboard: '/',
+  audits: '/audits',
   pco: '/operations/jobs',
   customers: '/customers',
   crm: '/crm',

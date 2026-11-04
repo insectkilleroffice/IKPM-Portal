@@ -32,6 +32,7 @@ const TeamAccessPage = lazy(() => import('./pages/admin/TeamAccessPage').then((m
 const InspectionsPage = lazy(() => import('./pages/inspections/InspectionsPage').then((m) => ({ default: m.InspectionsPage })));
 const MeetingsPage = lazy(() => import('./pages/meetings/MeetingsPage').then((m) => ({ default: m.MeetingsPage })));
 const ComplaintsPage = lazy(() => import('./pages/complaints/ComplaintsPage').then((m) => ({ default: m.ComplaintsPage })));
+const AuditsPage = lazy(() => import('./pages/audits/AuditsPage').then((m) => ({ default: m.AuditsPage })));
 const ApprovalsPage = lazy(() => import('./pages/approvals/ApprovalsPage').then((m) => ({ default: m.ApprovalsPage })));
 const DocumentLibraryPage = lazy(() => import('./features/documents/DocumentLibraryPage').then((m) => ({ default: m.DocumentLibraryPage })));
 const ChallansPage = lazy(() => import('./pages/operations/ChallansPage').then((m) => ({ default: m.ChallansPage })));
@@ -82,6 +83,8 @@ function App() {
                 <Route path="/operations/attendance" element={guard('attendance', <AttendancePage />)} />
                 <Route path="/operations/calendar" element={guard('calendar', <DispatchCalendarPage />)} />
                 <Route path="/complaints" element={guard('complaints', <ComplaintsPage />)} />
+                {/* Open to the audits module and to staff marked as entomologists (the page checks) */}
+                <Route path="/audits" element={<ProtectedRoute><AuditsPage /></ProtectedRoute>} />
                 <Route path="/approvals" element={guard('approvals', <ApprovalsPage />)} />
 
                 {/* Finance & invoicing */}

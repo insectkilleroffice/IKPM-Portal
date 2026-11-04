@@ -20,7 +20,7 @@ import { formatPKR, formatDate, generatePermanentId } from '../../lib/formatters
 import { useNotification } from '../../contexts/NotificationContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
-import { baseRoleOf, canEditModule } from '../../lib/permissions';
+import { baseRoleOf, canEditModule, roleLabel } from '../../lib/permissions';
 import { effectiveContractStatus } from '../../lib/contractUtils';
 import { CONTRACT_CANCEL_CATEGORY_LABELS } from '../../types/operations';
 import type { Contract, ContractCancelCategory, ContractType, ServiceFrequency } from '../../types/operations';
@@ -36,26 +36,57 @@ import type { Proposal } from '../../types/proposal';
 
 const isoDay = (d: Date) => d.toISOString().split('T')[0];
 
-/** Contract form values from a proposal (plan proposals carry tenure, visits and pricing). */
+/**
+ * Contract form values from a proposal. The only fill step, used both when the contract is opened
+ * from the proposal and when the proposal is picked in the form, so both fill the same fields.
+ * Monthly IPM plan proposal → Annual AMC (tenure, visits, billing cycle).
+ * One-time treatment proposal → One-Time Job (one visit, ends on the service date, billed once).
+ */
 function fromProposal(p: Proposal) {
   const plan = Boolean(p.servicePlan?.length);
   const start = p.suggestedStartDate || p.tenureStart || isoDay(new Date());
   return {
-    contractType: 'amc_recurring' as ContractType,
+    contractType: (plan ? 'amc_recurring' : 'one_time') as ContractType,
     proposalId: p.id,
     customerType: p.customerType,
     customerId: p.customerId,
     branchId: p.branchId || '',
+    siteId: '',
     startDate: start,
-    endDate: p.tenureEnd || isoDay(new Date(new Date(start).getTime() + 365 * 86400000)),
-    frequency: (plan ? frequencyForVisits(p.serviceVisitsPerMonth) : 'monthly') as ServiceFrequency,
+    endDate: plan ? p.tenureEnd || isoDay(new Date(new Date(start).getTime() + 365 * 86400000)) : start,
+    frequency: (plan ? frequencyForVisits(p.serviceVisitsPerMonth) : 'one_off') as ServiceFrequency,
     totalContractValue: p.totalAmount,
-    billingTerm: 'monthly_billing' as const,
-    billingCycleDays: p.billingCycleDays ?? 0,
+    billingTerm: (plan ? 'monthly_billing' : 'per_service') as Contract['billingTerm'],
+    billingCycleDays: plan ? p.billingCycleDays ?? 0 : 0,
+    clientPoNumber: '',
     serviceScope: plan ? (p.scopeSections ?? []).map((s) => `${s.key}. ${s.title}`).join(' · ') || p.scopeOfWork : p.scopeOfWork,
     warrantyPeriodMonths: p.warrantyPeriodMonths || 0,
   };
 }
+
+/** Before-tax value of a proposal (what billing divides; tax is added on the invoice). */
+const proposalValueBeforeTax = (p: Proposal) => Math.round((p.subtotal - (p.discountAmount || 0)) * 100) / 100;
+
+/** An empty form: no client chosen yet (nothing is pre-selected by accident). */
+const blankContract = () => ({
+  contractType: 'amc_recurring' as ContractType,
+  proposalId: '',
+  customerType: 'company' as 'company' | 'individual',
+  customerId: '',
+  branchId: '',
+  siteId: '',
+  startDate: isoDay(new Date()),
+  endDate: isoDay(new Date(Date.now() + 365 * 86400000)),
+  frequency: 'monthly' as ServiceFrequency,
+  totalContractValue: 0,
+  billingTerm: 'monthly_billing' as Contract['billingTerm'],
+  billingCycleDays: 0,
+  clientPoNumber: '',
+  serviceScope: 'Integrated Pest Management (IPM) maintenance',
+  warrantyPeriodMonths: 0,
+  assignedTeamLeaderId: '',
+  assignedTeamLeaderName: '',
+});
 
 /** Plan fields copied from the accepted proposal onto the contract, so nothing is retyped. */
 function planFieldsFrom(p: Proposal | undefined): Partial<Contract> {
@@ -135,26 +166,30 @@ export const ContractsListPage: React.FC = () => {
   const linkedProposal = fromPropId ? dataService.getProposalById(fromPropId) : undefined;
 
   const [newContract, setNewContract] = useState(() =>
-    linkedProposal
-      ? { ...fromProposal(linkedProposal), assignedTeamLeaderId: '', assignedTeamLeaderName: '' }
-      : {
-          contractType: 'amc_recurring' as ContractType,
-          proposalId: '',
-          customerType: 'company' as 'company' | 'individual',
-          customerId: companies[0]?.id || '',
-          branchId: '',
-          startDate: isoDay(new Date()),
-          endDate: isoDay(new Date(Date.now() + 365 * 86400000)),
-          frequency: 'monthly' as ServiceFrequency,
-          totalContractValue: 0,
-          billingTerm: 'monthly_billing' as const,
-          billingCycleDays: 0,
-          serviceScope: 'Integrated Pest Management (IPM) maintenance',
-          warrantyPeriodMonths: 0,
-          assignedTeamLeaderId: '',
-          assignedTeamLeaderName: '',
-        }
+    linkedProposal ? { ...blankContract(), ...fromProposal(linkedProposal) } : blankContract()
   );
+  /** Same fill whichever way the proposal is chosen. */
+  const applyProposal = (p: Proposal) =>
+    setNewContract((prev) => ({ ...prev, ...fromProposal(p), assignedTeamLeaderId: prev.assignedTeamLeaderId, assignedTeamLeaderName: prev.assignedTeamLeaderName }));
+  const openNewContract = () => { setNewContract(blankContract()); setShowNewContractModal(true); };
+
+  // Sites of the chosen client / branch (individuals pick their home here; companies their premises)
+  const formSites = newContract.customerId ? dataService.getSites(newContract.customerId, newContract.branchId || undefined) : [];
+  /** An active contract of the SAME type for the same client, branch and site (a one-time job next to a monthly plan is fine). */
+  const conflictFor = (f: typeof newContract) => dataService.getContracts().find((c) =>
+    c.customerId === f.customerId
+    && (c.branchId || '') === (f.branchId || '')
+    && c.contractType === f.contractType
+    && (!f.siteId || !c.siteIds?.length || c.siteIds.includes(f.siteId))
+    && effectiveContractStatus(c, today) === 'active');
+  // Client of the proposal not in this person's list: still show its name (instead of the first client)
+  const formClientName = newContract.customerId
+    ? (newContract.customerType === 'company' ? dataService.getCompanyById(newContract.customerId)?.legalCompanyName : dataService.getClientById(newContract.customerId)?.fullName)
+      || (newContract.proposalId ? dataService.getProposalById(newContract.proposalId)?.customerName : undefined)
+    : undefined;
+  const clientListed = newContract.customerType === 'company'
+    ? companies.some((c) => c.id === newContract.customerId)
+    : clients.some((c) => c.id === newContract.customerId);
 
   // The proposal may arrive from Firestore after the first render
   const linkedId = linkedProposal?.id;
@@ -162,7 +197,7 @@ export const ContractsListPage: React.FC = () => {
     if (!linkedId) return;
     const p = dataService.getProposalById(linkedId);
     if (p) {
-      setNewContract((prev) => ({ ...fromProposal(p), assignedTeamLeaderId: prev.assignedTeamLeaderId ?? '', assignedTeamLeaderName: prev.assignedTeamLeaderName ?? '' }));
+      applyProposal(p);
       setShowNewContractModal(true);
     }
   }, [linkedId]);
@@ -222,6 +257,12 @@ export const ContractsListPage: React.FC = () => {
   };
 
   const createContract = async () => {
+    const problems = [
+      !newContract.customerId && 'Choose the client.',
+      !(Number(newContract.totalContractValue) > 0) && 'Enter the contract value.',
+      newContract.endDate < newContract.startDate && 'The end date cannot be before the start date.',
+    ].filter(Boolean) as string[];
+    if (problems.length) { error('Please correct the contract', problems.join(' ')); return; }
     // Guard: block if this proposal already has a contract
     if (newContract.proposalId) {
       const propConflict = dataService.getContracts().find(
@@ -235,12 +276,8 @@ export const ContractsListPage: React.FC = () => {
         return;
       }
     }
-    // Guard: block if an active contract already exists for this client/branch
-    const activeConflict = dataService.getContracts().find(
-      (c) => c.customerId === newContract.customerId &&
-        (c.branchId || undefined) === (newContract.branchId || undefined) &&
-        effectiveContractStatus(c, today) === 'active'
-    );
+    // Guard: an active contract of the same type for this client / branch / site
+    const activeConflict = conflictFor(newContract);
     if (activeConflict) {
       const daysLeft = Math.ceil((new Date(activeConflict.endDate).getTime() - Date.now()) / 86400000);
       error(
@@ -256,17 +293,17 @@ export const ContractsListPage: React.FC = () => {
 
     if (newContract.customerType === 'company') {
       const co = dataService.getCompanyById(newContract.customerId);
-      customerName = co?.legalCompanyName || 'Corporate Company';
+      customerName = co?.legalCompanyName || formClientName || 'Corporate Company';
       if (newContract.branchId) {
         const br = dataService.getBranchById(newContract.branchId);
         branchName = br?.branchName;
       }
     } else {
       const cl = dataService.getClientById(newContract.customerId);
-      customerName = cl?.fullName || 'Individual Client';
+      customerName = cl?.fullName || formClientName || 'Individual Client';
     }
 
-    const sites = dataService.getSites(newContract.customerId, newContract.branchId || undefined);
+    const sites = formSites;
     // Shared counter: never reuse (and overwrite) a contract this person can't see
     const nextId = await dataService.newRecordId('CT', 'contract', contracts.map((c) => c.id), 'contracts');
 
@@ -282,13 +319,17 @@ export const ContractsListPage: React.FC = () => {
       customerName,
       branchId: newContract.branchId || undefined,
       branchName,
-      siteIds: sites.length > 0 ? [sites[0].id] : ['SITE-01'],
+      // The chosen site; else the client's only / first site; never a made-up id
+      siteIds: newContract.siteId ? [newContract.siteId] : sites.length > 0 ? [sites[0].id] : [],
       startDate: newContract.startDate,
       endDate: newContract.endDate,
       frequency: newContract.frequency,
       totalContractValue: Number(newContract.totalContractValue),
+      // Before tax, from the proposal (billing adds tax on the invoice, so it is never taxed twice)
+      ...(sourceProposal ? { valueBeforeTax: proposalValueBeforeTax(sourceProposal) } : {}),
       billingTerm: newContract.billingTerm,
-      billingCycleDays: Number(newContract.billingCycleDays) || 0,
+      billingCycleDays: newContract.contractType === 'one_time' ? 0 : Number(newContract.billingCycleDays) || 0,
+      clientPoNumber: (newContract.clientPoNumber || '').trim() || undefined,
       serviceScope: newContract.serviceScope,
       warrantyPeriodMonths: Number(newContract.warrantyPeriodMonths),
       totalJobsScheduled: 0,
@@ -516,7 +557,7 @@ export const ContractsListPage: React.FC = () => {
         </div>
 
         {canCreateContract && (
-          <button className="btn btn-primary" onClick={() => setShowNewContractModal(true)}>
+          <button className="btn btn-primary" onClick={openNewContract}>
             <Plus size={16} />
             <span>+ Create New Contract</span>
           </button>
@@ -755,7 +796,8 @@ export const ContractsListPage: React.FC = () => {
         <form onSubmit={handleCreateContract}>
           {/* Optional: link to an accepted proposal to auto-fill */}
           {(() => {
-            const accepted = proposals.filter((p) => p.status === 'accepted');
+            // Accepted proposals, of the chosen client once one is chosen
+            const accepted = proposals.filter((p) => p.status === 'accepted' && (!newContract.customerId || newContract.proposalId === p.id || p.customerId === newContract.customerId));
             if (accepted.length === 0) return null;
             const contractedProposalIds = new Set(
               dataService.getContracts().filter((c) => c.proposalId && c.status !== 'cancelled').map((c) => c.proposalId!)
@@ -771,18 +813,7 @@ export const ContractsListPage: React.FC = () => {
                   onChange={(e) => {
                     const p = proposals.find((x) => x.id === e.target.value);
                     if (!p) { setNewContract({ ...newContract, proposalId: '' }); return; }
-                    setNewContract({
-                      ...newContract,
-                      proposalId: p.id,
-                      customerType: p.customerType,
-                      customerId: p.customerId,
-                      branchId: p.branchId || '',
-                      startDate: p.tenureStart || newContract.startDate,
-                      endDate: p.tenureEnd || newContract.endDate,
-                      frequency: p.serviceVisitsPerMonth ? (p.serviceVisitsPerMonth >= 4 ? 'weekly' : p.serviceVisitsPerMonth >= 2 ? 'fortnightly' : 'monthly') : 'monthly',
-                      totalContractValue: p.totalAmount,
-                      serviceScope: p.scopeOfWork || newContract.serviceScope,
-                    });
+                    applyProposal(p);
                   }}
                 >
                   <option value="">— No proposal (manual entry) —</option>
@@ -813,12 +844,8 @@ export const ContractsListPage: React.FC = () => {
             );
           })()}
           {(() => {
-            const allContracts = dataService.getContracts();
-            const active = allContracts.filter(
-              (c) => c.customerId === newContract.customerId &&
-                (c.branchId || undefined) === (newContract.branchId || undefined) &&
-                effectiveContractStatus(c, today) === 'active'
-            );
+            const conflict = newContract.customerId ? conflictFor(newContract) : undefined;
+            const active = conflict ? [conflict] : [];
             if (active.length === 0) return null;
             const daysLeft = Math.ceil((new Date(active[0].endDate).getTime() - Date.now()) / 86400000);
             const nearExpiry = daysLeft <= 30;
@@ -828,7 +855,7 @@ export const ContractsListPage: React.FC = () => {
                   <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
                   <div>
                     <strong>Cannot create a new contract.</strong>
-                    {' '}{active[0].id} is already active for this client{newContract.branchId ? ' / branch' : ''} ({daysLeft > 0 ? `${daysLeft} day${daysLeft !== 1 ? 's' : ''} remaining` : 'expires today'}).
+                    {' '}{active[0].id} ({active[0].contractType === 'one_time' ? 'one-time' : 'AMC'}) is already active for this client{newContract.branchId ? ' / branch' : ''} ({daysLeft > 0 ? `${daysLeft} day${daysLeft !== 1 ? 's' : ''} remaining` : 'expires today'}).
                     {nearExpiry
                       ? <> Use the <strong>Renew</strong> button on that contract to extend it for the next period.</>
                       : <> Cancel or wait for the existing contract to expire before creating a new one.</>
@@ -840,8 +867,8 @@ export const ContractsListPage: React.FC = () => {
           })()}
           {!newContract.proposalId && (
             <div className="chip-row" style={{ marginBottom: '0.75rem' }}>
-              <button type="button" className={`chip ${newContract.customerType === 'company' ? 'chip-on' : ''}`} onClick={() => setNewContract({ ...newContract, customerType: 'company', customerId: companies[0]?.id || '', branchId: '' })}>Company</button>
-              <button type="button" className={`chip ${newContract.customerType === 'individual' ? 'chip-on' : ''}`} onClick={() => setNewContract({ ...newContract, customerType: 'individual', customerId: clients[0]?.id || '', branchId: '' })}>Individual</button>
+              <button type="button" className={`chip ${newContract.customerType === 'company' ? 'chip-on' : ''}`} onClick={() => setNewContract({ ...newContract, customerType: 'company', customerId: '', branchId: '', siteId: '' })}>Company</button>
+              <button type="button" className={`chip ${newContract.customerType === 'individual' ? 'chip-on' : ''}`} onClick={() => setNewContract({ ...newContract, customerType: 'individual', customerId: '', branchId: '', siteId: '' })}>Individual / residential</button>
             </div>
           )}
           <div className="form-group">
@@ -849,8 +876,12 @@ export const ContractsListPage: React.FC = () => {
             <select
               className="form-select"
               value={newContract.customerId}
-              onChange={(e) => setNewContract({ ...newContract, customerId: e.target.value, branchId: '' })}
+              onChange={(e) => setNewContract({ ...newContract, customerId: e.target.value, branchId: '', siteId: '', proposalId: '' })}
             >
+              <option value="">Choose the client…</option>
+              {newContract.customerId && !clientListed && (
+                <option value={newContract.customerId}>{formClientName || newContract.customerId} (from the proposal)</option>
+              )}
               {newContract.customerType === 'company'
                 ? companies.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -873,7 +904,7 @@ export const ContractsListPage: React.FC = () => {
                 <select
                   className="form-select"
                   value={newContract.branchId}
-                  onChange={(e) => setNewContract({ ...newContract, branchId: e.target.value })}
+                  onChange={(e) => setNewContract({ ...newContract, branchId: e.target.value, siteId: '' })}
                 >
                   <option value="">Head office / all branches</option>
                   {branchList.map((b) => (
@@ -889,13 +920,39 @@ export const ContractsListPage: React.FC = () => {
             );
           })()}
 
+          {newContract.customerId && (
+            <div className="form-group">
+              <label className="form-label">Site / premises</label>
+              {formSites.length ? (
+                <select className="form-select" value={newContract.siteId || formSites[0].id} onChange={(e) => setNewContract({ ...newContract, siteId: e.target.value })}>
+                  {formSites.map((st) => <option key={st.id} value={st.id}>{st.siteName}{st.area ? ` · ${st.area}` : ''}{st.city ? `, ${st.city}` : ''}</option>)}
+                </select>
+              ) : (
+                <div className="cell-sub" style={{ color: '#B45309' }}>
+                  This client has no site / premises on record. Add it on the client's page so visits and reports show the right address.
+                </div>
+              )}
+            </div>
+          )}
+          {newContract.customerType === 'individual' && newContract.customerId && (
+            <div className="info-hint" style={{ marginBottom: '0.75rem' }}>
+              Residential client: billed by <strong>cash memo</strong> (no sales tax line), for the amount agreed in the proposal.
+            </div>
+          )}
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
             <div className="form-group">
               <label className="form-label">Contract Type</label>
               <select
                 className="form-select"
                 value={newContract.contractType}
-                onChange={(e) => setNewContract({ ...newContract, contractType: e.target.value as any })}
+                onChange={(e) => {
+                  const t = e.target.value as ContractType;
+                  setNewContract(t === 'one_time'
+                    ? { ...newContract, contractType: t, frequency: 'one_off', billingTerm: 'per_service', billingCycleDays: 0, endDate: newContract.startDate }
+                    : { ...newContract, contractType: t, frequency: newContract.frequency === 'one_off' ? 'monthly' : newContract.frequency, billingTerm: 'monthly_billing',
+                        endDate: newContract.endDate <= newContract.startDate ? isoDay(new Date(new Date(newContract.startDate).getTime() + 365 * 86400000)) : newContract.endDate });
+                }}
               >
                 <option value="amc_recurring">Annual AMC (Recurring)</option>
                 <option value="one_time">One-Time Job</option>
@@ -918,6 +975,12 @@ export const ContractsListPage: React.FC = () => {
               </select>
             </div>
 
+            {newContract.contractType === 'one_time' ? (
+              <div className="form-group">
+                <label className="form-label">Invoicing</label>
+                <div className="cell-sub" style={{ paddingTop: '0.5rem' }}>One-time job: invoiced once, for the full value, after the visit.</div>
+              </div>
+            ) : (
             <div className="form-group">
               <label className="form-label">Invoice every</label>
               <BillingCycleInput
@@ -926,12 +989,20 @@ export const ContractsListPage: React.FC = () => {
               />
               <span className="cell-sub">From the proposal. One invoice per cycle covers all visits done in it.</span>
             </div>
+            )}
 
             <div className="form-group">
-              <label className="form-label">Total Contract Value (PKR)</label>
+              <label className="form-label">Client PO / vendor No.</label>
+              <input className="form-input" value={newContract.clientPoNumber ?? ''} placeholder="Printed on every invoice (optional)"
+                onChange={(e) => setNewContract({ ...newContract, clientPoNumber: e.target.value })} />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Total contract value (PKR, incl. tax) <span className="required">*</span></label>
               <input
                 type="number"
                 required
+                min={1}
                 className="form-input"
                 value={newContract.totalContractValue}
                 onChange={(e) => setNewContract({ ...newContract, totalContractValue: Number(e.target.value) })}
@@ -962,6 +1033,7 @@ export const ContractsListPage: React.FC = () => {
               <input
                 type="date"
                 required
+                min={newContract.startDate}
                 className="form-input"
                 value={newContract.endDate}
                 onChange={(e) => setNewContract({ ...newContract, endDate: e.target.value })}
@@ -992,24 +1064,20 @@ export const ContractsListPage: React.FC = () => {
               >
                 <option value="">— Assign later —</option>
                 {teamLeaders.map((u) => (
-                  <option key={u.uid} value={u.uid}>{u.displayName} ({u.role})</option>
+                  <option key={u.uid} value={u.uid}>{u.displayName} ({roleLabel(u.role)})</option>
                 ))}
               </select>
             </div>
           )}
 
           {(() => {
-            const hasActiveConflict = dataService.getContracts().some(
-              (c) => c.customerId === newContract.customerId &&
-                (c.branchId || undefined) === (newContract.branchId || undefined) &&
-                effectiveContractStatus(c, today) === 'active'
-            );
+            const hasActiveConflict = Boolean(newContract.customerId && conflictFor(newContract));
             return (
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setShowNewContractModal(false)}>
                   Cancel
                 </button>
-                <button type="submit" className="btn btn-primary" disabled={hasActiveConflict || creatingContract} title={hasActiveConflict ? 'An active contract already exists for this client / branch' : undefined}>
+                <button type="submit" className="btn btn-primary" disabled={hasActiveConflict || creatingContract || !newContract.customerId} title={hasActiveConflict ? 'An active contract already exists for this client / branch' : undefined}>
                   <FileSignature size={15} />
                   <span>Register & Activate Contract</span>
                 </button>
@@ -1100,6 +1168,7 @@ export const ContractsListPage: React.FC = () => {
                   <dt>Visits / month</dt><dd>{selectedContract.serviceVisitsPerMonth ?? '—'} service · {selectedContract.followUpVisitsPerMonth ?? 0} follow-up</dd>
                   {canSeeFinancials && selectedContract.monthlyRate ? (<><dt>Monthly rate</dt><dd>{formatPKR(selectedContract.monthlyRate)} ({selectedContract.taxMode === 'inclusive' ? 'incl.' : 'excl.'} {selectedContract.taxPercent ?? 0}% tax)</dd></>) : null}
                   {canSeeFinancials ? (<><dt>Invoiced</dt><dd>{billingCycleLabel(selectedContract.billingCycleDays)}</dd></>) : null}
+                  {selectedContract.clientPoNumber ? (<><dt>Client PO</dt><dd>{selectedContract.clientPoNumber}</dd></>) : null}
                   {canSeeFinancials && selectedContract.paymentTermsDays ? (<><dt>Payment</dt><dd>Within {selectedContract.paymentTermsDays} days of invoice</dd></>) : null}
                   {selectedContract.exclusions && (<><dt>Exclusions</dt><dd>{selectedContract.exclusions}</dd></>)}
                 </dl>

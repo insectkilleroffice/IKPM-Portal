@@ -69,8 +69,9 @@ describe('firestore.rules: folders', () => {
     expect(block('audit_logs')).toMatch(/allow update, delete: if false/);
   });
 
-  it('payments and outreach logs only change by being filed', () => {
-    expect(block('payments')).toMatch(/allow update: if canE\(who\(\), 'invoices'\) && filingOnly\(who\(\)\)/);
+  it('payments only change by being filed or getting their WHT certificate (amounts fixed); outreach logs only by filing', () => {
+    expect(block('payments')).toMatch(/allow update: if canE\(who\(\), 'invoices'\) && \(filingOnly\(who\(\)\)/);
+    expect(block('payments')).toMatch(/customerWhtDeducted\.amountDeducted == resource\.data\.customerWhtDeducted\.amountDeducted/);
     expect(block('outreach_logs')).toMatch(/allow update: if filingOnly\(who\(\)\)/);
   });
 });

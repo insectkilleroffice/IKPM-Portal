@@ -83,6 +83,8 @@ export interface IndividualClient {
   assignedRepresentativeName?: string;
   balance: number; // Current outstanding balance (PKR)
   notes?: CustomerNote[];
+  /** Set on records created by Customers → Add old client. */
+  importBatchId?: string;
   createdAt: string;
   createdBy: string;
   updatedAt: string;
@@ -119,6 +121,8 @@ export interface CompanyMaster {
   totalBranchesCount: number;
   totalActiveContracts: number;
   totalBalance: number; // Consolidated balance across all branches (PKR)
+  /** Set on records created by Customers → Add old client. */
+  importBatchId?: string;
   assignedAccountManagerId?: string;
   assignedAccountManagerName?: string;
   status: 'active' | 'inactive' | 'lead';

@@ -41,7 +41,9 @@ service cloud.firestore {
         'mods': rd.get('modules', {}),
         'hasDoc': 'modules' in rd,
         'scope': p.get('dataScope', 'own'),
-        'team': p.get('teamId', '__no_team__')
+        'team': p.get('teamId', '__no_team__'),
+        // Staff who also do quality audits (any role, e.g. a CRO)
+        'ento': p.get('isEntomologist', false) == true
       };
     }
 
@@ -231,7 +233,7 @@ service cloud.firestore {
             && resource.data.role != 'super_admin' && request.resource.data.role != 'super_admin')
         // Anyone may edit their own name / phone / last login, never their access
         || (signedIn() && request.auth.uid == userId
-            && !changed().hasAny(['role', 'dataScope', 'isActive', 'teamId', 'teamName', 'businessEmail', 'email']));
+            && !changed().hasAny(['role', 'dataScope', 'isActive', 'teamId', 'teamName', 'businessEmail', 'email', 'isEntomologist']));
     }
 
     match /users/{userId} {
@@ -504,8 +506,13 @@ service cloud.firestore {
       allow get: if signedIn() && resource == null;
       allow read: if canV(who(), 'invoices');
       allow create: if canE(who(), 'invoices') || isBase(who(), 'admin');
-      // Receipts never change, apart from being filed into their client's folder
-      allow update: if canE(who(), 'invoices') && filingOnly(who());
+      // Receipts never change, apart from being filed into their client's folder, or the WHT
+      // certificate number being added when the client sends it (the amounts stay the same)
+      allow update: if canE(who(), 'invoices') && (filingOnly(who())
+        || (changed().hasOnly(['customerWhtDeducted'])
+            && request.resource.data.customerWhtDeducted.amountDeducted == resource.data.customerWhtDeducted.amountDeducted
+            && request.resource.data.customerWhtDeducted.ratePercent == resource.data.customerWhtDeducted.ratePercent
+            && request.resource.data.customerWhtDeducted.isApplicable == resource.data.customerWhtDeducted.isApplicable));
       allow delete: if false;
     }
 
@@ -630,6 +637,27 @@ service cloud.firestore {
       allow delete: if isSA(who());
     }
 
+    // ---------- Quality audits (entomologist visits) ----------
+    // The super admin schedules, verifies, returns and sends; the entomologist sees only their own
+    // audits (never surprise details for anyone else) and can only fill in and submit the report.
+    function isEntomologist(w) {
+      return w.active && w.ento;
+    }
+
+    match /quality_audits/{id} {
+      allow get: if signedIn() && resource == null;
+      // The person it is assigned to (direct field read, so their "my audits" query can be proven)
+      allow read: if isSA(who()) || (who().active && resource.data.entomologistUid == request.auth.uid);
+      allow create: if isSA(who())
+        && get(/databases/$(database)/documents/users/$(request.resource.data.entomologistUid)).data.get('isEntomologist', false) == true;
+      allow update: if isSA(who())
+        || (who().active && resource.data.entomologistUid == request.auth.uid
+            && resource.data.status in ['scheduled', 'returned']
+            && request.resource.data.status in ['scheduled', 'returned', 'submitted']
+            && changed().hasOnly(['report', 'status', 'submittedAt', 'updatedAt']));
+      allow delete: if false;
+    }
+
     // ---------- Physical challan numbers: one job per number ----------
     // Doc id = the normalised number. Taking a number that another job holds is refused; a job may
     // release its own number (jobId '') when its challan number changes.
@@ -732,7 +760,7 @@ service cloud.firestore {
     // Lets the portal check which rules are live (dataService.rulesAreCurrent). Change this id
     // together with RULES_VERSION in src/services/dataService.ts whenever the rules change.
     match /rules_probe/{version} {
-      allow get: if version == '2026-11-03-a';
+      allow get: if version == '2026-11-04-a';
     }
 
     match /audit_logs/{id} {

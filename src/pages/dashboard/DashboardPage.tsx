@@ -21,7 +21,8 @@ import { dataService } from '../../services/dataService';
 import { formatPKR, formatDate } from '../../lib/formatters';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDataStore } from '../../hooks/useDataStore';
-import { baseRoleOf } from '../../lib/permissions';
+import { baseRoleOf, canAccessModule } from '../../lib/permissions';
+import { FinanceOverview } from '../../features/dashboard/FinanceOverview';
 import { ScheduleGeneratorModal } from '../../features/schedule/ScheduleGeneratorModal';
 import type { Contract } from '../../types/operations';
 
@@ -889,7 +890,9 @@ function TechnicianDashboard() {
 // ─── Super Admin / Admin Dashboard ────────────────────────────────────────────
 function AdminDashboard() {
   const navigate = useNavigate();
-  const { userProfile } = useAuth();
+  const { userProfile, effectiveRole } = useAuth();
+  // Finance figures for whoever can see invoices (admin, super admin, Finance)
+  const showFinance = canAccessModule(effectiveRole, 'invoices');
   useDataStore();
 
   const leads = dataService.getLeads();
@@ -961,6 +964,8 @@ function AdminDashboard() {
           </div>
         </div>
       </div>
+
+      {showFinance && <FinanceOverview />}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1rem' }}>
 

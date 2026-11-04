@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { canAccessModule } from '../../lib/permissions';
 import { treatmentTypeLabel } from '../../lib/treatments';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -29,7 +30,9 @@ export const CompanyDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { success } = useNotification();
-  const { userProfile, hasRole } = useAuth();
+  const { userProfile, effectiveRole } = useAuth();
+  // Billing tabs: whoever has invoice access (Finance, admin, super admin…), not field Supervisors
+  const canSeeBilling = canAccessModule(effectiveRole, 'invoices');
   useDataStore();
   const [searchParams] = useSearchParams();
 
@@ -359,8 +362,8 @@ export const CompanyDetailPage: React.FC = () => {
           { value: 'proposals', label: `Proposals & Revisions (${filteredProposals.length})` },
           { value: 'contracts', label: `Contracts & Renewals (${filteredContracts.length})` },
           { value: 'jobs', label: `Service Jobs (${filteredJobs.length})` },
-          { value: 'invoices', label: `Invoices & Payments (${filteredInvoices.length})`, hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
-          { value: 'statements', label: 'Ledger Statements & WHT', hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
+          { value: 'invoices', label: `Invoices & Payments (${filteredInvoices.length})`, hidden: !canSeeBilling },
+          { value: 'statements', label: 'Ledger Statements & WHT', hidden: !canSeeBilling },
           { value: 'documents', label: 'Files — all documents' },
           { value: 'devices', label: 'Devices' },
           { value: 'onboarding', label: `Onboarding${onboardingPack ? ` (${PACK_STATUS_LABEL[packStatus(onboardingPack)]})` : ''}` },

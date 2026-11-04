@@ -21,6 +21,8 @@ import {
 import { CompanyProfileForm } from '../../features/settings/CompanyProfileForm';
 import { TemplatesForm } from '../../features/settings/TemplatesForm';
 import { PayrollRulesCard } from '../../features/settings/PayrollRulesCard';
+import { OperationsRulesCard } from '../../features/settings/OperationsRulesCard';
+import { PriceListCard } from '../../features/settings/PriceListCard';
 import { dataService } from '../../services/dataService';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
@@ -430,21 +432,13 @@ export const SettingsPage: React.FC = () => {
                 <input className="form-input" value="Set under Settings → Payroll" disabled />
                 <span className="cell-sub">Staff arriving after the work start time are marked Late on the attendance sheet.</span>
               </div>
-              <div className="form-group">
-                <label className="form-label">Late Arrival Threshold (Grace Period)</label>
-                <input className="form-input" defaultValue="15 minutes" disabled={!isSuperAdmin} />
-                <span className="cell-sub">Allowed tolerance before late deduction counter activates.</span>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Complaint Escalation Timeout</label>
-                <input className="form-input" defaultValue="24 hours" disabled={!isSuperAdmin} />
-                <span className="cell-sub">Unresolved complaints automatically escalate to CEO inbox.</span>
-              </div>
-              <div className="form-group">
-                <label className="form-label">PCO Random Visit Frequency</label>
-                <input className="form-input" defaultValue="Every 14 days" disabled={!isSuperAdmin} />
-                <span className="cell-sub">Supervisor surprise QC field check interval per technician.</span>
-              </div>
+            </div>
+            <div style={{ marginTop: '1rem' }}>
+              <OperationsRulesCard />
+            </div>
+            <div style={{ marginTop: '1.5rem' }}>
+              <h3 style={{ fontSize: '0.95rem', fontWeight: 800, marginBottom: '0.4rem' }}>Standard prices (one-off jobs)</h3>
+              <PriceListCard />
             </div>
 
             <div style={{ marginTop: '1.25rem' }}>

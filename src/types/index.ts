@@ -28,6 +28,8 @@ export interface UserProfile {
   teamName?: string;
   /** Address client emails are sent from. Defaults to the login email. */
   businessEmail?: string;
+  /** Also does quality audit visits as an entomologist, whatever their role (e.g. a CRO). */
+  isEntomologist?: boolean;
   isActive: boolean;
   avatarUrl?: string;
   createdAt: string;

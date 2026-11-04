@@ -155,6 +155,22 @@ export async function invoiceFile(inv: Invoice, actor: Actor): Promise<PortalDoc
 export function invoiceMessage(inv: Invoice, recipientName: string, actor: Actor): { subject: string; message: string } {
   const isCash = billingAccountOf(inv) === 'cash';
   const first = recipientName.split(' ')[0] || 'Sir/Madam';
+  if (inv.status === 'void_reversed') {
+    const cn = inv.creditNoteId || 'Credit note';
+    return {
+      subject: `${outreachEnv.companyName} — ${cn} (reverses ${isCash ? 'cash memo' : 'invoice'} ${inv.invoiceNumber})`,
+      message: [
+        `Dear ${first},`,
+        '',
+        `Please find credit note ${cn}, which cancels ${isCash ? 'cash memo' : 'invoice'} ${inv.invoiceNumber} for ${formatPKR(inv.grossPayable)} in full.`,
+        ...(inv.creditNoteReason ? [`Reason: ${inv.creditNoteReason}`] : []),
+        '',
+        'Regards,',
+        actor.name,
+        outreachEnv.companyName,
+      ].join('\n'),
+    };
+  }
   return {
     subject: `${outreachEnv.companyName} — ${isCash ? 'Cash Memo' : 'Invoice'} ${inv.invoiceNumber}`,
     message: [

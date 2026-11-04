@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { canAccessModule } from '../../lib/permissions';
 import { treatmentTypeLabel } from '../../lib/treatments';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -27,7 +28,9 @@ import { EmptyState } from '../../components/common/EmptyState';
 export const IndividualDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { hasRole } = useAuth();
+  const { effectiveRole } = useAuth();
+  // Billing tabs: whoever has invoice access (Finance, admin, super admin…), not field Supervisors
+  const canSeeBilling = canAccessModule(effectiveRole, 'invoices');
   useDataStore();
   const [searchParams] = useSearchParams();
 
@@ -184,8 +187,8 @@ export const IndividualDetailPage: React.FC = () => {
           { value: 'proposals', label: `Proposals (${proposals.length})` },
           { value: 'contracts', label: `Service Contracts (${contracts.length})` },
           { value: 'jobs', label: `Field Jobs (${jobs.length})` },
-          { value: 'invoices', label: `Invoices & Receipts (${invoices.length})`, hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
-          { value: 'statements', label: 'Ledger & Statements', hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
+          { value: 'invoices', label: `Invoices & Receipts (${invoices.length})`, hidden: !canSeeBilling },
+          { value: 'statements', label: 'Ledger & Statements', hidden: !canSeeBilling },
           { value: 'onboarding', label: `Onboarding${onboardingPack ? ` (${PACK_STATUS_LABEL[packStatus(onboardingPack)]})` : ''}` },
           { value: 'documents', label: 'Files — all documents' },
           { value: 'audit', label: `Audit Trail (${auditLogs.length})` },
@@ -499,7 +502,7 @@ export const IndividualDetailPage: React.FC = () => {
       )}
 
       {/* Invoices Tab (finance roles only) */}
-      {activeTab === 'invoices' && hasRole(['super_admin', 'team_leader', 'finance']) &&
+      {activeTab === 'invoices' && canSeeBilling &&
         (invoices.length === 0 ? (
           <EmptyState
             icon={Receipt}
@@ -546,7 +549,7 @@ export const IndividualDetailPage: React.FC = () => {
         ))}
 
       {/* Statements Tab (finance roles only) */}
-      {activeTab === 'statements' && hasRole(['super_admin', 'team_leader', 'finance']) &&
+      {activeTab === 'statements' && canSeeBilling &&
         (ledgerEntries.length === 0 ? (
           <EmptyState
             icon={CreditCard}

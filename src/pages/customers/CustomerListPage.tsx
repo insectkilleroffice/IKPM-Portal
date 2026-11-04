@@ -8,6 +8,7 @@ import {
   GitFork,
   MapPin,
   Phone,
+  History,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
 import { formatPKR, formatNTN, formatCNIC } from '../../lib/formatters';
@@ -18,6 +19,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { CompanyMaster, IndividualClient } from '../../types/customer';
 import { useDataStore } from '../../hooks/useDataStore';
 import { FieldError } from '../../components/common/FieldError';
+import { OldClientModal } from '../../features/customers/OldClientModal';
 import { cnicProblem, emailProblem, mobileProblem, ntnProblem, phoneProblem, problemsOf, strnProblem } from '../../lib/validation';
 
 export const CustomerListPage: React.FC = () => {
@@ -25,7 +27,9 @@ export const CustomerListPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { success, warning } = useNotification();
-  const { userProfile } = useAuth();
+  const { userProfile, isSuperAdmin } = useAuth();
+  // Add a client served before the portal (with old visits, invoices, payments): super admin only
+  const [showOldClient, setShowOldClient] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'all' | 'companies' | 'individuals'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -231,6 +235,12 @@ export const CustomerListPage: React.FC = () => {
         </div>
 
         <div style={{ display: 'flex', gap: '0.75rem' }}>
+          {isSuperAdmin && (
+            <button className="btn btn-secondary" onClick={() => setShowOldClient(true)} title="A client you served before the portal: old visits, old invoices and what was paid">
+              <History size={16} />
+              <span>Add old client</span>
+            </button>
+          )}
           <button
             className="btn btn-secondary"
             onClick={() => setShowIndividualModal(true)}
@@ -250,6 +260,8 @@ export const CustomerListPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {showOldClient && isSuperAdmin && <OldClientModal onClose={() => setShowOldClient(false)} />}
 
       {/* Tabs & Search Filters */}
       <div className="card" style={{ marginBottom: '1.5rem', padding: '1.25rem' }}>

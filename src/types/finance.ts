@@ -81,6 +81,12 @@ export interface Invoice extends FolderMeta {
   billingBasis?: 'visits_done' | 'full_month';
   /** Final invoice of a cancelled contract (created by the super admin only). */
   isSettlement?: boolean;
+  /** Client's purchase order / vendor number (from the contract). */
+  poNumber?: string;
+  /** Amount owed from before the portal (Add old client). No tax; own number series OB-YYYY-NNNN. */
+  isOpeningBalance?: boolean;
+  /** Set on records created by Customers → Add old client. */
+  importBatchId?: string;
   /** The invoice PDF in the client's folder, reused for every send. */
   pdfDocumentId?: string;
   /** Job invoice that is approved and sent with a client statement (not on its own). */
@@ -130,7 +136,10 @@ export interface Invoice extends FolderMeta {
   receivedAt?: string;
   receivedByName?: string;
   isDelivered?: boolean;
+  /** Credit note number issued when the invoice was voided, e.g. IKPM-CN-2026-0001. */
   creditNoteId?: string;
+  creditNoteDate?: string;
+  creditNoteBy?: string;
   creditNoteReason?: string;
   notes?: string;
   createdAt: string;
@@ -246,6 +255,8 @@ export interface ClientStatement {
   periodStart: string;
   periodEnd: string;
   billingCycleDays?: number;
+  /** Client's purchase order / vendor number (from the contract). */
+  poNumber?: string;
   /** Job invoices on this statement. */
   invoiceIds: string[];
   subtotal: number;

@@ -40,6 +40,8 @@ export const CompletedJobsTab: React.FC<{ preselectJobId?: string; onCreated: ()
   const [picked, setPicked] = useState<Set<string>>(() => new Set(preJob ? [preJob.id] : []));
   const [amounts, setAmounts] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
+  // Companies that want one invoice per branch
+  const [perBranch, setPerBranch] = useState(false);
 
   const clients = useMemo(() => {
     const m = new Map<string, string>();
@@ -84,8 +86,8 @@ export const CompletedJobsTab: React.FC<{ preselectJobId?: string; onCreated: ()
       const items = chosen.map((job) => ({ job, amount: amountOf(job.id) }));
       if (bulk) {
         if (clientCount > 1) return warning('One client per bulk invoice', 'The ticked jobs belong to more than one client. Choose a client in the filter, or use Invoice individually.');
-        const made = await createBulkInvoices(items, user);
-        success('Bulk invoice sent for approval', `${made[0].customerName}: ${chosen.length} job(s), each with its own invoice inside. An admin approves, then you send it to the client.`);
+        const made = await createBulkInvoices(items, user, { perBranch });
+        success(made.length > 1 ? `${made.length} bulk invoices sent for approval (one per branch)` : 'Bulk invoice sent for approval', `${made[0].customerName}: ${chosen.length} job(s), each with its own invoice inside. An admin approves, then you send it to the client.`);
       } else {
         const made = await createJobInvoices(items, user);
         success(`${made.length} invoice(s) sent for approval`, 'One per job. An admin approves each, then you send it to the client.');
@@ -196,6 +198,12 @@ export const CompletedJobsTab: React.FC<{ preselectJobId?: string; onCreated: ()
         <strong>{chosen.length} job(s) ticked · {formatPKR(total)}</strong>
         {chosen.length > 0 && <span className="cell-sub">{clientCount} client(s){zero.length ? ` · ${zero.length} without a charge` : ''}</span>}
         {clientCount > 1 && <span className="cell-sub" style={{ color: '#B45309' }}>Bulk invoice needs one client: choose a client in the filter.</span>}
+        {new Set(chosen.map((j) => j.branchId || '')).size > 1 && clientCount === 1 && (
+          <label className="doc-check" style={{ margin: 0 }}>
+            <input type="checkbox" checked={perBranch} onChange={(e) => setPerBranch(e.target.checked)} />
+            <span>One bulk invoice per branch</span>
+          </label>
+        )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
           <button type="button" className="btn btn-secondary" disabled={busy || !chosen.length} onClick={() => create(false)}
             title="One invoice per ticked job">

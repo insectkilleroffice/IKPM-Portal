@@ -98,6 +98,19 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
 
   const isOneOff = contract.frequency === 'one_off' || contract.contractType === 'one_time';
 
+  // Imported contracts already carry their past (done) visits: plan only what is still to come,
+  // from the day after the last listed visit or today, whichever is later.
+  const planStart = useMemo(() => {
+    if (!contract.importBatchId) return contract.startDate;
+    const addDay = (d: string) => new Date(new Date(`${d}T00:00:00Z`).getTime() + 86400000).toISOString().slice(0, 10);
+    const lastVisit = store.getJobs()
+      .filter((j) => j.contractId === contract.id && j.status !== 'cancelled' && j.status !== 'scheduled')
+      .reduce((m, j) => (j.scheduledDate > m ? j.scheduledDate : m), '');
+    const today = new Date().toISOString().slice(0, 10);
+    return [contract.startDate, lastVisit ? addDay(lastVisit) : '', today].reduce((m, d) => (d > m ? d : m));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contract.id]);
+
   // Visit rates come directly from the contract/proposal — not re-entered in the form
   const rates = useMemo(() => visitsPerMonth(contract), [contract]);
   const serviceVpm = rates.service;
@@ -123,7 +136,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
       .filter((h) => /^\d{4}-\d{2}-\d{2}$/.test(h));
 
     const planned = planVisits({
-      start: contract.startDate,
+      start: planStart > contract.endDate ? contract.endDate : planStart,
       end: contract.endDate,
       serviceVisitsPerMonth: isOneOff ? 1 : serviceVpm,
       followUpVisitsPerMonth: followUpVpm,
@@ -154,7 +167,7 @@ export const ScheduleGeneratorModal: React.FC<Props> = ({ contract, onClose }) =
       .filter((h) => /^\d{4}-\d{2}-\d{2}$/.test(h));
 
     const planned = planVisits({
-      start: contract.startDate,
+      start: planStart > contract.endDate ? contract.endDate : planStart,
       end: contract.endDate,
       serviceVisitsPerMonth: isOneOff ? 1 : serviceVpm,
       followUpVisitsPerMonth: followUpVpm,

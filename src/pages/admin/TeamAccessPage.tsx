@@ -64,6 +64,8 @@ interface PersonForm extends Omit<NewStaffInput, 'password'> {
   uid?: string;
   password: string;
   confirmPassword: string;
+  /** Also does quality audit visits (any role, e.g. a CRO who is a trained entomologist). */
+  isEntomologist?: boolean;
   /** This person's own module levels (null = exactly what the chosen role gives). */
   customAccess?: Partial<Record<ModuleKey, AccessLevel>> | null;
 }
@@ -165,6 +167,7 @@ export const TeamAccessPage: React.FC = () => {
       dataScope: u.dataScope,
       teamId: u.teamId || '',
       designationTitle: u.designationTitle || '',
+      isEntomologist: Boolean(u.isEntomologist),
       customAccess: personal ? { ...personal.modules } : null,
     });
   };
@@ -219,6 +222,7 @@ export const TeamAccessPage: React.FC = () => {
           dataScope: person.dataScope,
           teamId: person.teamId || undefined,
           designationTitle: person.designationTitle?.trim() || '',
+          isEntomologist: Boolean(person.isEntomologist),
         });
         success('Saved', `${person.displayName}'s access was updated. It applies to them immediately.`);
       } else {
@@ -226,6 +230,7 @@ export const TeamAccessPage: React.FC = () => {
         // Own access chosen for this person: save it and switch their account to it
         const roleId = await applyPersonalAccess(res.uid, person);
         if (roleId !== person.role) await staffService.updateStaff(res.uid, { role: roleId });
+        if (person.isEntomologist) await staffService.updateStaff(res.uid, { isEntomologist: true });
         success(
           'Login created',
           `${person.displayName} can now sign in with ${person.email.trim().toLowerCase()} and the password you set.${res.resetEmailSent ? ' A link to change it was also emailed.' : ''}`
@@ -421,7 +426,7 @@ export const TeamAccessPage: React.FC = () => {
                           </div>
                         </div>
                       </td>
-                      <td><RolePill role={u.role} /></td>
+                      <td><RolePill role={u.role} />{u.isEntomologist && <div className="cell-sub" style={{ marginTop: 2 }}>+ Entomologist</div>}</td>
                       <td>{u.teamName || <span className="cell-sub">No team</span>}</td>
                       <td className="cell-sub">{u.role === 'super_admin' ? 'Entire company' : SCOPE_LABELS[u.dataScope] || u.dataScope}</td>
                       <td className="cell-sub">{u.businessEmail || u.email}</td>
@@ -611,6 +616,14 @@ export const TeamAccessPage: React.FC = () => {
               <div className="form-group">
                 <label className="form-label">Business email (client emails are sent from this)</label>
                 <input className="form-input" type="email" value={person.businessEmail} onChange={(e) => setPerson({ ...person, businessEmail: e.target.value })} placeholder="ayesha@insectkiller.pk" />
+              </div>
+              <div className="form-group">
+                <label className="doc-check">
+                  <input type="checkbox" checked={Boolean(person.isEntomologist)} onChange={(e) => setPerson({ ...person, isEntomologist: e.target.checked })} />
+                  <span>Entomologist — also does quality audit visits
+                    <span className="cell-sub" style={{ display: 'block' }}>Keeps their role (e.g. CRO). The super admin can assign them audits; they see only the audits assigned to them.</span>
+                  </span>
+                </label>
               </div>
 
               {!person.uid && (

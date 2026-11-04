@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { canAccessModule } from '../../lib/permissions';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   MapPin,
@@ -18,7 +19,9 @@ import { DeviceRegisterPanel } from '../../features/devices/DeviceRegisterPanel'
 export const BranchDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { hasRole, userProfile } = useAuth();
+  const { effectiveRole, userProfile } = useAuth();
+  // Billing tabs: whoever has invoice access (Finance, admin, super admin…), not field Supervisors
+  const canSeeBilling = canAccessModule(effectiveRole, 'invoices');
   useDataStore();
 
   const [activeTab, setActiveTab] = useState<'overview' | 'sites' | 'jobs' | 'proposals' | 'contracts' | 'invoices' | 'documents' | 'devices'>('overview');
@@ -131,7 +134,7 @@ export const BranchDetailPage: React.FC = () => {
           { value: 'jobs', label: `Service Jobs (${jobs.length})` },
           { value: 'proposals', label: `Proposals (${proposals.length})` },
           { value: 'contracts', label: `Contracts (${contracts.length})` },
-          { value: 'invoices', label: `Invoices & Billing (${invoices.length})`, hidden: !hasRole(['super_admin', 'team_leader', 'finance']) },
+          { value: 'invoices', label: `Invoices & Billing (${invoices.length})`, hidden: !canSeeBilling },
           { value: 'documents', label: 'Files — all documents' },
           { value: 'devices', label: 'Devices' },
         ]}

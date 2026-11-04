@@ -206,8 +206,13 @@ export const ComplaintsPage: React.FC = () => {
 
   function handleCreateReService(c: Complaint) {
     if (!reServiceDate) { error('Date required', 'Pick a re-service visit date.'); return; }
-    const jobs = dataService.getJobs();
     const jobId = `JOB-${Date.now().toString(36).toUpperCase()}-RS`;
+    // Where to go: the original visit, else the branch, the client's site or the client's address
+    const original = c.jobId ? dataService.getJobById(c.jobId) : undefined;
+    const branch = c.branchId ? dataService.getBranchById(c.branchId) : undefined;
+    const site = original ? undefined : dataService.getSites(c.customerId, c.branchId)[0];
+    const address = original?.siteAddress || branch?.physicalAddress || (site ? [site.addressLine1, site.area, site.city].filter(Boolean).join(', ') : '')
+      || dataService.getClientById(c.customerId)?.residentialAddress || dataService.getCompanyById(c.customerId)?.headOfficeAddress || '';
     const job = {
       id: jobId,
       contractId: c.contractId,
@@ -216,11 +221,14 @@ export const ComplaintsPage: React.FC = () => {
       customerName: c.customerName,
       branchId: c.branchId,
       branchName: c.branchName,
-      siteId: c.contractId ?? c.customerId,
-      siteName: c.customerName,
-      siteAddress: '',
+      siteId: original?.siteId || site?.id || c.contractId || c.customerId,
+      siteName: original?.siteName || branch?.branchName || site?.siteName || c.customerName,
+      siteAddress: address,
       serviceType: 'Re-service visit (complaint)',
-      targetPests: [] as never[],
+      targetPests: original?.targetPests ?? [],
+      // Fixing our own work: no charge, never invoiced
+      freeOfCharge: true,
+      freeOfChargeReason: `Complaint re-service (${c.id})`,
       scheduledDate: reServiceDate,
       timeSlot: 'morning' as const,
       assignedTechnicianIds: [] as string[],

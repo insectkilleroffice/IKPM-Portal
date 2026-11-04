@@ -326,6 +326,17 @@ export function getJobNextAction(job: ServiceJob, invoice?: Invoice): NextAction
       actionType: 'verify_report',
     };
   }
+  // Re-service / warranty visit: nothing to invoice
+  if (job.supervisorVerification?.isVerified && !invoice && (job.freeOfCharge || job.complaintId)) {
+    return {
+      label: 'No charge — closed',
+      targetStage: 'Closed',
+      description: `Free visit (${job.freeOfChargeReason || 'complaint re-service'}): the client is not invoiced.`,
+      isBlocked: true,
+      blockerReason: 'Free of charge: nothing to invoice',
+      actionType: 'send_documents',
+    };
+  }
   if (job.supervisorVerification?.isVerified && !invoice) {
     return {
       label: 'Create Invoice',

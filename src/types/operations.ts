@@ -229,6 +229,15 @@ export interface ServiceJob extends FolderMeta, Partial<RecordOwnership> {
   syncedAt?: string;
   /** Contract schedule (Step 14): service visit or its follow-up; the pair share pairedJobId links. */
   visitKind?: 'service' | 'follow_up';
+  /** No charge to the client: complaint re-service, warranty call-back, goodwill. Never invoiced. */
+  freeOfCharge?: boolean;
+  freeOfChargeReason?: string;
+  /** Imported past visit already invoiced in the old system: never offered for invoicing. */
+  invoicedOutside?: boolean;
+  /** Old-client visit being saved by the Add old client form (done? which old invoice? paid?). Not billed meanwhile. */
+  oldDataPending?: boolean;
+  /** Set on records created by Customers → Add old client. */
+  importBatchId?: string;
   pairedJobId?: string;
   /** Services to be performed in this visit, e.g. ["Cockroach Control", "Rodent Control"]. */
   visitServices?: string[];
@@ -283,6 +292,12 @@ export interface Contract extends FolderMeta, TemplateStamp {
   paymentTermsDays?: number;
   /** How often this contract is invoiced: 0 / unset = calendar month, else every N days (from the proposal). */
   billingCycleDays?: number;
+  /** Client's purchase order / vendor number, printed on every invoice of this contract. */
+  clientPoNumber?: string;
+  /** Contract value before tax (from the proposal). Billing divides this and adds tax on the invoice. */
+  valueBeforeTax?: number;
+  /** Set on records created by Customers → Add old client. */
+  importBatchId?: string;
   terms?: string[];
   exclusions?: string;
   deviceOwnership?: string;

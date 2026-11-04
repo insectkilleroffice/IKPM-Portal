@@ -327,6 +327,9 @@ export const JobsListPage: React.FC = () => {
     leadPcoName: '',
     pcoIds: [] as string[],
   });
+  // Warranty call-back / goodwill visit: no charge to the client, never invoiced
+  const [jobFree, setJobFree] = useState(false);
+  const [jobFreeReason, setJobFreeReason] = useState('Warranty call-back');
 
   useEffect(() => {
     if (linkedProposal) {
@@ -441,6 +444,7 @@ export const JobsListPage: React.FC = () => {
       customerName,
       branchId: paramBranchId || undefined,
       proposalId: newJob.proposalId || undefined,
+      ...(jobFree ? { freeOfCharge: true, freeOfChargeReason: jobFreeReason.trim() || 'Warranty call-back' } : {}),
       siteId,
       siteName,
       siteAddress,
@@ -1035,7 +1039,7 @@ export const JobsListPage: React.FC = () => {
                       <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Awaiting visit</span>
                     )}
                   </td>
-                  <td><StatusBadge status={j.status} /></td>
+                  <td><StatusBadge status={j.status} />{(j.freeOfCharge || j.complaintId) && <div><span className="badge-status badge-teal" title={j.freeOfChargeReason || "Complaint re-service"} style={{ fontSize: "0.65rem" }}>FREE</span></div>}</td>
                   <td>
                     <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
                       {j.status === 'scheduled' && canDispatch && (
@@ -1201,6 +1205,14 @@ export const JobsListPage: React.FC = () => {
                 value={newJob.serviceType}
                 onChange={(e) => setNewJob({ ...newJob, serviceType: e.target.value })}
               />
+              <label className="doc-check" style={{ marginTop: '0.4rem' }}>
+                <input type="checkbox" checked={jobFree} onChange={(e) => setJobFree(e.target.checked)} />
+                <span>Free of charge (not invoiced)</span>
+              </label>
+              {jobFree && (
+                <input className="form-input" style={{ marginTop: '0.3rem' }} value={jobFreeReason} onChange={(e) => setJobFreeReason(e.target.value)}
+                  placeholder="Reason, e.g. Warranty call-back for job JOB-…" />
+              )}
             </div>
 
             <div className="form-group">

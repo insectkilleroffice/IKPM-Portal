@@ -20,6 +20,7 @@ import { fillTemplate } from './templateFill';
 import { documentTemplates } from '../services/documentTemplates';
 import type { SopInput } from '../types/document';
 import type { EmployeeLetter } from '../types/hr';
+import type { QualityAudit } from '../types/audits';
 
 // ---------------------------------------------------------------------------
 // Palette & layout (mm, A4 portrait)
@@ -1053,12 +1054,20 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
   b.titleBand(
     [
       { label: isCash ? 'Memo No.' : 'Invoice No.', value: invoice.invoiceNumber },
+      ...(invoice.poNumber ? [{ label: 'Your PO No.', value: invoice.poNumber }] : []),
       { label: isCash ? 'Date' : 'Invoice date', value: formatDate(invoice.issueDate) },
       { label: 'Due date', value: formatDate(invoice.dueDate) },
       { label: 'Status', value: statusLabel(invoice.status) },
     ],
     isTax ? `Tax jurisdiction: ${JURISDICTION[invoice.jurisdiction] || invoice.jurisdiction}` : undefined
   );
+  // Voided: this PDF is the credit note reversing it
+  if (invoice.status === 'void_reversed') {
+    b.noteBox('Credit note', [
+      `${invoice.creditNoteId ? `Credit note No. ${invoice.creditNoteId}` : 'Credit note'}${invoice.creditNoteDate ? ` dated ${formatDate(invoice.creditNoteDate)}` : ''} reverses this invoice in full (${pkr(invoice.grossPayable)}).`,
+      `Reason: ${invoice.creditNoteReason || '—'}`,
+    ]);
+  }
 
   const bill = clientParty(invoice.customerType, invoice.customerId, invoice.customerName, invoice.branchId, 'Bill to');
   // clientParty lines: [branch, address, city, attn, phone/email, tax numbers]
@@ -1542,6 +1551,7 @@ async function buildStatement(st: ClientStatement): Promise<jsPDF> {
   const cycle = !st.billingCycleDays ? 'Monthly' : st.billingCycleDays === 90 ? 'Quarterly' : `Every ${st.billingCycleDays} days`;
   b.titleBand([
     { label: 'Invoice No.', value: st.statementNumber },
+    ...(st.poNumber ? [{ label: 'Your PO No.', value: st.poNumber }] : []),
     { label: 'Date', value: formatDate(st.issueDate) },
     { label: 'Period', value: `${formatDate(st.periodStart)} – ${formatDate(st.periodEnd)}` },
     ...(st.contractId ? [{ label: 'Billing', value: cycle }] : []),
@@ -1596,6 +1606,77 @@ async function buildStatement(st: ClientStatement): Promise<jsPDF> {
   b.signatures([
     { label: `For ${profile.shortName || profile.legalName}`, name: st.approvedBy || ' ', sub: draft ? 'Draft — not yet approved' : `Approved ${st.approvedAt ? formatDate(st.approvedAt) : ''}` },
     { label: 'Received by', name: ' ', sub: 'Name, signature & stamp' },
+  ]);
+  return b.finish();
+}
+
+/** Quality audit report by the entomologist, verified by the super admin. */
+async function buildAuditReport(a: QualityAudit): Promise<jsPDF> {
+  const r = a.report;
+  const { b, profile } = await builder('Quality Audit Report', a.auditNumber, a.status === 'verified' ? undefined : 'DRAFT');
+  const levelText: Record<string, string> = { none: 'None', low: 'Low', moderate: 'Moderate', high: 'High' };
+  b.titleBand([
+    { label: 'Audit No.', value: a.auditNumber },
+    { label: 'Visit date', value: formatDate(r?.visitedAt || a.scheduledDate) },
+    { label: 'Entomologist', value: a.entomologistName },
+    { label: 'Score', value: r ? `${r.score} / 5` : '—' },
+    { label: 'Status', value: a.status === 'verified' ? 'Verified' : statusLabel(a.status) },
+  ], 'Independent pest management quality audit');
+  b.parties(clientParty(a.customerType, a.customerId, a.customerName, a.branchId), {
+    heading: 'Audited site',
+    name: a.siteName,
+    lines: [
+      a.siteAddress,
+      a.contractId && `Contract: ${a.contractId}`,
+      a.lastJobDate && `Last service visit: ${formatDate(a.lastJobDate)}${a.lastJobId ? ` (${a.lastJobId})` : ''}`,
+    ],
+  });
+  if (!r) {
+    b.noteBox('Report', ['The entomologist has not submitted the report yet.']);
+    return b.finish();
+  }
+  if (r.summary) {
+    b.section('Summary');
+    b.paragraph(r.summary);
+  }
+  if (r.pestActivity.length) {
+    b.section('Pest activity found');
+    b.table(['#', 'Area', 'Pest', 'Activity', 'Notes'],
+      r.pestActivity.map((p, i) => [i + 1, p.area, p.pest, levelText[p.level] || p.level, p.notes || '']),
+      { columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 3: { cellWidth: 22 } } });
+  }
+  if (r.checks.length) {
+    b.section('Service quality checks');
+    b.table(['#', 'Check', 'Result', 'Notes'],
+      r.checks.map((c, i) => [i + 1, c.item, c.ok === undefined ? '—' : c.ok ? 'OK' : 'Not OK', c.notes || '']),
+      {
+        columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 2: { cellWidth: 20 }, 3: { cellWidth: 50 } },
+        didParseCell: (d) => {
+          if (d.section === 'body' && d.column.index === 2) d.cell.styles.textColor = d.cell.raw === 'OK' ? b.brand : d.cell.raw === 'Not OK' ? [220, 38, 38] : [100, 116, 139];
+        },
+      });
+  }
+  if (r.findings.length) {
+    b.section('Findings and recommendations');
+    b.table(['#', 'Observation', 'Risk', 'Recommendation'],
+      r.findings.map((f, i) => [i + 1, f.observation, statusLabel(f.risk), f.recommendation]),
+      { columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 2: { cellWidth: 18 } } });
+  }
+  const photos = (await Promise.all(r.photos.slice(0, 8).map(async (p) => {
+    const img = await loadImage(p.url, 900);
+    return img ? { img, caption: p.caption || 'Audit photo' } : null;
+  }))).filter(Boolean) as { img: Img; caption: string }[];
+  if (photos.length) {
+    b.section('Photo evidence', 72);
+    b.photos(photos);
+  }
+  if (a.status === 'verified') {
+    b.section('Verification');
+    b.keyValues([['Verified by', a.verifiedBy], ['Verified on', a.verifiedAt ? formatDate(a.verifiedAt) : undefined], ['Notes', a.verifierNote]]);
+  }
+  b.signatures([
+    { label: 'Entomologist', name: a.entomologistName, sub: profile.shortName || profile.legalName },
+    { label: 'Verified by', name: a.verifiedBy || ' ', sub: 'For the management' },
   ]);
   return b.finish();
 }
@@ -1860,6 +1941,13 @@ export const pdfGenerator = {
   },
   async jobReportPDFBlob(job: ServiceJob): Promise<Blob> {
     return (await buildJobReport(job)).output('blob');
+  },
+  // Quality audit reports (entomologist)
+  async auditReportPDFBlob(audit: QualityAudit): Promise<Blob> {
+    return (await buildAuditReport(audit)).output('blob');
+  },
+  async generateAuditReportPDF(audit: QualityAudit) {
+    (await buildAuditReport(audit)).save(safe(`${prefix()}_Quality_Audit_${audit.auditNumber}_${audit.customerName}.pdf`));
   },
   // Client statements (one per contract billing period)
   async statementPDFBlob(statement: ClientStatement): Promise<Blob> {

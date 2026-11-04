@@ -6,8 +6,10 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 
 type Rules = NonNullable<CompanyProfile['payrollRules']>;
+/** Fields edited on this card (the grace period is on the Operations rules card). */
+type CardKey = Exclude<keyof Rules, 'lateGraceMinutes'>;
 
-const FIELDS: { key: keyof Rules; label: string; hint: string; step?: number }[] = [
+const FIELDS: { key: CardKey; label: string; hint: string; step?: number }[] = [
   { key: 'workStartTime', label: 'Work start time', hint: 'Arriving after this time marks the person Late on the attendance sheet.' },
   { key: 'standardHoursPerDay', label: 'Normal hours per day', hint: 'Hourly rate = basic salary ÷ 30 ÷ these hours.', step: 0.5 },
   { key: 'overtimeMultiplier', label: 'Overtime pay multiplier', hint: '2 = double the normal hourly rate (Pakistani labour law for factories / shops). 1 = same rate.', step: 0.25 },
@@ -22,7 +24,7 @@ export const PayrollRulesCard: React.FC = () => {
   const { success, error } = useNotification();
   const live = useSyncExternalStore(companyProfile.subscribe, companyProfile.get);
   const effective = payrollRulesFrom(live.payrollRules);
-  const initial = (): Record<keyof Rules, string> => ({
+  const initial = (): Record<CardKey, string> => ({
     workStartTime: live.payrollRules?.workStartTime || '08:30',
     standardHoursPerDay: String(effective.standardHoursPerDay),
     overtimeMultiplier: String(effective.overtimeMultiplier),
@@ -47,7 +49,8 @@ export const PayrollRulesCard: React.FC = () => {
     if (!/^\d{2}:\d{2}$/.test(form.workStartTime)) return error('Check the payroll rules', 'Work start time must be like 08:30.');
     setSaving(true);
     try {
-      const payrollRules: Rules = { workStartTime: form.workStartTime };
+      // Keep fields set elsewhere (late grace period)
+      const payrollRules: Rules = { ...companyProfile.get().payrollRules, workStartTime: form.workStartTime };
       nums.forEach((k) => { payrollRules[k] = Number(form[k]); });
       await companyProfile.save({ ...companyProfile.get(), payrollRules }, userProfile?.email || '');
       setDirty(false);

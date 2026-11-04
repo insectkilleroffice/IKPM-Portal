@@ -76,7 +76,9 @@ export const NotificationBell: React.FC = () => {
       dataService.getComplaints(),
       companyProfile.get().complaintEscalationHours,
       dataService.getAllInvoices(),
-      dataService.getStatements()
+      dataService.getStatements(),
+      dataService.getPayments(),
+      dataService.getAudits()
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, store.getVersion(), userProfile, effectiveRole, tick]);

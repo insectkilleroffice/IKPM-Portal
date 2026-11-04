@@ -104,7 +104,7 @@ export const staffService = {
   },
 
   async updateStaff(uid: string, patch: Partial<Pick<UserProfile,
-    'displayName' | 'businessEmail' | 'phone' | 'role' | 'dataScope' | 'teamId' | 'designationTitle' | 'isActive'>>) {
+    'displayName' | 'businessEmail' | 'phone' | 'role' | 'dataScope' | 'teamId' | 'designationTitle' | 'isActive' | 'isEntomologist'>>) {
     const data: Record<string, unknown> = { ...patch, updatedAt: now() };
     if ('teamId' in patch) {
       data.teamId = patch.teamId || deleteField();

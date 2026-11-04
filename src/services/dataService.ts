@@ -45,6 +45,7 @@ import type { Employee, EmployeePrivate, EmployeePay, EmployeeLetter, Attendance
 import type { Complaint } from '../types/complaints';
 import type { Approval } from '../types/approvals';
 import type { ClientStatement, Invoice, PaymentReceipt, TaxRuleConfig } from '../types/finance';
+import type { QualityAudit } from '../types/audits';
 import { isUnpostedInvoice, jobIdsOf } from '../types/finance';
 import type { AuditLogEntry, DataScope, RecordOwnership, Team, UserProfile, UserRole } from '../types';
 import type { DocumentOwner, DocumentPack, OutreachLog, PortalDocument } from '../types/document';
@@ -125,6 +126,7 @@ interface DbState {
   employeePay: any[];
   employeeLetters: any[];
   statements: ClientStatement[];
+  audits: QualityAudit[];
   attendance: any[];
   salaryCycles: any[];
 }
@@ -162,6 +164,7 @@ const COLLECTIONS: Record<StateKey, string> = {
   employeePay: 'employee_pay',
   employeeLetters: 'employee_letters',
   statements: 'client_statements',
+  audits: 'quality_audits',
   attendance: 'attendance',
   salaryCycles: 'salary_cycles',
 };
@@ -179,7 +182,7 @@ const SCOPED: StateKey[] = ['companies', 'branches', 'clients', 'sites', 'leads'
 const BUSINESS_KEYS: StateKey[] = [
   'companies', 'branches', 'clients', 'sites', 'leads', 'proposals', 'contracts', 'jobs',
   'invoices', 'payments', 'taxRules', 'auditLogs', 'documents', 'documentPacks', 'outreachLogs',
-  'devices', 'monitoringRecords', 'complaints', 'approvals', 'challans', 'employees', 'employeePrivate', 'employeePay', 'employeeLetters', 'statements', 'attendance', 'salaryCycles',
+  'devices', 'monitoringRecords', 'complaints', 'approvals', 'challans', 'employees', 'employeePrivate', 'employeePay', 'employeeLetters', 'statements', 'audits', 'attendance', 'salaryCycles',
 ];
 
 /** Module that grants read access to each business collection (mirrors firestore.rules). */
@@ -203,6 +206,7 @@ const MODULE_FOR: Partial<Record<StateKey, ModuleKey>> = {
   employeePay: 'payroll',
   employeeLetters: 'hr',
   statements: 'invoices',
+  audits: 'audits',
   attendance: 'attendance',
   salaryCycles: 'payroll',
 };
@@ -257,6 +261,7 @@ const emptyState = (): DbState => ({
   employeePay: [],
   employeeLetters: [],
   statements: [],
+  audits: [],
   attendance: [],
   salaryCycles: [],
 });
@@ -323,7 +328,7 @@ const PROTECTED_FIELDS = ['ownerUid', 'teamId', 'customerId', 'contractId', 'lin
   'taxTotal', 'invoiceNumber', 'role', 'dataScope', 'isActive', 'contacts', 'existingCustomerId'];
 
 /** Matches the rules_probe id in firestore.rules; tells whether the published rules are current. */
-export const RULES_VERSION = '2026-11-03-a';
+export const RULES_VERSION = '2026-11-04-a';
 
 class DataService {
   /**
@@ -555,6 +560,12 @@ class DataService {
 
     // Finance records aren't owner-scoped
     if (key === 'invoices' || key === 'payments' || key === 'statements') return can('invoices') ? [col] : [];
+    // Quality audits: the super admin sees all; an entomologist only their own (surprise audits stay hidden)
+    if (key === 'audits') {
+      if (se.role === 'super_admin') return [col];
+      // Any staff member (CRO, Supervisor…) may also be an entomologist: load the audits assigned to them
+      return [query(col, where('entomologistUid', '==', se.uid))];
+    }
 
     if (key === 'jobs') {
       const qs: Query[] = [];
@@ -2410,8 +2421,11 @@ class DataService {
   }
 
   /** Jobs already on an invoice that isn't voided (they must not be billed again). */
+  /** Visits already billed: on a live invoice, or imported as invoiced in the old system (never billed again). */
   public billedJobIds(): Set<string> {
-    return new Set(this.s.invoices.filter((i) => i.status !== 'void_reversed').flatMap((i) => jobIdsOf(i)));
+    const ids = new Set(this.s.invoices.filter((i) => i.status !== 'void_reversed').flatMap((i) => jobIdsOf(i)));
+    this.s.jobs.forEach((j) => { if (j.invoicedOutside || j.oldDataPending) ids.add(j.id); });
+    return ids;
   }
 
   public saveJob(job: ServiceJob, userEmail = 'admin'): ServiceJob {
@@ -2750,6 +2764,26 @@ class DataService {
     return invoice;
   }
 
+  // --- Quality audits (entomologist visits) ---
+  public getAudits(): QualityAudit[] {
+    return [...(this.s.audits || [])].sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate));
+  }
+
+  public getAuditById(id: string): QualityAudit | undefined {
+    return (this.s.audits || []).find((a) => a.id === id);
+  }
+
+  public saveAudit(audit: QualityAudit, userEmail = 'admin', note?: string): QualityAudit {
+    const created = this.upsert(this.s.audits, audit);
+    this.audit(userEmail, created ? 'create' : 'status_change', 'report', audit.id, `Audit ${audit.auditNumber}`,
+      note || (created
+        ? `Scheduled quality audit ${audit.auditNumber} at ${audit.customerName}${audit.surprise ? ' (surprise)' : ''} with ${audit.entomologistName} on ${audit.scheduledDate}`
+        : `Quality audit ${audit.auditNumber}: ${audit.status}`));
+    this.commit();
+    this.write('quality_audits', audit.id, audit);
+    return audit;
+  }
+
   // --- Client statements (one per contract billing period) ---
   public getStatements(customerId?: string): ClientStatement[] {
     return [...(this.s.statements || [])]
@@ -2779,6 +2813,21 @@ class DataService {
       if (branchId && p.branchId !== branchId) return false;
       return true;
     });
+  }
+
+  /** Adds the WHT certificate number to a receipt once the client sends it (nothing else changes). */
+  public addWhtCertificate(paymentId: string, certificateNumber: string, userEmail = 'admin'): PaymentReceipt {
+    const p = this.s.payments.find((x) => x.id === paymentId);
+    if (!p) throw new Error('Receipt not found.');
+    if (!(p.customerWhtDeducted?.amountDeducted > 0)) throw new Error('No WHT was deducted on this receipt.');
+    const cert = certificateNumber.trim();
+    if (!cert) throw new Error('Enter the certificate number.');
+    const updated: PaymentReceipt = { ...p, customerWhtDeducted: { ...p.customerWhtDeducted, certificateNumber: cert } };
+    Object.assign(p, updated);
+    this.commit();
+    this.write('payments', p.id, updated);
+    this.audit(userEmail, 'update', 'payment', p.id, p.receiptNumber, `WHT certificate ${cert} added to receipt ${p.receiptNumber}`);
+    return updated;
   }
 
   public recordPayment(payment: PaymentReceipt, userEmail = 'admin'): PaymentReceipt {

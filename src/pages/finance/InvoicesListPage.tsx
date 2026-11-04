@@ -130,16 +130,28 @@ export const InvoicesListPage: React.FC = () => {
     goPay(`inv:${inv.id}`);
   };
 
-  const handleVoidInvoice = (reason: string) => {
+  const handleVoidInvoice = async (reason: string) => {
     if (!selectedInvoice) return;
+    // A numbered credit note reverses it (its own series per year: IKPM-CN-2026-0001)
+    const year = new Date().getFullYear();
+    const prefix = `IKPM-CN-${year}-`;
+    let creditNoteId = selectedInvoice.creditNoteId;
+    if (!creditNoteId) {
+      const seq = await dataService.nextSequence(`credit_note_${year}`,
+        dataService.maxSeqOf(invoices.map((i) => i.creditNoteId).filter((n): n is string => Boolean(n?.startsWith(prefix)))));
+      creditNoteId = `${prefix}${String(seq).padStart(4, '0')}`;
+    }
     const voided: Invoice = {
       ...selectedInvoice,
       status: 'void_reversed',
+      creditNoteId,
       creditNoteReason: reason,
+      creditNoteDate: new Date().toISOString().slice(0, 10),
+      creditNoteBy: userProfile?.displayName || userProfile?.email || 'Finance',
       balanceDue: 0,
     };
     dataService.saveInvoice(voided, userProfile?.email);
-    success('Invoice Reversed with Credit Note', `Invoice ${selectedInvoice.invoiceNumber} voided.`);
+    success('Credit note issued', `${creditNoteId} reverses invoice ${selectedInvoice.invoiceNumber}. Send it to the client from the invoice.`);
     setSelectedInvoice(voided);
   };
 
@@ -447,7 +459,7 @@ export const InvoicesListPage: React.FC = () => {
               )}
 
               <div style={{ display: 'flex', gap: '0.5rem', marginLeft: 'auto', alignItems: 'center' }}>
-                {selectedInvoice.status !== 'void_reversed' && (
+                {(selectedInvoice.status !== 'void_reversed' || selectedInvoice.creditNoteId) && (
                   <button
                     className="btn btn-secondary"
                     onClick={() => setSendInvoice(selectedInvoice)}
@@ -477,7 +489,7 @@ export const InvoicesListPage: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', fontSize: '0.85rem' }}>
             {selectedInvoice.status === 'void_reversed' && (
               <div style={{ padding: '0.75rem', backgroundColor: 'var(--ikpm-rose-100)', color: '#991B1B', borderRadius: 'var(--radius-md)' }}>
-                <strong>Reversed Invoice:</strong> This record was voided by authorized credit note. Reason: {selectedInvoice.creditNoteReason}
+                <strong>Reversed by credit note{selectedInvoice.creditNoteId ? ` ${selectedInvoice.creditNoteId}` : ''}</strong>{selectedInvoice.creditNoteDate ? ` on ${formatDate(selectedInvoice.creditNoteDate)}` : ''}{selectedInvoice.creditNoteBy ? ` by ${selectedInvoice.creditNoteBy}` : ''}. Reason: {selectedInvoice.creditNoteReason}
               </div>
             )}
 

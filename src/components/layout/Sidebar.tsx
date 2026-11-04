@@ -83,6 +83,7 @@ const SECTIONS: { title?: string; items: NavEntry[] }[] = [
     title: 'Support',
     items: [
       { to: '/complaints', label: 'Complaints', icon: MessageSquareWarning, module: 'complaints' },
+      { to: '/audits', label: 'Quality Audits', icon: MessageSquareWarning, module: 'audits' },
       { to: '/search', label: 'Global Search', icon: Search, module: 'search' },
     ],
   },
@@ -115,7 +116,7 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onNavigate }) => {
-  const { effectiveRole } = useAuth();
+  const { effectiveRole, userProfile } = useAuth();
   useDataStore(); // role definitions load from Firestore
   const navigate = useNavigate();
   const [showNew, setShowNew] = useState(false);
@@ -132,7 +133,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onNavigate }) => {
 
   const can = (m: ModuleKey | ModuleKey[]): boolean => {
     const keys = Array.isArray(m) ? m : [m];
-    return keys.some((k) => canAccessModule(effectiveRole, k) || (k === 'team' && canAccessModule(effectiveRole, 'roles')));
+    return keys.some((k) => canAccessModule(effectiveRole, k) || (k === 'team' && canAccessModule(effectiveRole, 'roles'))
+      // Staff who also do quality audits see their audits, whatever their role
+      || (k === 'audits' && Boolean(userProfile?.isEntomologist)));
   };
   // Supervisors run visits but don't create them (dispatch is the Operations Manager's)
   const quick = QUICK_CREATE.filter((q) => can(q.module)

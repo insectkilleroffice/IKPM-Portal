@@ -136,6 +136,40 @@ export const PaymentsTab: React.FC<{ preselect?: PayTarget }> = ({ preselect }) 
         </div>
       )}
 
+      {/* Cash handover: cash Supervisors collected on site that Finance has not recorded as received */}
+      {(() => {
+        const received = (jobId: string) => dataService.getPayments().some((p) => p.paymentMode === 'cash' && (p.bankReferenceNo || '').includes(`job ${jobId}`));
+        const pending = dataService.getJobs().filter((j) => (j.cashCollection?.amount || 0) > 0 && !j.cashCollection?.receivedByFinanceAt && !received(j.id));
+        if (!pending.length) return null;
+        const bySup = new Map<string, { name: string; total: number; jobs: typeof pending }>();
+        pending.forEach((j) => {
+          const key = j.cashCollection!.collectedByUid || j.cashCollection!.collectedByName || '?';
+          const cur = bySup.get(key) ?? { name: j.cashCollection!.collectedByName || 'Supervisor', total: 0, jobs: [] };
+          cur.total += j.cashCollection!.amount;
+          cur.jobs.push(j);
+          bySup.set(key, cur);
+        });
+        return (
+          <div className="card" style={{ padding: '1rem 1.25rem', marginBottom: '1.25rem', borderLeft: '4px solid var(--ikpm-amber-500, #F59E0B)' }}>
+            <div className="card-title" style={{ marginBottom: '0.25rem' }}>Cash with Supervisors — {formatPKR(pending.reduce((s, j) => s + j.cashCollection!.amount, 0))}</div>
+            <div className="cell-sub" style={{ marginBottom: '0.6rem' }}>Collected from clients on site, not yet handed over and recorded. It is recorded automatically when the job's invoice is approved.</div>
+            <table className="data-table">
+              <thead><tr><th>Supervisor</th><th style={{ textAlign: 'center' }}>Jobs</th><th>Oldest</th><th style={{ textAlign: 'right' }}>Cash held</th></tr></thead>
+              <tbody>
+                {[...bySup.values()].sort((a, b) => b.total - a.total).map((s) => (
+                  <tr key={s.name}>
+                    <td className="cell-title">{s.name}<div className="cell-sub">{s.jobs.map((j) => `${j.id} (${j.customerName})`).join(', ')}</div></td>
+                    <td style={{ textAlign: 'center' }}>{s.jobs.length}</td>
+                    <td>{formatDate(s.jobs.map((j) => j.cashCollection!.collectedAt).sort()[0])}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatPKR(s.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
+
       <div className="table-container">
         <table className="data-table">
           <thead>
@@ -152,7 +186,19 @@ export const PaymentsTab: React.FC<{ preselect?: PayTarget }> = ({ preselect }) 
                 <td>{r.invoiceNumber}{r.bankReferenceNo ? <div className="cell-sub">{r.bankReferenceNo}</div> : null}</td>
                 <td style={{ textTransform: 'capitalize' }}>{String(r.paymentMode ?? '').replace(/_/g, ' ')}</td>
                 <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatPKR(r.cashAmountReceived)}</td>
-                <td style={{ textAlign: 'right' }}>{r.customerWhtDeducted?.amountDeducted ? formatPKR(r.customerWhtDeducted.amountDeducted) : '—'}</td>
+                <td style={{ textAlign: 'right' }}>
+                  {r.customerWhtDeducted?.amountDeducted ? formatPKR(r.customerWhtDeducted.amountDeducted) : '—'}
+                  {r.customerWhtDeducted?.amountDeducted > 0 && (r.customerWhtDeducted.certificateNumber
+                    ? <div className="cell-sub">Cert. {r.customerWhtDeducted.certificateNumber}</div>
+                    : canRecord && (
+                      <button type="button" className="btn btn-sm btn-ghost" style={{ color: '#B45309' }} onClick={() => {
+                        const cert = window.prompt(`WHT certificate number for ${r.receiptNumber}`);
+                        if (!cert) return;
+                        try { dataService.addWhtCertificate(r.id, cert, userProfile?.email); success('Certificate added', cert); }
+                        catch (err) { error('Could not add', err instanceof Error ? err.message : String(err)); }
+                      }}>Certificate pending — add</button>
+                    ))}
+                </td>
               </tr>
             ))}
           </tbody>

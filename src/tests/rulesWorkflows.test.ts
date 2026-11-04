@@ -59,9 +59,12 @@ const DENIED = 403;
 const NOW = '2026-11-02T10:00:00.000Z';
 
 // Staff profiles as stored in users/{uid}
-const staff: Record<string, { role: string; dataScope: string; isActive?: boolean; teamId?: string }> = {
+const staff: Record<string, { role: string; dataScope: string; isActive?: boolean; teamId?: string; isEntomologist?: boolean }> = {
   u_ceo: { role: 'super_admin', dataScope: 'company' },
   u_admin: { role: 'admin', dataScope: 'company' },
+  // CROs who are also entomologists (audits are a tick on the profile, not a role)
+  u_ent: { role: 'sales', dataScope: 'own', isEntomologist: true },
+  u_ent2: { role: 'sales', dataScope: 'own', isEntomologist: true },
   u_cro: { role: 'sales', dataScope: 'own' },
   u_cro2: { role: 'sales', dataScope: 'own' },
   u_cro_co: { role: 'sales', dataScope: 'company' },
@@ -81,7 +84,7 @@ describe.skipIf(!HOST)('firestore.rules: real portal workflows per role', () => 
   beforeAll(async () => {
     await fetch(`http://${HOST}/emulator/v1/projects/${PROJECT}/databases/(default)/documents`, { method: 'DELETE' });
     for (const [uid, p] of Object.entries(staff)) {
-      await seed(`users/${uid}`, { uid, displayName: uid, email: `${uid}@ikpm.test`, isActive: p.isActive ?? true, role: p.role, dataScope: p.dataScope, ...(p.teamId ? { teamId: p.teamId } : {}) });
+      await seed(`users/${uid}`, { uid, displayName: uid, email: `${uid}@ikpm.test`, isActive: p.isActive ?? true, role: p.role, dataScope: p.dataScope, ...(p.teamId ? { teamId: p.teamId } : {}), ...(p.isEntomologist ? { isEntomologist: true } : {}) });
     }
     // Role documents as an older portal saved them: some levels differ from today's defaults
     await seed('roles/team_leader', { id: 'team_leader', name: 'Team Leader', basedOn: 'team_leader', modules: { dashboard: 'edit', jobs: 'view', inspections: 'view' } });
@@ -273,6 +276,19 @@ describe.skipIf(!HOST)('firestore.rules: real portal workflows per role', () => 
     expect(await save('u_cro', 'leads/L_FWD', { ownerUid: 'u_cro2', ownerName: 'CRO 2', stage: 'won', updatedAt: NOW })).toBe(DENIED);
     expect(await save('u_cro', 'leads/L_FWD', { ownerUid: 'u_cro2', ownerName: 'CRO 2', assignedToUserId: 'u_cro2', activities: [{ note: 'forwarded' }], updatedAt: NOW })).toBe(OK);
     expect(await save('u_cro', 'leads/L_CRO2', { ownerUid: 'u_cro', updatedAt: NOW })).toBe(DENIED);
+  });
+  it('Quality audits: super admin schedules; only the assigned entomologist (a CRO here) sees and submits; nobody else reads them', async () => {
+    const audit = { auditNumber: 'QA-2026-0001', entomologistUid: 'u_ent', status: 'scheduled', surprise: true, scheduledDate: '2026-11-10', updatedAt: NOW };
+    expect(await create('u_admin', 'quality_audits/QA1', audit)).toBe(DENIED);
+    expect(await create('u_ceo', 'quality_audits/QA0', { ...audit, entomologistUid: 'u_cro' })).toBe(DENIED); // not an entomologist
+    expect(await create('u_ceo', 'quality_audits/QA1', audit)).toBe(OK);
+    expect(await get('u_ent', 'quality_audits/QA1')).toBe(OK);
+    expect(await get('u_ent2', 'quality_audits/QA1')).toBe(DENIED);
+    expect(await get('u_sup', 'quality_audits/QA1')).toBe(DENIED);
+    expect(await save('u_ent', 'quality_audits/QA1', { status: 'verified', updatedAt: NOW })).toBe(DENIED);
+    expect(await save('u_ent', 'quality_audits/QA1', { report: { score: 4 }, status: 'submitted', submittedAt: NOW, updatedAt: NOW })).toBe(OK);
+    expect(await save('u_ent', 'quality_audits/QA1', { report: { score: 5 }, updatedAt: NOW })).toBe(DENIED); // submitted: locked
+    expect(await save('u_ceo', 'quality_audits/QA1', { status: 'verified', updatedAt: NOW })).toBe(OK);
   });
   it('A physical challan number belongs to one job only', async () => {
     expect(await create('u_sup', 'challan_numbers/ch0099', { jobId: 'J1', challanNumber: 'CH-0099' })).toBe(OK);

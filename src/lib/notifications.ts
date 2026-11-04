@@ -4,7 +4,8 @@
 import type { Lead } from '../types/crm';
 import type { ServiceJob, Contract } from '../types/operations';
 import type { Proposal } from '../types/proposal';
-import type { ClientStatement, Invoice } from '../types/finance';
+import type { ClientStatement, Invoice, PaymentReceipt } from '../types/finance';
+import type { QualityAudit } from '../types/audits';
 import type { UserProfile } from '../types';
 import type { UserRole } from '../types';
 import { baseRoleOf } from './permissions';
@@ -42,13 +43,125 @@ export function computeNotifications(
   /** All invoices including drafts (dataService.getAllInvoices()). */
   invoices: Invoice[] = [],
   /** Client statements (dataService.getStatements()). */
-  statements: ClientStatement[] = []
+  statements: ClientStatement[] = [],
+  /** Payment receipts (dataService.getPayments()). */
+  payments: PaymentReceipt[] = [],
+  /** Quality audits this person can see (dataService.getAudits()). */
+  audits: QualityAudit[] = []
 ): AppNotification[] {
   const role = baseRoleOf(effectiveRole);
   const uid = profile.uid;
   const out: AppNotification[] = [];
 
   const isAdmin = role === 'super_admin' || role === 'admin';
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  // ── Quality audits: the entomologist's visits, and reports waiting for the super admin ──
+  audits.forEach((a) => {
+    if (a.entomologistUid === uid && (a.status === 'scheduled' || a.status === 'returned')) {
+      out.push({
+        id: `audit_${a.status}_${a.id}_${a.updatedAt}`,
+        category: a.status === 'returned' ? 'action_needed' : 'assigned',
+        title: a.status === 'returned' ? 'Audit report returned' : 'Audit visit assigned',
+        body: `${a.siteName} · ${a.scheduledDate}${a.status === 'returned' && a.returnNote ? ` · ${a.returnNote}` : ''}`,
+        link: '/audits',
+        entityId: a.id,
+        createdAt: a.updatedAt,
+      });
+    }
+    if (role === 'super_admin' && a.status === 'submitted') {
+      out.push({
+        id: `audit_verify_${a.id}_${a.submittedAt || ''}`,
+        category: 'action_needed',
+        title: 'Audit report to verify',
+        body: `${a.auditNumber} · ${a.siteName} · score ${a.report?.score ?? '—'}/5`,
+        link: '/audits',
+        entityId: a.id,
+        createdAt: a.submittedAt || a.updatedAt,
+      });
+    }
+  });
+  const isFinance = role === 'finance' || isAdmin;
+
+  // ── Overdue invoices (approved, unpaid, past due): Finance and admins chase them ──
+  if (isFinance) {
+    invoices
+      .filter((i) => i.isPosted && !i.statementId && i.status !== 'void_reversed' && i.balanceDue > 0 && i.dueDate && i.dueDate < todayIso)
+      .forEach((i) => out.push({
+        id: `inv_overdue_${i.id}_${i.dueDate}`,
+        category: 'action_needed',
+        title: 'Invoice overdue',
+        body: `${i.customerName} · ${i.invoiceNumber} · PKR ${Math.round(i.balanceDue).toLocaleString()} due ${i.dueDate}`,
+        link: `/finance/invoices?tab=invoices&invoice=${i.id}`,
+        entityId: i.id,
+        createdAt: i.dueDate,
+      }));
+    statements
+      .filter((st) => st.status === 'approved' && st.dueDate < todayIso
+        && st.invoiceIds.some((id) => (invoices.find((i) => i.id === id)?.balanceDue ?? 0) > 0))
+      .forEach((st) => out.push({
+        id: `bulk_overdue_${st.id}_${st.dueDate}`,
+        category: 'action_needed',
+        title: 'Bulk invoice overdue',
+        body: `${st.customerName} · ${st.statementNumber} · due ${st.dueDate}`,
+        link: '/finance/invoices?tab=invoices',
+        entityId: st.id,
+        createdAt: st.dueDate,
+      }));
+    // ── WHT deducted by the client but its certificate not received yet ──
+    payments
+      .filter((p) => (p.customerWhtDeducted?.amountDeducted || 0) > 0 && !p.customerWhtDeducted?.certificateNumber)
+      .forEach((p) => out.push({
+        id: `wht_cert_${p.id}`,
+        category: 'action_needed',
+        title: 'WHT certificate pending',
+        body: `${p.customerName} · ${p.invoiceNumber} · WHT PKR ${Math.round(p.customerWhtDeducted.amountDeducted).toLocaleString()}`,
+        link: '/finance/invoices?tab=payments',
+        entityId: p.id,
+        createdAt: p.paymentDate,
+      }));
+  }
+
+  // ── Contract renewals: from the renewal alert date (60 days before the end) ──
+  if (isAdmin || role === 'sales' || role === 'operations') {
+    contracts
+      .filter((c) => c.status === 'active' && !c.isRenewalInitiated && c.endDate >= todayIso
+        && (c.renewalAlertDate ? c.renewalAlertDate <= todayIso : c.endDate <= new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10))
+        && (role !== 'sales' || (c as Contract & { ownerUid?: string }).ownerUid === uid))
+      .forEach((c) => out.push({
+        id: `contract_renewal_${c.id}`,
+        category: 'action_needed',
+        title: 'Contract due for renewal',
+        body: `${c.customerName} · ${c.id} · ends ${c.endDate}`,
+        link: `/contracts?view=${c.id}`,
+        entityId: c.id,
+        createdAt: c.renewalAlertDate || c.endDate,
+      }));
+  }
+
+  // ── After a one-off job: the CRO offers a contract (within 30 days, if the client has none) ──
+  if (role === 'sales' || isAdmin) {
+    const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const withContract = new Set(contracts.filter((c) => c.status === 'active').map((c) => c.customerId));
+    const done = new Map<string, ServiceJob>();
+    jobs.filter((j) => j.status === 'completed' && !j.contractId && !j.complaintId && !j.freeOfCharge && j.scheduledDate >= since && !withContract.has(j.customerId))
+      .forEach((j) => { if (!done.has(j.customerId) || done.get(j.customerId)!.scheduledDate < j.scheduledDate) done.set(j.customerId, j); });
+    done.forEach((j) => {
+      const lead = leads.find((l) => l.existingCustomerId === j.customerId);
+      const owner = (lead as (Lead & { ownerUid?: string }) | undefined)?.ownerUid;
+      if (role === 'sales' && owner !== uid) return;
+      out.push({
+        id: `resell_${j.customerId}_${j.id}`,
+        category: 'action_needed',
+        title: 'Offer a service contract',
+        body: `${j.customerName} had a one-off job on ${j.scheduledDate} and has no contract`,
+        link: lead ? `/crm?lead=${lead.id}` : '/proposals?action=new_proposal',
+        entityId: j.customerId,
+        createdAt: j.scheduledDate,
+      });
+    });
+  }
 
   // ── Bulk invoices: admins approve; the preparer hears when one comes back ──
   statements.forEach((st) => {
@@ -497,14 +610,16 @@ export function computeNotifications(
 
   // ── Finance — QC Verified Jobs ready for Statutory Tax Invoicing ──
   if (role === 'finance' || isAdmin) {
+    // Only jobs still to invoice: not already on an invoice, and not a free re-service / warranty visit
+    const billedIds = new Set(invoices.filter((i) => i.status !== 'void_reversed').flatMap((i) => [i.jobId, ...(i.jobIds ?? []), ...(i.lineItems ?? []).map((l) => l.jobId)]).filter(Boolean) as string[]);
     jobs.forEach((j) => {
-      if (j.supervisorVerification?.isVerified) {
+      if (j.supervisorVerification?.isVerified && j.status === 'completed' && !billedIds.has(j.id) && !j.freeOfCharge && !j.complaintId) {
         out.push({
           id: `finance_invoice_ready_${j.id}`,
           category: 'action_needed',
           title: 'Job QC verified with Challan — ready for invoice',
           body: `${j.customerName} · ${j.id}${j.challanNumber ? ` · Challan #${j.challanNumber}` : ''}`,
-          link: `/finance/invoices?action=new_invoice&fromJob=${j.id}`,
+          link: `/finance/invoices?tab=jobs&fromJob=${j.id}`,
           entityId: j.id,
           createdAt: j.supervisorVerification.verifiedAt || j.updatedAt,
         });

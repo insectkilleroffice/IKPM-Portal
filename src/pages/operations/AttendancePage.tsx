@@ -56,6 +56,8 @@ export const AttendancePage: React.FC = () => {
   // Attendance and overtime apply to every employee; Supervisors see only their own PCOs
   const [roleFilter, setRoleFilter] = useState<'my_team' | 'pco' | 'all'>(isTeamLeader ? 'my_team' : 'all');
   const workStart = companyProfile.get().payrollRules?.workStartTime || '08:30';
+  // Grace period from Settings: arriving within it is not late
+  const graceMinutes = Math.max(0, Number(companyProfile.get().payrollRules?.lateGraceMinutes) || 0);
 
   const employees: Employee[] = store.getEmployees ? store.getEmployees() : [];
   const myTeamIds = new Set(store.getTeamPcos(currentUser?.uid).map((e) => e.id));
@@ -117,7 +119,7 @@ export const AttendancePage: React.FC = () => {
           const [sh, sm] = workStart.split(':').map(Number);
           const startM = (sh || 0) * 60 + (sm || 0);
           const curM = (h || 0) * 60 + (m || 0);
-          if (curM > startM) {
+          if (curM > startM + graceMinutes) {
             next.lateMinutes = curM - startM;
             if (next.status === 'present') next.status = 'late';
           } else {

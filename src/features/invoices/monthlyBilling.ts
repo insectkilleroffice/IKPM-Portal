@@ -11,6 +11,7 @@
 // monthly charge. Generated invoices are drafts that go to an admin for approval.
 
 import { dataService } from '../../services/dataService';
+import { companyProfile } from '../../services/companyProfile';
 import { planPricing } from '../../lib/proposalPlan';
 import { provinceToJurisdiction } from '../../lib/workflow';
 import { taxRateFor } from '../../lib/taxRates';
@@ -28,12 +29,29 @@ const lastDay = (month: string) => {
   return `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
 };
 
+/**
+ * Visit at no charge to the client: a complaint re-service (fixing our own work), a warranty
+ * call-back or a goodwill visit. Never invoiced and never counted as a paid contract visit.
+ */
+export const isNoChargeJob = (j: Pick<ServiceJob, 'freeOfCharge' | 'complaintId'>) => Boolean(j.freeOfCharge || j.complaintId);
+
 /** Visit is done for billing: completed and passed the quality check. */
 export const isBillableVisit = (j: Pick<ServiceJob, 'status' | 'supervisorVerification'>) =>
   j.status === 'completed' && Boolean(j.supervisorVerification?.isVerified);
 
 /** Monthly charge before tax, and after tax, from the contract. Undefined when the contract has no price. */
+/** Contract value before tax: as stored from the proposal, else the total (which includes tax) less its tax. */
+export function contractValueBeforeTax(c: Pick<Contract, 'valueBeforeTax' | 'totalContractValue' | 'taxPercent'>): number {
+  if (c.valueBeforeTax && c.valueBeforeTax > 0) return c.valueBeforeTax;
+  return round2((c.totalContractValue || 0) / (1 + (c.taxPercent ?? 0) / 100));
+}
+
+/**
+ * Monthly charge of a recurring (AMC) contract, before and after tax. Undefined for a one-time job
+ * contract (billed once for its full value, see visitPrice) or a contract without a price.
+ */
 export function monthlyCharge(c: Contract): { base: number; total: number; taxPercent: number } | undefined {
+  if (c.contractType === 'one_time' || c.frequency === 'one_off') return undefined;
   const taxPercent = c.taxPercent ?? 0;
   if (c.monthlyRate && c.monthlyRate > 0) {
     const p = planPricing({ monthlyRate: c.monthlyRate, taxMode: c.taxMode ?? 'exclusive', taxPercent, tenureMonths: 1 });
@@ -41,7 +59,8 @@ export function monthlyCharge(c: Contract): { base: number; total: number; taxPe
   }
   if (c.totalContractValue > 0) {
     const months = c.tenureMonths || Math.max(1, Math.round((new Date(c.endDate).getTime() - new Date(c.startDate).getTime()) / (30.44 * 86400000)));
-    const base = round2(c.totalContractValue / months);
+    // The total includes tax: divide the before-tax value, so tax is added only once on the invoice
+    const base = round2(contractValueBeforeTax(c) / months);
     return { base, total: round2(base * (1 + taxPercent / 100)), taxPercent };
   }
   return undefined;
@@ -101,7 +120,7 @@ export function computeMonthlyBill(input: {
   // Service visits of the month (follow-up visits are part of the service and not charged separately)
   const visits = input.jobs
     .filter((j) => j.contractId === c.id && j.scheduledDate >= `${month}-01` && j.scheduledDate <= lastDay(month)
-      && j.status !== 'cancelled' && j.visitKind !== 'follow_up')
+      && j.status !== 'cancelled' && j.visitKind !== 'follow_up' && !isNoChargeJob(j))
     .sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
   const planned = Math.round(c.serviceVisitsPerMonth || 0);
   const divisor = Math.max(1, planned, visits.length);
@@ -230,7 +249,15 @@ export interface VisitPrice {
  * `cache` reuses each contract-month calculation across several visits.
  */
 export function visitPrice(job: ServiceJob, cache = new Map<string, MonthlyBill>()): VisitPrice {
+  if (isNoChargeJob(job)) return { amount: 0, source: `No charge: ${job.freeOfChargeReason || 'complaint re-service'}`, fixed: true };
   const contract = job.contractId ? dataService.getContractById(job.contractId) : undefined;
+  // One-time job contract: its full before-tax value, shared over its (paid) visits — usually one
+  if (contract && (contract.contractType === 'one_time' || contract.frequency === 'one_off') && contract.totalContractValue > 0) {
+    if (job.visitKind === 'follow_up') return { amount: 0, source: 'Follow-up visit: included in the one-time job', fixed: true };
+    const visits = dataService.getJobs().filter((j) => j.contractId === contract.id && j.status !== 'cancelled' && j.visitKind !== 'follow_up' && !isNoChargeJob(j));
+    const amount = round2(contractValueBeforeTax(contract) / Math.max(1, visits.length));
+    return { amount, source: `${contract.id}: one-time job${visits.length > 1 ? ` ÷ ${visits.length} visits` : ''}`, fixed: true };
+  }
   if (contract && monthlyCharge(contract)) {
     if (job.visitKind === 'follow_up') return { amount: 0, source: 'Follow-up visit: included in the monthly charge', fixed: true };
     const month = job.scheduledDate.slice(0, 7);
@@ -247,6 +274,9 @@ export function visitPrice(job: ServiceJob, cache = new Map<string, MonthlyBill>
   const proposal = (job.proposalId ? dataService.getProposalById(job.proposalId) : undefined)
     ?? dataService.getProposals().find((p) => p.customerId === job.customerId && p.status === 'accepted');
   if (proposal) return { amount: round2(proposal.subtotal - (proposal.discountAmount || 0)), source: `Proposal ${proposal.id}`, fixed: false };
+  // Standard price list (Settings): the entry whose name matches the job's service
+  const listed = standardPriceFor(job);
+  if (listed) return { amount: listed.price, source: `Price list: ${listed.service}`, fixed: false };
   return { amount: 0, source: 'No agreed price: enter the visit charge', fixed: false };
 }
 
@@ -254,6 +284,14 @@ export function visitPrice(job: ServiceJob, cache = new Map<string, MonthlyBill>
 export function isPeriodBilledJob(job: Pick<ServiceJob, 'contractId'>): boolean {
   const c = job.contractId ? dataService.getContractById(job.contractId) : undefined;
   return Boolean(c && c.status !== 'cancelled' && monthlyCharge(c));
+}
+
+/** Best match in the Settings price list for a job's services (longest matching name wins). */
+export function standardPriceFor(job: Pick<ServiceJob, 'serviceType' | 'visitServices'>): { service: string; price: number } | undefined {
+  const text = [job.serviceType, ...(job.visitServices ?? [])].join(' ').toLowerCase();
+  return (companyProfile.get().priceList ?? [])
+    .filter((p) => p.price > 0 && p.service.trim() && text.includes(p.service.trim().toLowerCase()))
+    .sort((a, b) => b.service.length - a.service.length)[0];
 }
 
 export const isCancelledContractJob = (job: Pick<ServiceJob, 'contractId'>) =>
@@ -266,7 +304,7 @@ export const isCancelledContractJob = (job: Pick<ServiceJob, 'contractId'>) =>
 export function billableVisits(customerId?: string): ServiceJob[] {
   const billed = dataService.billedJobIds();
   return dataService.getJobs(customerId)
-    .filter((j) => isBillableVisit(j) && !billed.has(j.id) && !isCancelledContractJob(j)
+    .filter((j) => isBillableVisit(j) && !billed.has(j.id) && !isCancelledContractJob(j) && !isNoChargeJob(j) && !j.invoicedOutside
       && !(j.visitKind === 'follow_up' && j.contractId))
     .sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
 }
@@ -295,7 +333,7 @@ export function settlementBill(contract: Contract, basis: BillingBasis): Monthly
   const billed = dataService.billedJobIds();
   const jobs = dataService.getJobs();
   const doneMonths = jobs
-    .filter((j) => j.contractId === contract.id && isBillableVisit(j) && !billed.has(j.id) && j.visitKind !== 'follow_up' && j.scheduledDate <= eff)
+    .filter((j) => j.contractId === contract.id && isBillableVisit(j) && !billed.has(j.id) && j.visitKind !== 'follow_up' && !isNoChargeJob(j) && j.scheduledDate <= eff)
     .map((j) => j.scheduledDate.slice(0, 7));
   const months = Array.from(new Set([...doneMonths, ...(basis === 'full_month' ? [effMonth] : [])])).sort();
   const bills = months.map((m) => computeMonthlyBill({
@@ -531,7 +569,7 @@ export interface PeriodBill {
 export function periodBillsFor(contract: Contract, upTo: string, includeCurrent: boolean, cache = new Map<string, MonthlyBill>()): PeriodBill[] {
   if (contract.status === 'cancelled' || !monthlyCharge(contract)) return [];
   const billed = dataService.billedJobIds();
-  const jobs = dataService.getJobs().filter((j) => j.contractId === contract.id && j.status !== 'cancelled' && j.visitKind !== 'follow_up');
+  const jobs = dataService.getJobs().filter((j) => j.contractId === contract.id && j.status !== 'cancelled' && j.visitKind !== 'follow_up' && !isNoChargeJob(j));
   return billingPeriods(contract.startDate, contract.endDate, contract.billingCycleDays, upTo).flatMap((period) => {
     const finished = period.end < upTo;
     if (!finished && !includeCurrent) return [];
@@ -597,7 +635,7 @@ export async function createJobInvoices(items: JobCharge[], user: InvoiceUser): 
       taxRate: defaultTaxRate(job.customerType, job.customerId, job.branchId, contract),
       lines: [{ description: visitDescription(job), amount, jobId: job.id }],
       dueDays: contract?.paymentTermsDays,
-      extra: job.contractId ? { contractId: job.contractId } : {},
+      extra: { ...(job.contractId ? { contractId: job.contractId } : {}), ...(contract?.clientPoNumber ? { poNumber: contract.clientPoNumber } : {}) },
       user,
       submit: true,
     }));
@@ -610,13 +648,18 @@ export async function createJobInvoices(items: JobCharge[], user: InvoiceUser): 
  * individual invoice per job inside it, submitted for approval as one. Jobs of several branches of
  * the same company may go together.
  */
-export async function createBulkInvoices(items: JobCharge[], user: InvoiceUser): Promise<ClientStatement[]> {
+export async function createBulkInvoices(items: JobCharge[], user: InvoiceUser, opts: { perBranch?: boolean } = {}): Promise<ClientStatement[]> {
   if (!items.length) throw new Error('Tick the jobs to invoice.');
   const clientIds = new Set(items.map((it) => it.job.customerId));
   if (clientIds.size > 1) {
     throw new Error(`A bulk invoice is for one client only. The ticked jobs belong to ${clientIds.size} clients: choose one client.`);
   }
-  const groups = new Map<string, JobCharge[]>([[items[0].job.customerId, items]]);
+  // One bulk invoice for the client, or (perBranch) one per branch of the client
+  const groups = new Map<string, JobCharge[]>();
+  items.forEach((it) => {
+    const key = opts.perBranch ? it.job.branchId || '' : 'all';
+    groups.set(key, [...(groups.get(key) ?? []), it]);
+  });
   const out: ClientStatement[] = [];
   for (const group of groups.values()) {
     const first = group[0].job;
@@ -637,7 +680,7 @@ export async function createBulkInvoices(items: JobCharge[], user: InvoiceUser):
         lines: [{ description: visitDescription(job), amount, jobId: job.id }],
         dueDays: jobContract?.paymentTermsDays,
         notes: 'Job invoice; approved and sent with its bulk invoice.',
-        extra: { ...(job.contractId ? { contractId: job.contractId } : {}), statementId: id },
+        extra: { ...(job.contractId ? { contractId: job.contractId } : {}), ...(jobContract?.clientPoNumber ? { poNumber: jobContract.clientPoNumber } : {}), statementId: id },
         user,
         submit: false,
       }));
@@ -648,7 +691,7 @@ export async function createBulkInvoices(items: JobCharge[], user: InvoiceUser):
     out.push(dataService.saveStatement({
       id,
       statementNumber: `DRAFT-${id}`,
-      ...(contract ? { contractId: contract.id, billingCycleDays: contract.billingCycleDays ?? 0 } : {}),
+      ...(contract ? { contractId: contract.id, billingCycleDays: contract.billingCycleDays ?? 0, ...(contract.clientPoNumber ? { poNumber: contract.clientPoNumber } : {}) } : {}),
       customerType: first.customerType,
       customerId: first.customerId,
       customerName: cust.name || first.customerName,
