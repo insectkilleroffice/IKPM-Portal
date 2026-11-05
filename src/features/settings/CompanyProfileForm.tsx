@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Building2, Eye, ImagePlus, Landmark, FileText, Plus, RotateCcw, Save, Trash2, Stamp as StampIcon } from 'lucide-react';
-import { companyProfile, DEFAULT_ACCENT_COLOR, DEFAULT_BRAND_COLOR, DEFAULT_INVOICE_NOTES, DEFAULT_PROPOSAL_TERMS, type CompanyBranchInfo, type CompanyProfile } from '../../services/companyProfile';
+import { companyProfile, DEFAULT_ACCENT_COLOR, DEFAULT_BRAND_COLOR, DEFAULT_INVOICE_NOTES, DEFAULT_PROPOSAL_TERMS, type CompanyProfile } from '../../services/companyProfile';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { uploadFile, validateFile } from '../../lib/cloudinary';
 import { integrations } from '../../config/env';
@@ -25,6 +25,8 @@ export const CompanyProfileForm: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [uploadingStamp, setUploadingStamp] = useState(false);
+  const [uploadingBackground, setUploadingBackground] = useState(false);
+  const backgroundInput = useRef<HTMLInputElement>(null);
   const logoInput = useRef<HTMLInputElement>(null);
   const stampInput = useRef<HTMLInputElement>(null);
 
@@ -113,6 +115,24 @@ export const CompanyProfileForm: React.FC = () => {
     }
   };
 
+  const uploadBackground = async (file?: File) => {
+    if (!file) return;
+    if (!/^image\/(png|jpe?g|webp)$/.test(file.type)) return error('Unsupported image', 'Use a PNG or JPG image (transparent PNG looks best).');
+    const problem = validateFile(file);
+    if (problem) return error('Image not accepted', problem);
+    setUploadingBackground(true);
+    try {
+      const stored = await uploadFile(file, { scope: { ownerScope: 'company', category: 'other' }, subPath: 'branding', fileName: `background_${Date.now()}.${file.type.split('/')[1]}` });
+      set('watermarkUrl', stored.url);
+      pdfGenerator.clearImageCache();
+    } catch (err) {
+      error('Upload failed', err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploadingBackground(false);
+      if (backgroundInput.current) backgroundInput.current.value = '';
+    }
+  };
+
   // "Our valued clients" logos for proposals
   const clientLogoInput = useRef<HTMLInputElement>(null);
   const [uploadingClientLogo, setUploadingClientLogo] = useState(false);
@@ -137,30 +157,7 @@ export const CompanyProfileForm: React.FC = () => {
     }
   };
 
-  const addBranch = () => {
-    const branches = form.branches ?? [];
-    const newB: CompanyBranchInfo = {
-      id: `cb_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      name: '',
-      address: '',
-      city: '',
-      phone: '',
-    };
-    set('branches', [...branches, newB]);
-  };
-
-  const updateBranch = (index: number, patch: Partial<CompanyBranchInfo>) => {
-    const branches = [...(form.branches ?? [])];
-    if (branches[index]) {
-      branches[index] = { ...branches[index], ...patch };
-      set('branches', branches);
-    }
-  };
-
-  const removeBranch = (index: number) => {
-    const branches = (form.branches ?? []).filter((_, i) => i !== index);
-    set('branches', branches);
-  };
+  const serviceAreas = form.serviceAreas ?? [];
 
   // Preview what is on screen, even before saving
   const preview = () =>
@@ -226,6 +223,40 @@ export const CompanyProfileForm: React.FC = () => {
             </div>
             <div className="form-hint" style={{ marginTop: '0.35rem' }}>Replaces signature lines at the end of proposals, invoices and receipts.</div>
           </div>
+
+          <div>
+            <label className="form-label">Document Background</label>
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+              <div className="logo-preview" style={{ width: 90, height: 90, border: '1px dashed var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F8FAFC' }}>
+                {form.watermarkUrl ? (
+                  <img src={form.watermarkUrl} alt="Document background" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                ) : (
+                  <ImagePlus size={28} color="var(--text-muted)" />
+                )}
+              </div>
+              {isSuperAdmin && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => backgroundInput.current?.click()} disabled={uploadingBackground || !integrations.cloudinary}>
+                    <ImagePlus size={14} /> {uploadingBackground ? 'Uploading…' : form.watermarkUrl ? 'Change image' : 'Upload image'}
+                  </button>
+                  {form.watermarkUrl && (
+                    <button className="btn btn-ghost btn-sm" onClick={() => set('watermarkUrl', '')}>
+                      <Trash2 size={13} /> Remove image
+                    </button>
+                  )}
+                  <input ref={backgroundInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(e) => uploadBackground(e.target.files?.[0])} />
+                </div>
+              )}
+            </div>
+            {form.watermarkUrl && (
+              <label className="form-hint" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.35rem' }}>
+                Strength
+                <input type="range" min={3} max={30} value={form.watermarkOpacity ?? 8} onChange={(e) => set('watermarkOpacity', Number(e.target.value))} disabled={!isSuperAdmin} />
+                {form.watermarkOpacity ?? 8}%
+              </label>
+            )}
+            <div className="form-hint" style={{ marginTop: '0.35rem' }}>Printed faintly behind every PDF. Transparent PNG looks best.</div>
+          </div>
         </div>
 
         <div className="form-grid-2">
@@ -243,32 +274,35 @@ export const CompanyProfileForm: React.FC = () => {
         </div>
       </div>
 
-      {/* Branch offices */}
+      {/* Service areas */}
       <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
           <div>
-            <div className="card-title">Branch offices</div>
-            <div className="cell-sub">Printed in the PDF letterhead footer and company profile document</div>
+            <div className="card-title">Service areas</div>
+            <div className="cell-sub">Cities and hubs where we provide services. Printed in the footer of every PDF.</div>
           </div>
           {isSuperAdmin && (
-            <button type="button" className="btn btn-sm btn-secondary" onClick={addBranch}>
-              <Plus size={14} /> Add branch
+            <button type="button" className="btn btn-sm btn-secondary" onClick={() => set('serviceAreas', [...serviceAreas, ''])}>
+              <Plus size={14} /> Add area
             </button>
           )}
         </div>
 
-        {(form.branches ?? []).length === 0 ? (
-          <div className="cell-sub" style={{ padding: '0.75rem 0' }}>No branch offices configured. Only head office will be printed.</div>
+        {serviceAreas.length === 0 ? (
+          <div className="cell-sub" style={{ padding: '0.75rem 0' }}>No service areas added, so none will be printed.</div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-            {(form.branches ?? []).map((b, idx) => (
-              <div key={b.id || idx} style={{ display: 'grid', gridTemplateColumns: '1.2fr 2fr 1fr 1fr auto', gap: '0.5rem', alignItems: 'center', padding: '0.5rem', background: 'var(--bg-surface-elevated, #f9fafb)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
-                <input className="form-input" placeholder="Branch name (e.g. Lahore Office)" value={b.name} onChange={(e) => updateBranch(idx, { name: e.target.value })} disabled={!isSuperAdmin} />
-                <input className="form-input" placeholder="Address" value={b.address} onChange={(e) => updateBranch(idx, { address: e.target.value })} disabled={!isSuperAdmin} />
-                <input className="form-input" placeholder="City" value={b.city || ''} onChange={(e) => updateBranch(idx, { city: e.target.value })} disabled={!isSuperAdmin} />
-                <input className="form-input" placeholder="Phone" value={b.phone || ''} onChange={(e) => updateBranch(idx, { phone: e.target.value })} disabled={!isSuperAdmin} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '0.5rem' }}>
+            {serviceAreas.map((area, idx) => (
+              <div key={idx} style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
+                <input
+                  className="form-input"
+                  placeholder="e.g. Faisalabad Hub"
+                  value={area}
+                  onChange={(e) => set('serviceAreas', serviceAreas.map((a, i) => (i === idx ? e.target.value : a)))}
+                  disabled={!isSuperAdmin}
+                />
                 {isSuperAdmin && (
-                  <button type="button" className="icon-btn" onClick={() => removeBranch(idx)} title="Remove branch">
+                  <button type="button" className="icon-btn" onClick={() => set('serviceAreas', serviceAreas.filter((_, i) => i !== idx))} title="Remove area">
                     <Trash2 size={15} />
                   </button>
                 )}

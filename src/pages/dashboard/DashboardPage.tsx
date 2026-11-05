@@ -100,7 +100,7 @@ function CRODashboard() {
             <div className="kpi-value">{contractsThisMonth.length}</div>
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>this month</div>
           </div>
-          <div className="kpi-icon" style={{ backgroundColor: '#D1FAE5', color: 'var(--ikpm-emerald-600)' }}>
+          <div className="kpi-icon" style={{ backgroundColor: 'var(--ikpm-emerald-100)', color: 'var(--ikpm-emerald-600)' }}>
             <FileSignature size={22} />
           </div>
         </div>
@@ -286,7 +286,7 @@ function OpsManagerDashboard() {
             <div className="kpi-title">Active Contracts</div>
             <div className="kpi-value">{activeContracts.length}</div>
           </div>
-          <div className="kpi-icon" style={{ backgroundColor: '#D1FAE5', color: 'var(--ikpm-emerald-600)' }}>
+          <div className="kpi-icon" style={{ backgroundColor: 'var(--ikpm-emerald-100)', color: 'var(--ikpm-emerald-600)' }}>
             <FileSignature size={22} />
           </div>
         </div>
@@ -654,7 +654,7 @@ function OperationPersonDashboard() {
             <div className="kpi-title">My Jobs Today</div>
             <div className="kpi-value" style={{ color: myJobsToday.length > 0 ? 'var(--ikpm-emerald-600)' : undefined }}>{myJobsToday.length}</div>
           </div>
-          <div className="kpi-icon" style={{ backgroundColor: '#D1FAE5', color: 'var(--ikpm-emerald-600)' }}>
+          <div className="kpi-icon" style={{ backgroundColor: 'var(--ikpm-emerald-100)', color: 'var(--ikpm-emerald-600)' }}>
             <CheckCircle2 size={22} />
           </div>
         </div>
@@ -941,7 +941,7 @@ function AdminDashboard() {
             <div className="kpi-title">Active Contracts</div>
             <div className="kpi-value">{activeContracts.length}</div>
           </div>
-          <div className="kpi-icon" style={{ backgroundColor: '#D1FAE5', color: 'var(--ikpm-emerald-600)' }}>
+          <div className="kpi-icon" style={{ backgroundColor: 'var(--ikpm-emerald-100)', color: 'var(--ikpm-emerald-600)' }}>
             <FileSignature size={22} />
           </div>
         </div>

@@ -42,11 +42,11 @@ async function buildLayout(l: LayoutInput): Promise<jsPDF> {
   if (l.floorPlanUrl) {
     const img = await pdfKit.loadImage(l.floorPlanUrl, 1600);
     if (img) {
-      b.section('Floor plan', 60);
+      b.section('Floor plan');
       b.floorPlan(img, devices.filter((d) => d.pinX !== undefined && d.pinY !== undefined).map((d) => ({ x: d.pinX!, y: d.pinY!, label: String(d.number) })));
     }
   }
-  b.section('Device summary', 24);
+  b.section('Device summary');
   b.table(
     ['Device', 'Count', 'Numbers'],
     DEVICE_TYPES.map((t) => {
@@ -54,7 +54,7 @@ async function buildLayout(l: LayoutInput): Promise<jsPDF> {
       return list.length ? [t.label, list.length, list.map((d) => d.number).join(', ')] : null;
     }).filter(Boolean) as (string | number)[][]
   );
-  b.section('Device register', 24);
+  b.section('Device register');
   b.table(['Code', 'Type', 'Location', 'In / Out', 'Installed'], devices.map((d) => [deviceCode(d), deviceTypeLabel(d.type), d.location, d.indoorOutdoor === 'outdoor' ? 'Outdoor' : 'Indoor', formatDate(d.installedAt)]));
   b.signatures([
     { label: 'Prepared by', name: l.preparedBy },
@@ -98,7 +98,7 @@ async function buildMonitoringSheet(m: MonitoringSheetInput): Promise<jsPDF> {
   );
   const rows = [...m.rows].sort((a, b) => a.device.type.localeCompare(b.device.type) || a.device.number - b.device.number);
   types.forEach((t) => {
-    b.section(`${deviceTypeLabel(t)}s`, 30);
+    b.section(`${deviceTypeLabel(t)}s`);
     b.paragraph('Columns 3–7: service visit. Columns 8–12: follow-up visit.', 7.5, pdfKit.MUTED);
     b.table(
       SHEET_HEAD,
@@ -164,12 +164,12 @@ async function buildTrend(t: TrendInput): Promise<jsPDF> {
     ['Change', `${change > 0 ? '+' : ''}${change}`],
     ['Devices damaged / replaced', `${trend.damaged} / ${trend.replaced}`],
   ]);
-  b.section('Hotspots', 24);
+  b.section('Hotspots');
   if (trend.hotspots.length) b.table(['Device', 'This quarter', 'Previous'], trend.hotspots.map((r) => [r.label, r.current, r.previous]));
   else b.paragraph('No rodent or lizard activity was recorded on any device this quarter.');
-  b.section('Activity by area', 24);
+  b.section('Activity by area');
   b.table(['Area', 'This quarter', 'Previous', 'Checks'], trend.byArea.map((r) => [r.label, r.current, r.previous, r.checks]));
-  b.section('Activity by device', 24);
+  b.section('Activity by device');
   b.table(['Device', 'This quarter', 'Previous', 'Checks'], trend.byDevice.map((r) => [r.label, r.current, r.previous, r.checks]));
   b.signatures([{ label: 'Prepared by', name: t.preparedBy }]);
   return b.finish();
@@ -201,7 +201,7 @@ async function buildSchedule(s: ScheduleInput): Promise<jsPDF> {
   months.forEach((month) => {
     const inMonth = s.visits.filter((v) => v.date.startsWith(month));
     const branches = [...new Set(inMonth.map((v) => v.branchName))].sort();
-    b.section(new Date(`${month}-01T00:00:00`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }), 24);
+    b.section(new Date(`${month}-01T00:00:00`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }));
     b.table(
       ['Branch', 'Closing time', '1st service date', '2nd service date', 'Follow-up dates'],
       branches.map((name) => {

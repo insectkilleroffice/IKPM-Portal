@@ -6,7 +6,7 @@ import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { outreachEnv } from '../config/env';
 
-/** A company branch printed in the letterhead / company profile document. */
+/** @deprecated Replaced by CompanyProfile.serviceAreas. Kept so older saved profiles still load. */
 export interface CompanyBranchInfo {
   id: string;
   name: string;
@@ -70,7 +70,11 @@ export interface CompanyProfile {
    * instead of a signature block. If absent the documents still generate; no stamp is printed.
    */
   stampUrl?: string;
-  /** Document colours as hex (#0B1F3A): headings, tables and totals use the primary, accents use the second. */
+  /** Image printed faintly behind the content of every PDF (uploaded in Settings). Empty = no background. */
+  watermarkUrl?: string;
+  /** How strongly it prints, as a percentage (default 8). */
+  watermarkOpacity?: number;
+  /** Document colours as hex (#0A0A0A): headings, tables and totals use the primary, accents use the second. */
   brandColor?: string;
   accentColor?: string;
   /** @deprecated Use stampUrl instead. Kept so older Firestore documents still load without errors. */
@@ -79,7 +83,9 @@ export interface CompanyProfile {
   signatoryTitle?: string;
   proposalTerms?: string;
   invoiceNotes?: string;
-  /** Branch offices printed in the letterhead and the company-profile document. */
+  /** Cities and hubs where the company provides services, printed in the footer of every PDF. */
+  serviceAreas?: string[];
+  /** @deprecated Use serviceAreas. No longer printed or edited. */
   branches?: CompanyBranchInfo[];
   /** "Our valued clients" logo strip printed on proposals (only clients who agreed to be listed). */
   clientLogos?: { name: string; url: string }[];
@@ -95,9 +101,9 @@ export interface CompanyProfile {
   updatedBy?: string;
 }
 
-/** House colours used when the profile has none (navy headings, green accents). */
-export const DEFAULT_BRAND_COLOR = '#0B1F3A';
-export const DEFAULT_ACCENT_COLOR = '#0E8A5F';
+/** House colours used when the profile has none (black headings, red accents). */
+export const DEFAULT_BRAND_COLOR = '#0A0A0A';
+export const DEFAULT_ACCENT_COLOR = '#C8102E';
 
 export const DEFAULT_PROPOSAL_TERMS = [
   'Prices are valid for the period stated above and are subject to site conditions remaining as inspected.',
@@ -122,6 +128,7 @@ const defaults = (): CompanyProfile => ({
   strn: (import.meta.env.VITE_COMPANY_STRN as string | undefined) || '',
   proposalTerms: DEFAULT_PROPOSAL_TERMS,
   invoiceNotes: DEFAULT_INVOICE_NOTES,
+  serviceAreas: ['Faisalabad Hub', 'Lahore'],
   // signatoryTitle kept for backwards-compat reads of old Firestore data
   signatoryTitle: 'Authorised Signatory',
 });

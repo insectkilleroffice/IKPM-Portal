@@ -22,7 +22,7 @@ export default handle(async (req, res) => {
   const profile = await getPortalProfile(req, user.uid, user.email);
   // Built-in roles (and their older ids) that talk to clients; any other role (custom roles too)
   // may email when it can edit leads, proposals or invoices.
-  const CLIENT_FACING = ['super_admin', 'admin', 'management', 'sales', 'operations', 'operations_manager', 'finance'];
+  const CLIENT_FACING = ['super_admin', 'admin', 'management', 'sales', 'entomologist', 'operations', 'operations_manager', 'finance'];
   if (!CLIENT_FACING.includes(profile.role)) {
     const modules = await getRoleModules(req, profile.role).catch(() => ({} as Record<string, string>));
     const canEmail = modules === 'all' || ['crm', 'proposals', 'invoices'].some((m) => modules[m] === 'edit');

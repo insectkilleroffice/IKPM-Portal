@@ -1,5 +1,5 @@
-// HR letters of one employee: Offer Letter (at hiring) → Employment Contract (on joining) →
-// Confirmation Letter (end of probation). Issue, print for signature, record the signed copy, withdraw.
+// HR letters of one employee: Offer Letter (at hiring) → Employment Contract and Probation Letter
+// (on joining) → Confirmation Letter (end of probation). Issue, print for signature, record the signed copy, withdraw.
 
 import React, { useState } from 'react';
 import { CheckCircle2, FileSignature, Paperclip, Printer, XCircle } from 'lucide-react';
@@ -15,9 +15,10 @@ import { integrations } from '../../config/env';
 import { formatDate, formatPKR } from '../../lib/formatters';
 import {
   EMPLOYEE_LETTER_LABELS, EMPLOYEE_LETTER_STAGE,
-  type Employee, type EmployeeLetter, type EmployeeLetterKind, type EmployeeLetterTerms,
+  type Employee, type EmployeeLetter, type EmployeeLetterKind, type EmployeeLetterTerms, type EmployeeTermsProfile,
 } from '../../types/hr';
-import { activeLetter, addMonths, defaultTerms, issueLetter, LETTER_ORDER, markLetterSigned, stageWarning, termsProblems, withdrawLetter } from './employeeLetters';
+import { activeLetter, addMonths, defaultTerms, issueLetter, LETTER_ORDER, markLetterSigned, needsEmployeeDetails, stageWarning, termsProblems, withdrawLetter } from './employeeLetters';
+import { TERMS_PROFILE_LABELS } from './employmentTerms';
 
 const STATUS_BADGE: Record<EmployeeLetter['status'], string> = { issued: 'badge-amber', signed: 'badge-teal', withdrawn: 'badge-slate' };
 const STATUS_TEXT: Record<EmployeeLetter['status'], string> = { issued: 'Issued — awaiting signature', signed: 'Signed', withdrawn: 'Withdrawn' };
@@ -155,7 +156,7 @@ const IssueLetterModal: React.FC<{
     if (problems.length) return;
     setBusy(true);
     try {
-      if (kind === 'employment_contract') {
+      if (needsEmployeeDetails(kind)) {
         dataService.saveEmployeePrivate({
           ...(existingPriv || { id: employee.id }),
           id: employee.id,
@@ -210,6 +211,12 @@ const IssueLetterModal: React.FC<{
           <div className="form-group"><label className="form-label">Permanent from *</label>
             <input type="date" className="form-input" value={t.confirmationDate || ''} onChange={(e) => set({ confirmationDate: e.target.value })} /></div>
         ) : <div />}
+        {kind !== 'confirmation_letter' && (
+          <div className="form-group"><label className="form-label">Role-specific terms</label>
+            <select className="form-select" value={t.termsProfile || 'general'} onChange={(e) => set({ termsProfile: e.target.value as EmployeeTermsProfile })}>
+              {(Object.keys(TERMS_PROFILE_LABELS) as EmployeeTermsProfile[]).map((p) => <option key={p} value={p}>{TERMS_PROFILE_LABELS[p]}</option>)}
+            </select></div>
+        )}
         <div className="form-group"><label className="form-label">Notice in probation (days)</label>
           <input type="number" min={0} className="form-input" value={t.noticeDaysProbation} onChange={(e) => set({ noticeDaysProbation: num(e.target.value) })} /></div>
         <div className="form-group"><label className="form-label">Notice when permanent (days)</label>
@@ -240,9 +247,9 @@ const IssueLetterModal: React.FC<{
         </div>
       )}
 
-      {kind === 'employment_contract' && (
+      {needsEmployeeDetails(kind) && (
         <>
-          <div className="section-title">Employee details (printed on the contract, HR only)</div>
+          <div className="section-title">Employee details (printed on the letter, HR only)</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
             <div className="form-group"><label className="form-label">CNIC *</label>
               <input className="form-input" value={priv.cnic} placeholder="xxxxx-xxxxxxx-x" onChange={(e) => setPriv({ ...priv, cnic: e.target.value })} /></div>
@@ -285,7 +292,7 @@ const SignLetterModal: React.FC<{ letter: EmployeeLetter; onClose: () => void }>
         markLetterSigned(letter, copy ? { url: copy.url, fileName: copy.fileName, fileType: copy.fileType } : undefined, { email: userProfile?.email || 'admin' }, date);
       }
       success(isConfirmation ? 'Copy attached' : 'Marked signed',
-        letter.kind === 'employment_contract' ? `${letter.employeeName} is now on probation.` : letter.refNo);
+        needsEmployeeDetails(letter.kind) && dataService.getEmployeeById(letter.employeeId)?.status === 'probation' ? `${letter.employeeName} is on probation.` : letter.refNo);
       onClose();
     } catch (err) {
       error('Could not save', err instanceof Error ? err.message : String(err));
@@ -313,7 +320,7 @@ const SignLetterModal: React.FC<{ letter: EmployeeLetter; onClose: () => void }>
         ) : (
           <div className="cell-sub">File storage is not configured, so the copy can't be attached. Keep the paper copy in the employee's file.</div>
         )}
-        {letter.kind === 'employment_contract' && <div className="cell-sub" style={{ marginTop: 4 }}>Signing the contract moves the employee from Hiring to Probation.</div>}
+        {needsEmployeeDetails(letter.kind) && <div className="cell-sub" style={{ marginTop: 4 }}>Signing moves the employee from Hiring to Probation.</div>}
       </div>
     </Modal>
   );

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_ROLES } from '../lib/permissions';
+import { baseRoleOf, canEditModule, DEFAULT_ROLES, isEntomologistRole, setRoleDefinitions } from '../lib/permissions';
 
 // The portal shows buttons from DEFAULT_ROLES (src/lib/permissions.ts); the server decides from
 // defaultModulesFor() in firestore.rules. If the two disagree, a person sees a button and then gets
@@ -22,6 +22,19 @@ describe('role permissions: portal and server rules match', () => {
       const portal = Object.fromEntries(Object.entries(role.modules).filter(([, v]) => v && v !== 'none'));
       expect(rulesModulesFor(role.id)).toEqual(portal);
     });
+  });
+
+  it('the Entomologist works as a CRO and also does audits, even with an older saved role record', () => {
+    const cro = DEFAULT_ROLES.find((r) => r.id === 'sales')!;
+    setRoleDefinitions([{ id: 'entomologist', name: 'Entomologist', basedOn: 'entomologist' as never, isSystem: true, defaultScope: 'own', modules: { audits: 'edit', company_files: 'view' } }]);
+    expect(baseRoleOf('entomologist')).toBe('sales');
+    expect(canEditModule('entomologist', 'audits')).toBe(true);
+    Object.entries(cro.modules).forEach(([m, level]) => {
+      if (level === 'edit') expect(canEditModule('entomologist', m as never)).toBe(true);
+    });
+    expect(isEntomologistRole('entomologist')).toBe(true);
+    expect(isEntomologistRole('sales')).toBe(false);
+    setRoleDefinitions([]);
   });
 
   it('old role ids resolve to the current roles on the server too', () => {

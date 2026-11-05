@@ -28,7 +28,9 @@ import { staffService, passwordProblem, MIN_PASSWORD_LENGTH, type NewStaffInput 
 import {
   canEditModule,
   defaultScopeFor,
+  getRole,
   getRoleDefinitions,
+  isEntomologistRole,
   MODULES,
   roleColor,
   roleDescription,
@@ -194,6 +196,9 @@ export const TeamAccessPage: React.FC = () => {
     return id;
   };
 
+  // The Entomologist role always does audits; the tick is what the audit picker and server rules read
+  const doesAudits = (p: PersonForm) => Boolean(p.isEntomologist) || isEntomologistRole(p.role);
+
   const personProblems = (p: PersonForm): string[] => {
     const out: string[] = [];
     if (!p.displayName.trim()) out.push('Enter the person’s full name.');
@@ -222,7 +227,7 @@ export const TeamAccessPage: React.FC = () => {
           dataScope: person.dataScope,
           teamId: person.teamId || undefined,
           designationTitle: person.designationTitle?.trim() || '',
-          isEntomologist: Boolean(person.isEntomologist),
+          isEntomologist: doesAudits(person),
         });
         success('Saved', `${person.displayName}'s access was updated. It applies to them immediately.`);
       } else {
@@ -230,7 +235,7 @@ export const TeamAccessPage: React.FC = () => {
         // Own access chosen for this person: save it and switch their account to it
         const roleId = await applyPersonalAccess(res.uid, person);
         if (roleId !== person.role) await staffService.updateStaff(res.uid, { role: roleId });
-        if (person.isEntomologist) await staffService.updateStaff(res.uid, { isEntomologist: true });
+        if (doesAudits(person)) await staffService.updateStaff(res.uid, { isEntomologist: true });
         success(
           'Login created',
           `${person.displayName} can now sign in with ${person.email.trim().toLowerCase()} and the password you set.${res.resetEmailSent ? ' A link to change it was also emailed.' : ''}`
@@ -426,7 +431,7 @@ export const TeamAccessPage: React.FC = () => {
                           </div>
                         </div>
                       </td>
-                      <td><RolePill role={u.role} />{u.isEntomologist && <div className="cell-sub" style={{ marginTop: 2 }}>+ Entomologist</div>}</td>
+                      <td><RolePill role={u.role} />{u.isEntomologist && !isEntomologistRole(u.role) && <div className="cell-sub" style={{ marginTop: 2 }}>+ Entomologist</div>}</td>
                       <td>{u.teamName || <span className="cell-sub">No team</span>}</td>
                       <td className="cell-sub">{u.role === 'super_admin' ? 'Entire company' : SCOPE_LABELS[u.dataScope] || u.dataScope}</td>
                       <td className="cell-sub">{u.businessEmail || u.email}</td>
@@ -619,7 +624,7 @@ export const TeamAccessPage: React.FC = () => {
               </div>
               <div className="form-group">
                 <label className="doc-check">
-                  <input type="checkbox" checked={Boolean(person.isEntomologist)} onChange={(e) => setPerson({ ...person, isEntomologist: e.target.checked })} />
+                  <input type="checkbox" checked={doesAudits(person)} disabled={isEntomologistRole(person.role)} onChange={(e) => setPerson({ ...person, isEntomologist: e.target.checked })} />
                   <span>Entomologist — also does quality audit visits
                     <span className="cell-sub" style={{ display: 'block' }}>Keeps their role (e.g. CRO). The super admin can assign them audits; they see only the audits assigned to them.</span>
                   </span>
@@ -926,7 +931,7 @@ export const TeamAccessPage: React.FC = () => {
                     setRoleDraft({ ...roleDraft, basedOn: e.target.value as SystemRole, ...(roleDraft.createdAt ? {} : { modules: { ...base?.modules }, defaultScope: base?.defaultScope || 'own' }) });
                   }}
                 >
-                  {SYSTEM_ROLE_IDS.filter((id) => id !== 'super_admin').map((id) => <option key={id} value={id}>{roleLabel(id)}</option>)}
+                  {SYSTEM_ROLE_IDS.filter((id) => id !== 'super_admin' && getRole(id)?.basedOn === id).map((id) => <option key={id} value={id}>{roleLabel(id)}</option>)}
                 </select>
                 <div className="form-hint">Used for built-in workflow rules (e.g. who can approve discounts).</div>
               </div>

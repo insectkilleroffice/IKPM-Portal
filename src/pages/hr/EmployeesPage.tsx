@@ -43,6 +43,7 @@ const ROLE_LABELS: Record<EmployeeRole, string> = {
   operations_manager: 'Operations Manager',
   operations: 'Operations Manager',
   cro: 'CRO',
+  entomologist: 'Entomologist',
   accounts: 'Accounts',
   hr: 'HR',
   admin: 'Admin',
@@ -54,13 +55,14 @@ const ASSIGNABLE_ROLES: { role: EmployeeRole; label: string }[] = [
   { role: 'team_leader', label: 'Supervisor' },
   { role: 'operations_manager', label: 'Operations Manager' },
   { role: 'cro', label: 'CRO' },
+  { role: 'entomologist', label: 'Entomologist' },
   { role: 'accounts', label: 'Accounts' },
   { role: 'hr', label: 'HR' },
   { role: 'admin', label: 'Admin' },
   { role: 'management', label: 'Management' },
 ];
 
-const DEPARTMENTS = ['Operations', 'Sales & CRM', 'Accounts', 'HR', 'Administration', 'Management'];
+const DEPARTMENTS = ['Operations', 'Quality Assurance', 'Sales & CRM', 'Accounts', 'HR', 'Administration', 'Management'];
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -122,7 +124,8 @@ export const EmployeesPage: React.FC = () => {
   const availableTeamLeaders = portalStaff
     .filter((s) => {
       const base = baseRoleOf(s.role);
-      return base === 'team_leader' || base === 'operations';
+      // Audits are independent of field operations: an Entomologist can report straight to the super admin
+      return base === 'team_leader' || base === 'operations' || (form.role === 'entomologist' && base === 'super_admin');
     })
     .sort((a, b) => (baseRoleOf(a.role) === 'team_leader' ? 0 : 1) - (baseRoleOf(b.role) === 'team_leader' ? 0 : 1))
     .map((s) => ({ id: s.uid, name: s.displayName, title: `${roleLabel(s.role)}${s.teamName ? ` · ${s.teamName}` : ''}` }));
@@ -611,7 +614,10 @@ export const EmployeesPage: React.FC = () => {
             </div>
             <div className="form-group">
               <label className="form-label">Role *</label>
-              <select className="form-select" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as EmployeeRole })}>
+              <select className="form-select" value={form.role} onChange={(e) => {
+                const role = e.target.value as EmployeeRole;
+                setForm({ ...form, role, ...(role === 'entomologist' ? { department: 'Quality Assurance' } : {}) });
+              }}>
                 {ASSIGNABLE_ROLES.map(({ role, label }) => (
                   <option key={role} value={role}>{label}</option>
                 ))}

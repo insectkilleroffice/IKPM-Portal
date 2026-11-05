@@ -536,6 +536,10 @@ class DataService {
         this.write('roles', def.id, { ...def, createdAt: now(), updatedAt: now() });
         return;
       }
+      // The role's template changed in the code (the Entomologist became CRO-based): take the new one
+      if (saved.basedOn !== def.basedOn) {
+        this.write('roles', def.id, { basedOn: def.basedOn, defaultScope: def.defaultScope, description: def.description });
+      }
       const savedModules = (saved.modules ?? {}) as Record<string, unknown>;
       const missing = Object.fromEntries(Object.entries(def.modules).filter(([k]) => !(k in savedModules)));
       if (Object.keys(missing).length) this.write('roles', def.id, { modules: missing });

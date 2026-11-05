@@ -2,7 +2,7 @@
 // field service reports (with photos & sign-off) and site inspection reports.
 // Every document shares one letterhead: logo, legal name, address, NTN/STRN, contacts,
 // a title band with reference details, client & site cards, ruled tables, totals with the
-// amount in words, signature blocks and a footer on every page.
+// amount in words, signature blocks, a footer on every page and the company's background image, if one is uploaded.
 
 import jsPDF from 'jspdf';
 import QRCode from 'qrcode';
@@ -19,24 +19,32 @@ import { fillSop } from './sopTemplate';
 import { fillTemplate } from './templateFill';
 import { documentTemplates } from '../services/documentTemplates';
 import type { SopInput } from '../types/document';
-import type { EmployeeLetter } from '../types/hr';
+import type { EmployeeLetter, LetterClauseSection } from '../types/hr';
 import type { QualityAudit } from '../types/audits';
+import { days, monthsInWords } from '../features/hr/employmentTerms';
 
 // ---------------------------------------------------------------------------
 // Palette & layout (mm, A4 portrait)
 // ---------------------------------------------------------------------------
 // The primary and accent colours come from the company profile (Settings → Company)
 type RGB = [number, number, number];
-const INK: RGB = [31, 41, 55];
-const MUTED: RGB = [107, 114, 128];
-const RULE: RGB = [227, 232, 239];
-const TINT: RGB = [246, 248, 251];
+// Everything else is neutral grey, so the documents read as black and red only
+const INK: RGB = [26, 26, 26];
+const MUTED: RGB = [102, 102, 102];
+const RULE: RGB = [224, 224, 224];
+const TINT: RGB = [246, 246, 246];
+const SIGN_LINE: RGB = [140, 140, 140];
+const BACKGROUND_MAX_W = 150; // mm, centred on every page
+const BACKGROUND_MAX_H = 190;
+const DEFAULT_BACKGROUND_OPACITY = 8; // percent
 
 const hexToRgb = (hex: string | undefined, fallback: string): RGB => {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex?.trim() || '') ?? /^#?([0-9a-f]{6})$/i.exec(fallback)!;
   const n = parseInt(m[1], 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 };
+const serviceAreasOf = (p: CompanyProfile) => (p.serviceAreas ?? []).map((a) => a.trim()).filter(Boolean);
+
 const lighten = (c: RGB, amount: number): RGB => c.map((v) => Math.round(v + (255 - v) * amount)) as RGB;
 
 const PAGE_W = 210;
@@ -44,6 +52,13 @@ const PAGE_H = 297;
 const M = 14; // side margin
 const CONTENT_W = PAGE_W - M * 2;
 const FOOTER_H = 18;
+const SIGN_LINE_W = 60; // a signature line is this long at most, however few blocks share the row
+// Pagination: the area content may use on a page
+const PAGE_TOP = 20;
+const PAGE_LIMIT = PAGE_H - FOOTER_H - 6;
+const PAGE_ROOM = PAGE_LIMIT - PAGE_TOP;
+const LIST_GUTTER = 8;
+const MIN_TABLE_START = 28; // a table too long for one page starts only with room for its head and first rows
 
 const money = (n: number | undefined) =>
   (n ?? 0).toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -160,11 +175,16 @@ class DocBuilder {
   private ref: string;
   private watermark?: string;
   private qr: Img | null;
+  private background: Img | null;
+  /** Headings and lead-in text waiting to be placed on the same page as whatever follows them. */
+  private pending: { h: number; draw: () => void }[] = [];
+  /** Room to keep below the next table, so its totals stay with it. */
+  private reserveBelowTable = 0;
   navy: RGB;
   brand: RGB;
   brandTint: RGB;
 
-  constructor(opts: { profile: CompanyProfile; logo: Img | null; title: string; ref: string; watermark?: string; qr?: Img | null }) {
+  constructor(opts: { profile: CompanyProfile; logo: Img | null; title: string; ref: string; watermark?: string; qr?: Img | null; background?: Img | null }) {
     this.doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
     this.profile = opts.profile;
     this.logo = opts.logo;
@@ -172,6 +192,7 @@ class DocBuilder {
     this.ref = opts.ref;
     this.watermark = opts.watermark;
     this.qr = opts.qr ?? null;
+    this.background = opts.background ?? null;
     this.navy = hexToRgb(opts.profile.brandColor, DEFAULT_BRAND_COLOR);
     this.brand = hexToRgb(opts.profile.accentColor, DEFAULT_ACCENT_COLOR);
     this.brandTint = lighten(this.brand, 0.92);
@@ -191,45 +212,49 @@ class DocBuilder {
     this.color(c);
   }
 
-  /** Letterhead: logo left, company identity right, brand rule under it. */
+  /** Letterhead on the first page: logo left, company identity right, a single thin red rule under it. */
   letterhead() {
     const p = this.profile;
-    const top = 12;
+    const top = 11;
+    const right = PAGE_W - M;
     let logoW = 0;
     if (this.logo) {
-      const h = 17;
-      logoW = Math.min(52, (this.logo.w / this.logo.h) * h);
-      this.doc.addImage(this.logo.data, 'PNG', M, top, logoW, (logoW / this.logo.w) * this.logo.h, undefined, 'FAST');
+      const scale = Math.min(52 / this.logo.w, 19 / this.logo.h);
+      logoW = this.logo.w * scale;
+      this.doc.addImage(this.logo.data, 'PNG', M, top, logoW, this.logo.h * scale, 'company-logo', 'FAST');
     }
 
-    const right = PAGE_W - M;
     this.font(13, 'bold', this.navy);
-    this.doc.text(p.legalName, right, top + 4, { align: 'right' });
-    this.font(7.5, 'normal', this.brand);
-    this.doc.text(p.tagline.toUpperCase(), right, top + 8.5, { align: 'right' });
+    this.doc.text(p.legalName, right, top + 3.5, { align: 'right' });
+    this.font(7.2, 'normal', this.brand);
+    this.doc.text(p.tagline, right, top + 7.5, { align: 'right' });
     this.font(7.5, 'normal', MUTED);
-    const contact = [p.address, p.city].filter(Boolean).join(', ');
     const lines = [
-      contact,
+      [p.address, p.city].filter(Boolean).join(', '),
       [p.phone && `Tel: ${p.phone}`, p.mobile && `Mob: ${p.mobile}`, p.email].filter(Boolean).join('   ·   '),
       [p.website, p.ntn && `NTN: ${p.ntn}`, p.strn && `STRN: ${p.strn}`].filter(Boolean).join('   ·   '),
       [p.provincialTaxNo, p.pcoLicense && `PCO Licence: ${p.pcoLicense}`].filter(Boolean).join('   ·   '),
-    ].filter(Boolean);
-    lines.forEach((l, i) => this.doc.text(l, right, top + 13 + i * 3.6, { align: 'right', maxWidth: CONTENT_W - logoW - 6 }));
+    ].filter(Boolean).flatMap((l) => this.doc.splitTextToSize(l, CONTENT_W - logoW - 6) as string[]);
+    lines.forEach((l, i) => this.doc.text(l, right, top + 11.5 + i * 3.5, { align: 'right' }));
 
-    const ruleY = Math.max(top + 21, top + 13 + lines.length * 3.6);
-    this.color(this.brand, 'fill');
-    this.doc.rect(M, ruleY, CONTENT_W * 0.28, 0.9, 'F');
-    this.color(this.navy, 'fill');
-    this.doc.rect(M + CONTENT_W * 0.28, ruleY, CONTENT_W * 0.72, 0.9, 'F');
-    this.y = ruleY + 7;
+    const ruleY = Math.max(top + 22, top + 11.5 + lines.length * 3.5);
+    this.color(this.brand, 'draw');
+    this.doc.setLineWidth(0.4);
+    this.doc.line(M, ruleY, right, ruleY);
+    this.y = ruleY + 8;
   }
 
   /** Large document title with a reference box on the right. */
   titleBand(meta: MetaRow[], subtitle?: string) {
     const startY = this.y;
-    this.font(19, 'bold', this.navy);
-    this.doc.text(this.title.toUpperCase(), M, startY + 6, { charSpace: 0.4 });
+    const heading = this.title.toUpperCase();
+    let titleSize = 19;
+    this.font(titleSize, 'bold', this.navy);
+    while (titleSize > 12 && this.doc.getTextWidth(heading) + heading.length * 0.4 > CONTENT_W - 74 - 6) {
+      titleSize -= 0.5;
+      this.font(titleSize, 'bold', this.navy);
+    }
+    this.doc.text(heading, M, startY + 6, { charSpace: 0.4 });
     this.color(this.brand, 'fill');
     this.doc.rect(M, startY + 8.4, 16, 0.9, 'F');
     if (subtitle) {
@@ -258,17 +283,20 @@ class DocBuilder {
   parties(left: Party, right?: Party) {
     const gap = 6;
     const w = right ? (CONTENT_W - gap) / 2 : CONTENT_W;
+    const NAME_LH = 4.4;
     const measure = (p: Party) => {
-      this.doc.setFontSize(8.3);
+      this.font(10, 'bold', this.navy);
+      const nameLines = this.doc.splitTextToSize(p.name, w - 8) as string[];
+      this.font(8.3, 'normal', INK);
       const lines = p.lines.filter(Boolean).flatMap((l) => this.doc.splitTextToSize(String(l), w - 8) as string[]);
-      return { lines, h: 13 + lines.length * 3.9 };
+      return { nameLines, lines, h: 13 + (nameLines.length - 1) * NAME_LH + lines.length * 3.9 };
     };
     const L = measure(left);
-    const R = right ? measure(right) : { lines: [], h: 0 };
+    const R = right ? measure(right) : { nameLines: [] as string[], lines: [] as string[], h: 0 };
     const h = Math.max(L.h, R.h);
     this.ensure(h + 4);
 
-    const card = (p: Party, lines: string[], x: number) => {
+    const card = (p: Party, nameLines: string[], lines: string[], x: number) => {
       this.color(RULE, 'draw');
       this.color([255, 255, 255], 'fill');
       this.doc.roundedRect(x, this.y, w, h, 1.5, 1.5, 'FD');
@@ -277,99 +305,193 @@ class DocBuilder {
       this.font(7, 'bold', this.brand);
       this.doc.text(p.heading.toUpperCase(), x + 4.5, this.y + 5, { charSpace: 0.3 });
       this.font(10, 'bold', this.navy);
-      this.doc.text(p.name, x + 4.5, this.y + 10, { maxWidth: w - 8 });
+      nameLines.forEach((l, i) => this.doc.text(l, x + 4.5, this.y + 10 + i * NAME_LH));
       this.font(8.3, 'normal', INK);
-      lines.forEach((l, i) => this.doc.text(l, x + 4.5, this.y + 14.5 + i * 3.9));
+      const linesY = this.y + 14.5 + (nameLines.length - 1) * NAME_LH;
+      lines.forEach((l, i) => this.doc.text(l, x + 4.5, linesY + i * 3.9));
     };
-    card(left, L.lines, M);
-    if (right) card(right, R.lines, M + w + gap);
+    card(left, L.nameLines, L.lines, M);
+    if (right) card(right, R.nameLines, R.lines, M + w + gap);
     this.y += h + 6;
   }
 
-  /** Section heading; `keepWith` reserves room so a heading never sits alone at a page bottom. */
-  section(title: string, keepWith = 18) {
-    this.y += 2;
-    this.ensure(8 + keepWith);
-    this.font(9, 'bold', this.navy);
-    this.doc.text(title.toUpperCase(), M, this.y, { charSpace: 0.3 });
-    this.color(RULE, 'draw');
-    this.doc.setLineWidth(0.3);
-    this.doc.line(M, this.y + 1.8, PAGE_W - M, this.y + 1.8);
-    this.y += 6;
+  /** Holds a block back until the next content is placed, so the two end up on the same page. */
+  private keepWithNext(h: number, draw: () => void) {
+    this.pending.push({ h, draw });
   }
 
-  paragraph(text: string, size = 8.6, c: RGB = INK) {
+  private get pendingHeight() {
+    return this.pending.reduce((sum, p) => sum + p.h, 0);
+  }
+
+  /** Keeps a whole block on one page when it can fit on one; a longer block simply flows. */
+  private ensureWhole(h: number) {
+    if (h + this.pendingHeight <= PAGE_ROOM) this.ensure(h);
+  }
+
+  /** Section heading: always lands on the same page as the content under it. */
+  section(title: string) {
+    this.keepWithNext(8, () => {
+      this.y += 2;
+      this.font(9, 'bold', this.navy);
+      this.doc.text(title.toUpperCase(), M, this.y, { charSpace: 0.3 });
+      this.color(RULE, 'draw');
+      this.doc.setLineWidth(0.3);
+      this.doc.line(M, this.y + 1.8, PAGE_W - M, this.y + 1.8);
+      this.y += 6;
+    });
+  }
+
+  /** Centred section heading with a short accent rule, for letters and contracts. */
+  centeredHeading(title: string) {
+    this.keepWithNext(9.5, () => {
+      this.y += 2;
+      this.font(10, 'bold', this.navy);
+      this.doc.text(title.toUpperCase(), PAGE_W / 2, this.y, { align: 'center', charSpace: 0.3 });
+      this.color(this.brand, 'fill');
+      this.doc.rect(PAGE_W / 2 - 9, this.y + 1.9, 18, 0.7, 'F');
+      this.y += 7.5;
+    });
+  }
+
+  /** A paragraph stays whole when it fits on a page. `withNext` keeps it with the content that follows. */
+  paragraph(text: string, size = 8.6, c: RGB = INK, withNext = false) {
     if (!text) return;
     this.font(size, 'normal', c);
     const lines = this.doc.splitTextToSize(text, CONTENT_W) as string[];
-    lines.forEach((l) => {
-      this.ensure(5);
-      this.doc.text(l, M, this.y);
-      this.y += size * 0.47;
-    });
-    this.y += 2;
+    const lh = size * 0.47;
+    const h = lines.length * lh + 2;
+    const draw = () => {
+      lines.forEach((l) => {
+        this.ensure(lh);
+        this.font(size, 'normal', c);
+        this.doc.text(l, M, this.y);
+        this.y += lh;
+      });
+      this.y += 2;
+    };
+    if (withNext && h <= PAGE_ROOM) return this.keepWithNext(h, draw);
+    this.ensureWhole(h);
+    draw();
   }
 
-  /** Numbered list (terms & conditions). */
+  /** Numbered list (terms & conditions): numbers centred in a gutter, text aligned beside them. */
   numbered(items: string[], size = 8) {
-    items.filter((t) => t.trim()).forEach((t, i) => {
-      this.font(size, 'normal', INK);
-      const lines = this.doc.splitTextToSize(t.trim(), CONTENT_W - 7) as string[];
-      this.ensure(lines.length * 4 + 1);
-      this.font(size, 'bold', this.brand);
-      this.doc.text(`${i + 1}.`, M, this.y);
-      this.font(size, 'normal', INK);
-      lines.forEach((l, j) => this.doc.text(l, M + 6, this.y + j * 3.8));
-      this.y += lines.length * 3.8 + 1.2;
-    });
+    this.list(items.filter((t) => t.trim()).map((t, i) => ({ marker: `${i + 1}.`, lead: '', body: t.trim() })), size);
     this.y += 2;
   }
 
   /** Lettered list: (a), (b), (c)… */
   lettered(items: string[], size = 8) {
-    items.filter((t) => t.trim()).forEach((t, i) => {
-      this.font(size, 'normal', INK);
-      const lines = this.doc.splitTextToSize(t.trim(), CONTENT_W - 8) as string[];
-      this.ensure(lines.length * 4 + 1);
-      this.font(size, 'bold', this.brand);
-      this.doc.text(`(${String.fromCharCode(97 + (i % 26))})`, M, this.y);
-      this.font(size, 'normal', INK);
-      lines.forEach((l, j) => this.doc.text(l, M + 7, this.y + j * 3.8));
-      this.y += lines.length * 3.8 + 1.2;
-    });
+    this.list(items.filter((t) => t.trim()).map((t, i) => ({ marker: `(${String.fromCharCode(97 + (i % 26))})`, lead: '', body: t.trim() })), size);
     this.y += 2;
+  }
+
+  /**
+   * Numbered clauses under centred headings. Numbering runs on through the sections, so a clause
+   * can be cited by its number alone. A section that fits on one page is never split.
+   */
+  clauses(sections: LetterClauseSection[], size = 8.6) {
+    let n = 0;
+    sections.forEach((sec) => {
+      this.centeredHeading(sec.heading);
+      if (sec.intro) this.paragraph(sec.intro, size, INK, true);
+      this.list(sec.clauses.map((c) => {
+        n += 1;
+        return { marker: `${n}.`, lead: c.title ? `${c.title}: ` : '', body: c.body.trim() };
+      }), size);
+      this.y += 2;
+    });
+  }
+
+  /** Measures a list so it can stay whole, then draws it. A list too long for one page flows, never mid-item. */
+  private list(items: { marker: string; lead: string; body: string }[], size: number) {
+    const laid = items.map((it) => ({ ...it, ...this.layoutListItem(it.lead, it.body, size) }));
+    this.ensureWhole(laid.reduce((sum, it) => sum + it.h, 0));
+    laid.forEach((it) => this.listItem(it, size));
+  }
+
+  private layoutListItem(lead: string, body: string, size: number) {
+    // Viewers often substitute a slightly wider font: keep clear of the right margin
+    const width = CONTENT_W - LIST_GUTTER - 1.5;
+    const lh = size * 0.47;
+    this.font(size, 'bold', INK);
+    const leadW = lead ? this.doc.getTextWidth(lead) + 0.7 : 0;
+    this.font(size, 'normal', INK);
+    // The first line is shorter by the width of the bold lead-in
+    const words = body.split(/\s+/);
+    let first = '';
+    let used = 0;
+    for (const word of words) {
+      const next = first ? `${first} ${word}` : word;
+      if (leadW + this.doc.getTextWidth(next) > width) break;
+      first = next;
+      used += 1;
+    }
+    const rest = (this.doc.splitTextToSize(words.slice(used).join(' '), width) as string[]).filter(Boolean);
+    return { leadW, first, rest, lh, h: (rest.length + 1) * lh + 1.6 };
+  }
+
+  /** One list row: marker centred in the gutter, optional bold lead-in, then the text. Never split across pages. */
+  private listItem(it: { marker: string; lead: string; leadW: number; first: string; rest: string[]; lh: number; h: number }, size: number) {
+    const x = M + LIST_GUTTER;
+    this.ensure(it.h);
+    this.font(size, 'bold', this.brand);
+    this.doc.text(it.marker, M + LIST_GUTTER / 2 - 0.5, this.y, { align: 'center' });
+    if (it.lead) {
+      this.font(size, 'bold', this.navy);
+      this.doc.text(it.lead, x, this.y);
+    }
+    this.font(size, 'normal', INK);
+    this.doc.text(it.first, x + it.leadW, this.y);
+    it.rest.forEach((l, i) => this.doc.text(l, x, this.y + (i + 1) * it.lh));
+    this.y += it.h;
   }
 
   /** Small bold heading inside a section (e.g. "A. Rodent control"). */
   subheading(text: string) {
-    this.ensure(10);
-    this.font(8.8, 'bold', this.navy);
-    this.doc.text(text, M, this.y);
-    this.y += 4.6;
+    this.keepWithNext(4.6, () => {
+      this.font(8.8, 'bold', this.navy);
+      this.doc.text(text, M, this.y);
+      this.y += 4.6;
+    });
   }
 
-  /** Label / value grid, two columns. */
+  /** Label / value grid, two columns. Stays whole when it fits on a page. */
   keyValues(rows: [string, string | undefined][], cols = 2) {
     const items = rows.filter(([, v]) => v);
     const colW = CONTENT_W / cols;
-    const rowH = 9;
+    const LH = 4;
+    const grid: { row: typeof items; wrapped: string[][]; h: number }[] = [];
     for (let i = 0; i < items.length; i += cols) {
-      this.ensure(rowH + 1);
-      items.slice(i, i + cols).forEach(([k, v], j) => {
+      const row = items.slice(i, i + cols);
+      this.font(8.6, 'bold', INK);
+      const wrapped = row.map(([, v]) => this.doc.splitTextToSize(String(v), colW - 4) as string[]);
+      grid.push({ row, wrapped, h: 5 + Math.max(...wrapped.map((w) => w.length)) * LH });
+    }
+    this.ensureWhole(grid.reduce((sum, g) => sum + g.h, 0));
+    grid.forEach(({ row, wrapped, h }) => {
+      this.ensure(h);
+      row.forEach(([k], j) => {
         const x = M + j * colW;
         this.font(7, 'normal', MUTED);
         this.doc.text(k.toUpperCase(), x, this.y, { charSpace: 0.2 });
         this.font(8.6, 'bold', INK);
-        this.doc.text(String(v), x, this.y + 4, { maxWidth: colW - 4 });
+        wrapped[j].forEach((l, n) => this.doc.text(l, x, this.y + 4 + n * LH));
       });
-      this.y += rowH;
-    }
+      this.y += h;
+    });
     this.y += 1;
   }
 
+  /** Keeps room under the next table for what belongs with it, such as its totals. */
+  keepRoomBelowNextTable(h: number) {
+    this.reserveBelowTable = h;
+  }
+
   table(head: string[], body: (string | number)[][], opts: Partial<UserOptions> = {}) {
-    // Professional alignment for every table: serial numbers and short codes centred, money and
-    // numbers right-aligned, text left. Headers follow their column. A table's own columnStyles win.
+    // Professional alignment for every table: headers, serial numbers and short codes centred, money
+    // and numbers right-aligned so they add up by eye, text left. A table's own columnStyles win.
     const rows = body.map((r) => r.map((c) => (typeof c === 'number' ? String(c) : c)));
     const given = (opts.columnStyles ?? {}) as Record<number, { halign?: 'left' | 'center' | 'right'; cellWidth?: number | 'auto' | 'wrap' }>;
     const numeric = (v: unknown) => typeof v === 'string' && v.trim() !== '' && /^(PKR\s*)?[-+]?[\d,]+(\.\d+)?\s*%?$|^[-–—]$/.test(v.trim());
@@ -382,35 +504,57 @@ class DocBuilder {
       return cells.length > 0 && cells.every(numeric) ? 'right' : 'left';
     };
     const columnStyles: Record<number, object> = {};
-    const headAlign: ('left' | 'center' | 'right')[] = [];
     head.forEach((h, i) => {
-      const auto = alignOf(h, i);
-      const halign = given[i]?.halign ?? auto;
-      headAlign[i] = halign;
       columnStyles[i] = {
         ...(/^(#|no\.?|sr\.?)$/i.test(h.trim()) && given[i]?.cellWidth === undefined ? { cellWidth: 9 } : {}),
         ...given[i],
-        halign,
+        halign: given[i]?.halign ?? alignOf(h, i),
       };
     });
     const userParse = opts.didParseCell;
-    autoTable(this.doc, {
-      startY: this.y,
+    const options: UserOptions = {
       head: [head],
       body: rows,
       margin: { left: M, right: M, top: 20, bottom: FOOTER_H + 6 },
       theme: 'grid',
+      rowPageBreak: 'avoid',
       styles: { font: 'helvetica', fontSize: 8.2, cellPadding: { top: 2.2, bottom: 2.2, left: 2.5, right: 2.5 }, textColor: INK, lineColor: RULE, lineWidth: 0.2, valign: 'middle', overflow: 'linebreak' },
       headStyles: { fillColor: this.navy, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 7.8, lineColor: this.navy, valign: 'middle' },
       alternateRowStyles: { fillColor: TINT },
       ...opts,
       columnStyles,
       didParseCell: (data) => {
-        if (data.section === 'head') data.cell.styles.halign = headAlign[data.column.index] ?? 'left';
+        if (data.section === 'head') data.cell.styles.halign = 'center';
         userParse?.(data);
       },
-    });
+    };
+
+    // A trial run off-screen gives the table's real height, so it can move to a new page whole.
+    const probe = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    autoTable(probe, { ...options, startY: PAGE_TOP, willDrawCell: undefined, didDrawCell: undefined, didDrawPage: undefined });
+    const fitsOnePage = probe.getNumberOfPages() === 1;
+    const tableH = ((probe as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? PAGE_TOP) - PAGE_TOP;
+    const below = this.reserveBelowTable;
+    this.reserveBelowTable = 0;
+    if (!fitsOnePage) this.ensure(MIN_TABLE_START);
+    else if (tableH + below + this.pendingHeight <= PAGE_ROOM) this.ensure(tableH + below);
+    else this.ensure(tableH);
+
+    autoTable(this.doc, { ...options, startY: this.y });
     this.y = ((this.doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? this.y) + 6;
+  }
+
+  /** Table centred on the page at the given width, every column centred (letters and contracts). */
+  centeredTable(head: string[], body: (string | number)[][], width: number, opts: Partial<UserOptions> = {}) {
+    const side = (PAGE_W - width) / 2;
+    const given = (opts.columnStyles ?? {}) as Record<number, object>;
+    this.table(head, body, {
+      styles: { font: 'helvetica', fontSize: 8.8, cellPadding: { top: 2.1, bottom: 2.1, left: 2.5, right: 2.5 }, textColor: INK, lineColor: RULE, lineWidth: 0.2, valign: 'middle', overflow: 'linebreak' },
+      ...opts,
+      tableWidth: width,
+      margin: { left: side, right: side, top: 20, bottom: FOOTER_H + 6 },
+      columnStyles: Object.fromEntries(head.map((_, i) => [i, { halign: 'center', ...given[i] }])),
+    });
   }
 
   /** Right-aligned totals box with the amount in words on the left. */
@@ -418,7 +562,10 @@ class DocBuilder {
     const boxW = 82;
     const x = PAGE_W - M - boxW;
     const rowH = 5.8;
-    const h = rows.length * rowH + 11;
+    const ww = CONTENT_W - boxW - 8;
+    this.font(8.6, 'bold', this.navy);
+    const wordLines = words ? (this.doc.splitTextToSize(amountInWords(grand[1]), ww - 7) as string[]) : [];
+    const h = Math.max(rows.length * rowH + 11, wordLines.length * 4.3 + 11);
     this.ensure(h + 4);
     const top = this.y;
     rows.forEach(([k, v], i) => {
@@ -436,64 +583,87 @@ class DocBuilder {
     this.doc.text(pkr(grand[1]), PAGE_W - M - 3, gy + 5.6, { align: 'right' });
 
     if (words) {
-      const ww = CONTENT_W - boxW - 8;
       this.color(this.brandTint, 'fill');
       this.doc.roundedRect(M, top + 1, ww, h - 2, 1.2, 1.2, 'F');
       this.font(7, 'bold', this.brand);
       this.doc.text('AMOUNT IN WORDS', M + 3.5, top + 6, { charSpace: 0.3 });
       this.font(8.6, 'bold', this.navy);
-      this.doc.text(this.doc.splitTextToSize(amountInWords(grand[1]), ww - 7) as string[], M + 3.5, top + 11);
+      wordLines.forEach((l, i) => this.doc.text(l, M + 3.5, top + 11 + i * 4.3));
     }
     this.y = top + h + 6;
   }
 
-  /** Bordered note box (bank details, important notes). */
-  noteBox(heading: string, lines: string[], tint: RGB = TINT) {
+  /** Bordered note box (bank details, important notes). `withNext` keeps it with the content that follows. */
+  noteBox(heading: string, lines: string[], tint: RGB = TINT, withNext = false) {
     const clean = lines.filter(Boolean);
     if (!clean.length) return;
     this.font(8.2, 'normal', INK);
     const wrapped = clean.flatMap((l) => this.doc.splitTextToSize(l, CONTENT_W - 8) as string[]);
     const h = 8 + wrapped.length * 3.9;
+    const draw = () => {
+      this.color(tint, 'fill');
+      this.color(RULE, 'draw');
+      this.doc.roundedRect(M, this.y, CONTENT_W, h, 1.5, 1.5, 'FD');
+      this.font(7, 'bold', this.brand);
+      this.doc.text(heading.toUpperCase(), M + 4, this.y + 4.8, { charSpace: 0.3 });
+      this.font(8.2, 'normal', INK);
+      wrapped.forEach((l, i) => this.doc.text(l, M + 4, this.y + 9 + i * 3.9));
+      this.y += h + 5;
+    };
+    if (withNext) return this.keepWithNext(h + 5, draw);
     this.ensure(h + 3);
-    this.color(tint, 'fill');
-    this.color(RULE, 'draw');
-    this.doc.roundedRect(M, this.y, CONTENT_W, h, 1.5, 1.5, 'FD');
-    this.font(7, 'bold', this.brand);
-    this.doc.text(heading.toUpperCase(), M + 4, this.y + 4.8, { charSpace: 0.3 });
-    this.font(8.2, 'normal', INK);
-    wrapped.forEach((l, i) => this.doc.text(l, M + 4, this.y + 9 + i * 3.9));
-    this.y += h + 5;
+    draw();
   }
 
-  /** Signature blocks; an image (e.g. customer signature) can sit above a line. */
+  /** Line, label, name and note of one signature. Returns the height used below the line. */
+  private signatureBlock(x: number, lineY: number, w: number, b: { label: string; name?: string; sub?: string }, draw = true): number {
+    if (draw) {
+      this.color(SIGN_LINE, 'draw');
+      this.doc.setLineWidth(0.3);
+      this.doc.line(x, lineY, x + w, lineY);
+      this.font(7.2, 'bold', MUTED);
+      this.doc.text(b.label.toUpperCase(), x, lineY + 4, { charSpace: 0.2 });
+    }
+    let y = lineY + 8.3;
+    if (b.name?.trim()) {
+      this.font(8.6, 'bold', INK);
+      (this.doc.splitTextToSize(b.name, w) as string[]).forEach((l) => {
+        if (draw) this.doc.text(l, x, y);
+        y += 3.9;
+      });
+    }
+    if (b.sub) {
+      this.font(7.5, 'normal', MUTED);
+      (this.doc.splitTextToSize(b.sub, w) as string[]).forEach((l) => {
+        if (draw) this.doc.text(l, x, y);
+        y += 3.4;
+      });
+    }
+    return y - lineY;
+  }
+
+  /**
+   * Signature blocks; an image (e.g. customer signature) can sit above a line. Lines stay a normal
+   * signature length and are spread evenly from the left margin to the right margin.
+   */
   signatures(blocks: { label: string; name?: string; sub?: string; image?: Img | null }[]) {
-    const h = 30;
-    this.ensure(h + 4);
     const gap = 10;
-    const w = (CONTENT_W - gap * (blocks.length - 1)) / blocks.length;
+    const w = Math.min(SIGN_LINE_W, (CONTENT_W - gap * (blocks.length - 1)) / blocks.length);
+    const above = 18;
+    const below = Math.max(...blocks.map((b) => this.signatureBlock(0, 0, w, b, false)));
+    this.ensure(above + below + 4);
+    const lineY = this.y + above;
+    const step = blocks.length > 1 ? (CONTENT_W - w) / (blocks.length - 1) : 0;
     blocks.forEach((b, i) => {
-      const x = M + i * (w + gap);
-      const lineY = this.y + 18;
+      const x = M + i * step;
       if (b.image) {
         const ih = 14;
         const iw = Math.min(w - 4, (b.image.w / b.image.h) * ih);
         this.doc.addImage(b.image.data, 'PNG', x, lineY - ih - 1, iw, ih, undefined, 'FAST');
       }
-      this.color([148, 163, 184], 'draw');
-      this.doc.setLineWidth(0.3);
-      this.doc.line(x, lineY, x + w, lineY);
-      this.font(7.2, 'bold', MUTED);
-      this.doc.text(b.label.toUpperCase(), x, lineY + 4, { charSpace: 0.2 });
-      if (b.name) {
-        this.font(8.6, 'bold', INK);
-        this.doc.text(b.name, x, lineY + 8.5, { maxWidth: w });
-      }
-      if (b.sub) {
-        this.font(7.5, 'normal', MUTED);
-        this.doc.text(b.sub, x, lineY + 12, { maxWidth: w });
-      }
+      this.signatureBlock(x, lineY, w, b);
     });
-    this.y += h + 4;
+    this.y += above + below + 4;
   }
 
   /**
@@ -501,41 +671,10 @@ class DocBuilder {
    * image above it when available) and a client acceptance line on the right.
    */
   stampBlock(stamp: Img | null, clientLabel = 'Accepted by client', attName?: string, attDesignation?: string) {
-    const h = 32;
-    this.ensure(h + 4);
-    const half = (CONTENT_W - 10) / 2;
-    const lineY = this.y + h - 8;
-
-    // Left side — company authorized signatory
-    if (stamp) {
-      const maxSide = 20;
-      const scale = Math.min(maxSide / stamp.w, maxSide / stamp.h);
-      const sw = stamp.w * scale;
-      const sh = stamp.h * scale;
-      this.doc.addImage(stamp.data, 'PNG', M, this.y + (lineY - this.y - sh) / 2, sw, sh, undefined, 'FAST');
-    }
-    this.color([148, 163, 184], 'draw');
-    this.doc.setLineWidth(0.3);
-    this.doc.line(M, lineY, M + half, lineY);
-    this.font(7.2, 'bold', MUTED);
-    this.doc.text('AUTHORIZED SIGNATORY', M, lineY + 4, { charSpace: 0.2 });
-    this.font(7.5, 'normal', MUTED);
-    this.doc.text(`${this.profile.shortName || this.profile.legalName} · signature & stamp`, M, lineY + 8.5, { maxWidth: half });
-
-    // Right side — client acceptance line
-    const rx = M + half + 10;
-    this.color([148, 163, 184], 'draw');
-    this.doc.setLineWidth(0.3);
-    this.doc.line(rx, lineY, rx + half, lineY);
-    this.font(7.2, 'bold', MUTED);
-    this.doc.text(clientLabel.toUpperCase(), rx, lineY + 4, { charSpace: 0.2 });
-    if (attName) {
-      this.font(8.6, 'bold', INK);
-      this.doc.text(attName, rx, lineY + 8.5, { maxWidth: half });
-    }
-    this.font(7.5, 'normal', MUTED);
-    this.doc.text(attDesignation ? `${attDesignation} · signature, stamp & date` : 'Name, signature, stamp & date', rx, attName ? lineY + 12 : lineY + 8.5, { maxWidth: half });
-    this.y += h + 4;
+    this.signatures([
+      { label: 'Authorized signatory', sub: `${this.profile.shortName || this.profile.legalName} · signature & stamp`, image: stamp },
+      { label: clientLabel, name: attName, sub: attDesignation ? `${attDesignation} · signature, stamp & date` : 'Name, signature, stamp & date' },
+    ]);
   }
 
   /** Photo grid (two per row) with captions. */
@@ -614,19 +753,91 @@ class DocBuilder {
     this.y += h + 6;
   }
 
+  /** Starts a new page if `space` plus anything held back won't fit, then places what was held back. */
   ensure(space: number) {
-    if (this.y + space > PAGE_H - FOOTER_H - 6) {
+    if (this.y > PAGE_TOP && this.y + this.pendingHeight + space > PAGE_LIMIT) {
       this.doc.addPage();
-      this.y = 20;
+      this.y = PAGE_TOP;
+    }
+    const held = this.pending;
+    this.pending = [];
+    held.forEach((p) => p.draw());
+  }
+
+  /** The uploaded background image, faint and centred on the page; a status such as DRAFT prints across it. */
+  private pageBackground() {
+    if (!this.background) return;
+    const { w: iw, h: ih, data } = this.background;
+    const scale = Math.min(BACKGROUND_MAX_W / iw, BACKGROUND_MAX_H / ih);
+    const percent = this.profile.watermarkOpacity ?? DEFAULT_BACKGROUND_OPACITY;
+    this.doc.saveGraphicsState();
+    // @ts-expect-error GState exists at runtime on jsPDF
+    this.doc.setGState(new this.doc.GState({ opacity: percent / 100 }));
+    this.doc.addImage(data, 'PNG', (PAGE_W - iw * scale) / 2, (PAGE_H - ih * scale) / 2, iw * scale, ih * scale, 'page-background', 'FAST');
+    this.doc.restoreGraphicsState();
+  }
+
+  /** One quiet line on continuation pages: company on the left, document on the right. */
+  private continuationHeader() {
+    this.font(7.5, 'bold', this.navy);
+    this.doc.text(this.profile.legalName, M, 11);
+    this.font(7.5, 'normal', MUTED);
+    this.doc.text(`${this.title}  ·  ${this.ref}`, PAGE_W - M, 11, { align: 'right' });
+    this.color(RULE, 'draw');
+    this.doc.setLineWidth(0.3);
+    this.doc.line(M, 13, PAGE_W - M, 13);
+  }
+
+  /** Company, contacts and service areas under a thin rule, with the verification QR on the right. */
+  private footer() {
+    const p = this.profile;
+    const fy = PAGE_H - FOOTER_H + 3;
+    this.color(RULE, 'draw');
+    this.doc.setLineWidth(0.3);
+    this.doc.line(M, fy, PAGE_W - M, fy);
+
+    this.font(7.5, 'bold', this.navy);
+    this.doc.text(p.legalName, M, fy + 4.3);
+    this.font(6.9, 'normal', MUTED);
+    this.doc.text([p.phone, p.mobile, p.email, p.website].filter(Boolean).join('   ·   '), M, fy + 7.9);
+
+    let room = CONTENT_W;
+    if (this.qr) {
+      const size = 11.5;
+      const qx = PAGE_W - M - size;
+      this.doc.addImage(this.qr.data, 'PNG', qx, fy + 1.2, size, size, 'verify-qr', 'FAST');
+      this.font(6, 'bold', this.navy);
+      this.doc.text('Scan to', qx - 1.5, fy + 6, { align: 'right' });
+      this.doc.text('verify', qx - 1.5, fy + 8.8, { align: 'right' });
+      room -= size + 10;
+    }
+
+    const areas = serviceAreasOf(p);
+    if (areas.length) {
+      const label = 'SERVICE AREAS';
+      const y = fy + 11.5;
+      this.font(6.4, 'bold', this.brand);
+      this.doc.text(label, M, y);
+      const labelW = this.doc.getTextWidth(label) + 2;
+      const list = areas.join('  ·  ');
+      // Stays on one line: a long list prints smaller rather than being cut off
+      let size = 6.9;
+      this.font(size, 'normal', INK);
+      while (size > 5 && this.doc.getTextWidth(list) > room - labelW) {
+        size -= 0.1;
+        this.doc.setFontSize(size);
+      }
+      this.doc.text(list, M + labelW, y);
     }
   }
 
-  /** Footer + continuation header + watermark on every page, then returns the document. */
+  /** Background image, status watermark, continuation header and footer on every page, then returns the document. */
   finish(): jsPDF {
-    const p = this.profile;
+    this.ensure(0);
     const pages = this.doc.getNumberOfPages();
     for (let i = 1; i <= pages; i++) {
       this.doc.setPage(i);
+      this.pageBackground();
       if (this.watermark) {
         this.doc.saveGraphicsState();
         // @ts-expect-error GState exists at runtime on jsPDF
@@ -635,35 +846,8 @@ class DocBuilder {
         this.doc.text(this.watermark, PAGE_W / 2, PAGE_H / 2 + 20, { align: 'center', angle: 35 });
         this.doc.restoreGraphicsState();
       }
-      if (i > 1) {
-        this.font(7.5, 'bold', this.navy);
-        this.doc.text(`${p.legalName}`, M, 11);
-        this.font(7.5, 'normal', MUTED);
-        this.doc.text(`${this.title} ${this.ref} (continued)`, PAGE_W - M, 11, { align: 'right' });
-        this.color(RULE, 'draw');
-        this.doc.line(M, 13, PAGE_W - M, 13);
-      }
-      const fy = PAGE_H - FOOTER_H + 4;
-      this.color(RULE, 'draw');
-      this.doc.setLineWidth(0.3);
-      this.doc.line(M, fy, PAGE_W - M, fy);
-      this.font(7, 'bold', this.navy);
-      this.doc.text(p.legalName, M, fy + 4.5);
-      this.font(6.8, 'normal', MUTED);
-      this.doc.text([p.phone, p.email, p.website].filter(Boolean).join('  ·  '), M, fy + 8.3);
-      this.doc.text(`This is a computer-generated document issued by ${p.shortName || p.legalName}.`, M, fy + 11.8);
-      if (this.qr) {
-        const size = 12;
-        const qx = PAGE_W - M - 50 - size;
-        this.doc.addImage(this.qr.data, 'PNG', qx, fy + 1.2, size, size, 'verify-qr', 'FAST');
-        this.font(6, 'bold', this.navy);
-        this.doc.text('Scan to', qx - 1.5, fy + 6, { align: 'right' });
-        this.doc.text('verify', qx - 1.5, fy + 8.8, { align: 'right' });
-      }
-      this.font(7, 'normal', MUTED);
-      this.doc.text(`${this.title} ${this.ref}`, PAGE_W - M, fy + 4.5, { align: 'right' });
-      this.doc.text(`Page ${i} of ${pages}`, PAGE_W - M, fy + 8.3, { align: 'right' });
-      this.doc.text(`Generated ${formatDate(new Date().toISOString())}`, PAGE_W - M, fy + 11.8, { align: 'right' });
+      if (i > 1) this.continuationHeader();
+      this.footer();
     }
     return this.doc;
   }
@@ -728,8 +912,12 @@ async function builder(title: string, ref: string, watermark?: string, override?
   const profile: CompanyProfile = cashAccount
     ? { ...base, legalName: base.cashAccount?.tradeName || base.legalName, ntn: undefined, strn: undefined, provincialTaxNo: undefined }
     : base;
-  const [logo, qr] = await Promise.all([loadLogo(profile), verify && !override ? verificationQr(profile, title, ref, verify) : null]);
-  const b = new DocBuilder({ profile, logo, title, ref, watermark, qr });
+  const [logo, qr, background] = await Promise.all([
+    loadLogo(profile),
+    verify && !override ? verificationQr(profile, title, ref, verify) : null,
+    profile.watermarkUrl ? loadImage(profile.watermarkUrl, 1000, 'image/png') : null,
+  ]);
+  const b = new DocBuilder({ profile, logo, title, ref, watermark, qr, background });
   b.letterhead();
   return { b, profile };
 }
@@ -788,7 +976,7 @@ const svcLabel = (s: string) => SVC_LABEL[s] || s.replace(/_/g, ' ');
 function branchSchedule(b: DocBuilder, proposal: Proposal) {
   const rows = proposal.branchBreakdowns ?? [];
   if (!rows.length) return;
-  b.section(`Branches covered (${rows.length})`, 40);
+  b.section(`Branches covered (${rows.length})`);
   b.table(
     ['#', 'Branch / site', 'Services / treatments', 'Visits\n/month', 'Monthly\ncharges (PKR)'],
     rows.map((br, i) => [
@@ -897,7 +1085,7 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
     b.lettered(proposal.terms.map(fill));
   }
 
-  b.section('Monthly IPM service plan', 34);
+  b.section('Monthly IPM service plan');
   // The formula / brand column appears only when at least one row has one
   const planRows = proposal.servicePlan ?? [];
   const withFormula = planRows.some((row) => row.formula?.trim());
@@ -919,7 +1107,8 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
 
   branchSchedule(b, proposal);
 
-  b.section('Charges & tenure', 40);
+  b.section('Charges & tenure');
+  b.keepRoomBelowNextTable(38);
   const taxLabel = proposal.taxPercent > 0 ? `Sales tax (${proposal.taxPercent}%)` : 'Sales tax';
   const months = proposal.tenureMonths ?? 12;
   b.table(
@@ -993,7 +1182,8 @@ async function buildProposal(proposal: Proposal): Promise<jsPDF> {
 
   branchSchedule(b, proposal);
 
-  b.section('Services & pricing', 30);
+  b.section('Services & pricing');
+  b.keepRoomBelowNextTable(38);
   b.table(
     ['#', 'Service', 'Treatment method & materials', 'Frequency', 'Qty', 'Rate (PKR)', 'Amount (PKR)'],
     proposal.lineItems.map((li, i) => [
@@ -1090,7 +1280,8 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
     ],
   });
 
-  b.section('Details', 30);
+  b.section('Details');
+  b.keepRoomBelowNextTable(44);
   b.table(
     isTax
       ? ['#', 'Description', 'Qty', 'Rate (PKR)', 'Value excl. tax', 'Tax %', 'Sales tax', 'Amount incl. tax']
@@ -1129,7 +1320,7 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
     acct.bankIban && `IBAN: ${acct.bankIban}`,
     acct.notes || '',
   ].filter(Boolean) as string[];
-  b.noteBox('Payment details', payLines.length ? payLines : ['Payable in cash to our authorised representative against this memo.']);
+  b.noteBox('Payment details', payLines.length ? payLines : ['Payable in cash to our authorised representative against this memo.'], TINT, true);
 
   const invStamp = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
   b.stampBlock(invStamp);
@@ -1161,6 +1352,7 @@ async function buildReceipt(receipt: PaymentReceipt): Promise<jsPDF> {
     }
   );
   const wht = receipt.customerWhtDeducted;
+  b.keepRoomBelowNextTable(32);
   b.table(
     ['Description', 'Amount (PKR)'],
     [
@@ -1272,7 +1464,7 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
       {
         columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 2: { cellWidth: 26 }, 3: { cellWidth: 46 } },
         didParseCell: (d) => {
-          if (d.section === 'body' && d.column.index === 2) d.cell.styles.textColor = d.cell.raw === 'Completed' ? b.brand : [220, 38, 38];
+          if (d.section === 'body' && d.column.index === 2) d.cell.styles.textColor = d.cell.raw === 'Completed' ? b.navy : b.brand;
         },
       }
     );
@@ -1291,7 +1483,7 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
     return `${kind}${p.caption && !p.caption.startsWith(kind) && p.caption !== PHOTO_LABEL[p.type] ? `: ${p.caption}` : ''}`;
   });
   if (photos.length) {
-    b.section('Photo evidence', 72);
+    b.section('Photo evidence');
     b.photos(photos);
   }
 
@@ -1299,7 +1491,7 @@ async function buildJobReport(job: ServiceJob): Promise<jsPDF> {
   if (job.challanNumber || job.challanFileUrl) {
     const isPdf = /\.pdf($|\?)/i.test(job.challanFileUrl || '') || /^data:application\/pdf/i.test(job.challanFileUrl || '');
     const challanImg = job.challanFileUrl && !isPdf ? await loadImage(job.challanFileUrl, 1200) : null;
-    b.section('Signed service challan', challanImg ? 72 : 18);
+    b.section('Signed service challan');
     b.keyValues([
       ['Challan No.', job.challanNumber || 'Not recorded'],
       ['Copy', challanImg ? 'Attached below' : job.challanFileUrl ? 'Scanned copy filed in the client folder' : 'Not attached'],
@@ -1417,33 +1609,73 @@ async function buildJobSheet(job: ServiceJob): Promise<jsPDF> {
 }
 
 /**
- * HR letters on the company letterhead: offer letter (at hiring), employment contract (on joining)
- * and confirmation letter (end of probation). Terms come from the letter, frozen when it was issued.
+ * HR letters on the company letterhead: offer letter (at hiring), employment contract and probation
+ * letter (on joining) and confirmation letter (end of probation). Terms and clause wording come from
+ * the letter, frozen when it was issued.
  */
 async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
   const t = letter.terms;
   const emp = dataService.getEmployeeById(letter.employeeId);
   const priv = dataService.getEmployeePrivate(letter.employeeId);
-  const title = { offer_letter: 'Offer Letter', employment_contract: 'Employment Contract', confirmation_letter: 'Confirmation Letter' }[letter.kind];
+  const title = { offer_letter: 'Offer Letter', employment_contract: 'Employment Contract', probation_letter: 'Probation Letter', confirmation_letter: 'Confirmation Letter' }[letter.kind];
   const { b, profile } = await builder(title, letter.refNo, letter.status === 'withdrawn' ? 'WITHDRAWN' : undefined);
   const company = profile.legalName;
+  const signatory = `For ${profile.shortName || company}`;
   const name = letter.employeeName;
   const issued = formatDate(letter.issuedAt);
   const probationEnd = t.probationEndDate ? formatDate(t.probationEndDate) : `${t.probationMonths} month(s) after joining`;
-  const extra = (t.extraTerms || '').split('\n').map((x) => x.trim()).filter(Boolean);
-  const payRows = (gross: number) => [
-    ['Basic salary', pkr(t.basicSalary)],
-    ...t.allowances.filter((a) => a.amount > 0).map((a) => [a.label, pkr(a.amount)]),
-    ['Gross monthly salary', pkr(gross)],
-  ];
-  const subtitle = { offer_letter: 'Offer of employment', employment_contract: 'Contract of employment', confirmation_letter: 'Confirmation of employment' }[letter.kind];
+  const hasProbation = t.probationMonths > 0;
+  const size = 9;
+  const subtitle = { offer_letter: 'Offer of employment', employment_contract: 'Contract of employment', probation_letter: 'Probation period terms', confirmation_letter: 'Confirmation of employment' }[letter.kind];
+
+  // Letters issued before the wording was saved on them keep printing what they originally said
+  const sections: LetterClauseSection[] = t.clauseSections ?? originalLetterClauses(letter);
+
+  const compensation = (gross = t.grossSalary) => {
+    b.centeredHeading('Monthly Compensation');
+    const rows = [
+      ['Basic salary', t.basicSalary],
+      ...t.allowances.filter((a) => a.amount > 0).map((a): [string, number] => [a.label, a.amount]),
+    ] as [string, number][];
+    b.centeredTable(['S. No.', 'Salary Component', 'Amount (PKR)'], [
+      ...rows.map(([label, amount], i) => [i + 1, label, money(amount)]),
+      ['', 'Gross monthly salary', money(gross)],
+    ], 130, {
+      columnStyles: { 0: { cellWidth: 16 }, 2: { cellWidth: 40 } },
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.row.index === rows.length) {
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.fillColor = b.brandTint;
+        }
+      },
+    });
+  };
+
+  const particulars = (heading: string, text: string) => {
+    b.centeredHeading(heading);
+    b.paragraph(text, size);
+  };
+
+  /** Acknowledgment paragraph, filled in from the record, signed by the employee and management. */
+  const acknowledgment = async (closing: string, reserveBelow = 0) => {
+    b.ensure(66 + reserveBelow);
+    b.centeredHeading('Employee Acknowledgment');
+    b.paragraph(`I, ${name}${priv?.cnic ? `, holding CNIC No. ${priv.cnic}` : ''}, appointed as ${t.designation} with effect from ${formatDate(t.joiningDate)} at a monthly salary of ${pkr(t.grossSalary)}, hereby confirm that ${closing}`, size, INK, true);
+    const stamp = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
+    b.signatures([
+      { label: 'Employee signature', name, sub: 'Signature & date' },
+      { label: 'Authorized management', name: letter.issuedByName, sub: 'Signature & date' },
+      { label: 'Company stamp', sub: profile.shortName || company, image: stamp },
+    ]);
+  };
+
   b.titleBand([
     { label: 'Ref. No.', value: letter.refNo },
     { label: 'Date', value: issued },
     { label: 'Employee ID', value: letter.employeeId },
   ], subtitle);
   b.parties({
-    heading: letter.kind === 'employment_contract' ? 'Employee' : 'To',
+    heading: letter.kind === 'offer_letter' || letter.kind === 'confirmation_letter' ? 'To' : 'Employee',
     name,
     lines: [
       priv?.fatherName && `S/O, D/O: ${priv.fatherName}`,
@@ -1454,20 +1686,69 @@ async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
   });
 
   if (letter.kind === 'offer_letter') {
-    b.paragraph(`Dear ${name},`);
-    b.paragraph(`We are pleased to offer you the position of ${t.designation} in the ${t.department} department of ${company}, on the terms set out below.`);
-    b.keyValues([
-      ['Position', t.designation],
-      ['Department', t.department],
-      ['Reports to', t.reportingTo],
-      ['Joining date', formatDate(t.joiningDate)],
-      ['Probation', `${t.probationMonths} month(s), until ${probationEnd}`],
-      ['Working hours', t.workingHours],
+    b.paragraph(`Dear ${name},`, size);
+    b.paragraph(`We are pleased to offer you the position of ${t.designation} in the ${t.department} department of ${company}, on the terms set out below.`, size);
+    particulars('Position Details', `Your joining date will be ${formatDate(t.joiningDate)}${t.reportingTo ? `, and you will report to ${t.reportingTo}` : ''}. ${hasProbation ? `Your appointment will begin with a probation period of ${monthsInWords(t.probationMonths)}, until ${probationEnd}. ` : ''}Your working hours will be ${t.workingHours}.`);
+    compensation();
+    b.clauses(sections);
+    b.paragraph(`To accept, please sign and return a copy of this letter${t.offerValidUntil ? ` by ${formatDate(t.offerValidUntil)}, after which this offer lapses` : ''}.`, size, INK, true);
+    b.signatures([
+      { label: signatory, name: letter.issuedByName, sub: 'Human Resources' },
+      { label: 'Accepted by', name, sub: 'Signature & date' },
     ]);
-    b.section('Monthly compensation');
-    b.table(['Component', 'Amount'], payRows(t.grossSalary), { columnStyles: { 1: { halign: 'right', cellWidth: 50 } } });
-    b.section('Terms of this offer');
-    b.numbered([
+    return b.finish();
+  }
+
+  if (letter.kind === 'employment_contract' || letter.kind === 'probation_letter') {
+    const isContract = letter.kind === 'employment_contract';
+    b.paragraph(isContract
+      ? `This Employment Contract is made on ${issued} between ${company}${profile.address ? `, ${profile.address}` : ''} ("the Company"), and ${name}${priv?.fatherName ? `, son / daughter of ${priv.fatherName}` : ''}${priv?.cnic ? `, CNIC ${priv.cnic}` : ''}${priv?.residentialAddress ? `, residing at ${priv.residentialAddress}` : ''} ("the Employee").`
+      : `Dear ${name}, with reference to your appointment as ${t.designation} in the ${t.department} department of ${company}, you will serve a probation period of ${monthsInWords(t.probationMonths)} from ${formatDate(t.joiningDate)} until ${probationEnd}. The terms below apply during this period.`, size);
+    particulars('Employment Particulars', isContract
+      ? `The Employee is appointed as ${t.designation} in the ${t.department} department${t.reportingTo ? `, reporting to ${t.reportingTo}` : ''}, with effect from ${formatDate(t.joiningDate)}. ${hasProbation ? `The first ${monthsInWords(t.probationMonths)}, until ${probationEnd}, shall be a probation period. ` : ''}Working hours shall be ${t.workingHours}. The notice period shall be ${hasProbation ? `${days(t.noticeDaysProbation)} during probation and ${days(t.noticeDaysPermanent)} after confirmation` : days(t.noticeDaysPermanent)}.`
+      : `${t.reportingTo ? `You will report to ${t.reportingTo}. ` : ''}Your working hours will be ${t.workingHours}, and the notice period during probation will be ${days(t.noticeDaysProbation)}.`);
+    compensation();
+    b.clauses(sections);
+    await acknowledgment(
+      isContract
+        ? 'I have read, understood, and agreed to comply with all the above-mentioned terms and conditions of employment.'
+        : 'I have read, understood, and agreed to comply with all the above-mentioned probation period terms and conditions. I understand that my performance and conduct will be evaluated during this period.',
+      isContract ? 34 : 0, // keeps the witness lines on the same page
+    );
+    if (isContract) {
+      b.signatures([
+        { label: 'Witness 1', sub: 'Name, CNIC & signature' },
+        { label: 'Witness 2', sub: 'Name, CNIC & signature' },
+      ]);
+    }
+    return b.finish();
+  }
+
+  // Confirmation letter
+  const revised = Boolean(t.revisedGrossSalary && t.revisedGrossSalary > 0 && t.revisedGrossSalary !== t.grossSalary);
+  const gross = revised ? t.revisedGrossSalary! : t.grossSalary;
+  const confirmedFrom = formatDate(t.confirmationDate || letter.issuedAt);
+  b.paragraph(`Dear ${name},`, size);
+  b.paragraph(`We are pleased to inform you that you have successfully completed your probation period (${formatDate(t.joiningDate)} to ${probationEnd}). Your employment as ${t.designation} in the ${t.department} department is confirmed with effect from ${confirmedFrom}.`, size);
+  particulars('Confirmation Details', `From ${confirmedFrom}, your ${revised ? 'revised ' : ''}gross monthly salary will be ${pkr(gross)}, and the notice period will be ${days(t.noticeDaysPermanent)}.`);
+  b.clauses(sections);
+  b.paragraph('All other terms of your Employment Contract remain unchanged. We thank you for your work so far and wish you continued success with us.', size, INK, true);
+  b.signatures([
+    { label: signatory, name: letter.issuedByName, sub: 'Human Resources' },
+    { label: 'Received by', name, sub: 'Signature & date' },
+  ]);
+  return b.finish();
+}
+
+/** The wording of letters issued before clause text was saved on the letter. Do not edit: employees signed this. */
+function originalLetterClauses(letter: EmployeeLetter): LetterClauseSection[] {
+  const t = letter.terms;
+  const probationEnd = t.probationEndDate ? formatDate(t.probationEndDate) : `${t.probationMonths} month(s) after joining`;
+  const extra = (t.extraTerms || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  const section = (heading: string, items: string[]): LetterClauseSection[] =>
+    items.length ? [{ heading, clauses: items.map((body) => ({ body })) }] : [];
+  if (letter.kind === 'offer_letter') {
+    return section('Terms of this Offer', [
       `During probation either side may end the employment with ${t.noticeDaysProbation} day(s) notice. On confirmation the notice period becomes ${t.noticeDaysPermanent} day(s).`,
       'Salary is paid monthly by bank transfer on the company payroll cycle, after statutory deductions where applicable.',
       'The attendance allowance is paid only for a month with fewer than two late marks or absences.',
@@ -1475,25 +1756,12 @@ async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
       'This offer is subject to verification of the documents and information you have given. The full terms will be in the Employment Contract you sign on joining.',
       ...extra,
     ]);
-    b.paragraph(`To accept, please sign and return a copy of this letter${t.offerValidUntil ? ` by ${formatDate(t.offerValidUntil)}, after which this offer lapses` : ''}.`);
-    b.signatures([
-      { label: `For ${profile.shortName || company}`, name: letter.issuedByName, sub: 'Human Resources' },
-      { label: 'Accepted by', name, sub: 'Signature & date' },
-    ]);
-    return b.finish();
   }
-
   if (letter.kind === 'employment_contract') {
-    const parties = [
-      `This Employment Contract is made on ${issued} between ${company}${profile.address ? `, ${profile.address}` : ''} ("the Company"),`,
-      `and ${name}${priv?.fatherName ? `, son / daughter of ${priv.fatherName}` : ''}${priv?.cnic ? `, CNIC ${priv.cnic}` : ''}${priv?.residentialAddress ? `, residing at ${priv.residentialAddress}` : ''} ("the Employee").`,
-    ].join(' ');
-    b.paragraph(parties);
-    b.section('Terms and conditions');
-    b.numbered([
+    return section('Terms and Conditions', [
       `Position and duties. The Employee is employed as ${t.designation} in the ${t.department} department${t.reportingTo ? `, reporting to ${t.reportingTo}` : ''}, and will perform the duties assigned from time to time, including field work at client sites.`,
       `Commencement and probation. Employment starts on ${formatDate(t.joiningDate)}. The first ${t.probationMonths} month(s), until ${probationEnd}, are a probation period. During probation either party may end this contract with ${t.noticeDaysProbation} day(s) notice. Confirmation will be given in writing.`,
-      `Remuneration. The gross monthly salary is ${pkr(t.grossSalary)} as detailed below, paid monthly by bank transfer on the company payroll cycle, less income tax and other deductions required by law.`,
+      `Remuneration. The gross monthly salary is ${pkr(t.grossSalary)} as detailed above, paid monthly by bank transfer on the company payroll cycle, less income tax and other deductions required by law.`,
       `Working hours. ${t.workingHours}. Overtime, where approved, is paid as per company policy.`,
       'Attendance and leave. The Employee must mark attendance daily and be punctual. The attendance allowance is not paid for a month with two or more late marks or absences. Leave is granted as per company policy and applicable law.',
       'Safety and conduct. The Employee will follow the company SOPs, wear the uniform and protective equipment (PPE) provided, and handle, store and apply pesticides strictly as per label directions and applicable regulations. Misuse or removal of chemicals is gross misconduct.',
@@ -1503,40 +1771,8 @@ async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
       'Governing law. This contract is governed by the laws of Pakistan.',
       ...extra,
     ]);
-    b.section('Monthly compensation');
-    b.table(['Component', 'Amount'], payRows(t.grossSalary), { columnStyles: { 1: { halign: 'right', cellWidth: 50 } } });
-    b.paragraph('Both parties have read and understood this contract and sign it of their own free will.');
-    b.signatures([
-      { label: `For ${profile.shortName || company}`, name: letter.issuedByName, sub: 'Authorised signatory' },
-      { label: 'Employee', name, sub: priv?.cnic ? `CNIC ${priv.cnic}` : 'Signature & date' },
-    ]);
-    b.signatures([
-      { label: 'Witness 1', sub: 'Name, CNIC & signature' },
-      { label: 'Witness 2', sub: 'Name, CNIC & signature' },
-    ]);
-    return b.finish();
   }
-
-  // Confirmation letter
-  const revised = Boolean(t.revisedGrossSalary && t.revisedGrossSalary > 0 && t.revisedGrossSalary !== t.grossSalary);
-  const gross = revised ? t.revisedGrossSalary! : t.grossSalary;
-  const confirmedFrom = formatDate(t.confirmationDate || letter.issuedAt);
-  b.paragraph(`Dear ${name},`);
-  b.paragraph(`We are pleased to inform you that you have successfully completed your probation period (${formatDate(t.joiningDate)} to ${probationEnd}). Your employment as ${t.designation} in the ${t.department} department is confirmed with effect from ${confirmedFrom}.`);
-  b.keyValues([
-    ['Designation', t.designation],
-    ['Department', t.department],
-    ['Confirmed from', confirmedFrom],
-    ['Gross monthly salary', `${pkr(gross)}${revised ? ' (revised)' : ''}`],
-    ['Notice period', `${t.noticeDaysPermanent} day(s)`],
-  ]);
-  if (extra.length) b.numbered(extra);
-  b.paragraph('All other terms of your Employment Contract remain unchanged. We thank you for your work so far and wish you continued success with us.');
-  b.signatures([
-    { label: `For ${profile.shortName || company}`, name: letter.issuedByName, sub: 'Human Resources' },
-    { label: 'Received by', name, sub: 'Signature & date' },
-  ]);
-  return b.finish();
+  return section('Additional Terms', extra);
 }
 
 /**
@@ -1595,7 +1831,7 @@ async function buildStatement(st: ClientStatement): Promise<jsPDF> {
 
   // Each visit invoice in detail
   invoices.forEach((inv) => {
-    b.section(`Invoice ${inv.invoiceNumber.startsWith('DRAFT-') ? '(draft)' : inv.invoiceNumber} · ${formatDate(inv.issueDate)}`, 40);
+    b.section(`Invoice ${inv.invoiceNumber.startsWith('DRAFT-') ? '(draft)' : inv.invoiceNumber} · ${formatDate(inv.issueDate)}`);
     b.table(
       ['Description', 'Qty', 'Rate', 'Tax', 'Total'],
       inv.lineItems.map((l) => [l.description, l.quantity, pkr(l.unitPrice), `${pkr(l.taxAmount)} (${l.taxRatePercent}%)`, pkr(l.totalWithTax)]),
@@ -1652,7 +1888,7 @@ async function buildAuditReport(a: QualityAudit): Promise<jsPDF> {
       {
         columnStyles: { 0: { cellWidth: 8, halign: 'center' }, 2: { cellWidth: 20 }, 3: { cellWidth: 50 } },
         didParseCell: (d) => {
-          if (d.section === 'body' && d.column.index === 2) d.cell.styles.textColor = d.cell.raw === 'OK' ? b.brand : d.cell.raw === 'Not OK' ? [220, 38, 38] : [100, 116, 139];
+          if (d.section === 'body' && d.column.index === 2) d.cell.styles.textColor = d.cell.raw === 'OK' ? b.navy : d.cell.raw === 'Not OK' ? b.brand : MUTED;
         },
       });
   }
@@ -1667,7 +1903,7 @@ async function buildAuditReport(a: QualityAudit): Promise<jsPDF> {
     return img ? { img, caption: p.caption || 'Audit photo' } : null;
   }))).filter(Boolean) as { img: Img; caption: string }[];
   if (photos.length) {
-    b.section('Photo evidence', 72);
+    b.section('Photo evidence');
     b.photos(photos);
   }
   if (a.status === 'verified') {
@@ -1798,7 +2034,7 @@ async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
     const images = await Promise.all(findings.map((f) => (f.photo ? loadImage(f.photo.imageUrl, 700) : Promise.resolve(null))));
     const PIC_W = 42;
     const PIC_H = 34;
-    b.section('Findings', 50);
+    b.section('Findings');
     b.table(
       ['#', 'Picture evidence', 'Observation', 'Risk', 'Recommendation'],
       findings.map((f, idx) => [idx + 1, images[idx] ? '' : f.photo ? '(photo unavailable)' : '—', `${f.location ? `${f.location}\n` : ''}${f.observation}`, f.risk, f.recommendation]),
@@ -1842,7 +2078,7 @@ async function buildInspectionReport(lead: Lead): Promise<jsPDF> {
   const general = i?.photos?.length ? i.photos : (si?.photos?.length ? si.photos : (findings.length ? [] : lead.sitePhotos ?? []));
   const photos = await photoItems(general, (p) => p.caption || statusLabel(p.type));
   if (photos.length) {
-    b.section('Site photos', 72);
+    b.section('Site photos');
     b.photos(photos);
   }
   b.noteBox('Next step', [`${profile.legalName} will share a detailed proposal with pricing based on these findings.`], b.brandTint);
@@ -1879,16 +2115,16 @@ async function buildSop(sop: SopInput): Promise<jsPDF> {
   });
 
   if (sop.products.length) {
-    b.section('Products used', 24);
+    b.section('Products used');
     b.table(['#', 'Product', 'Used for'], sop.products.map((pr, i) => [i + 1, pr.name, pr.use || '—']), { columnStyles: { 0: { cellWidth: 9, halign: 'center' }, 1: { fontStyle: 'bold' } } });
     b.paragraph('The MSDS of each product is part of the onboarding pack.', 8, MUTED);
   }
   if (sop.authorizedPersons.length) {
-    b.section('Authorised persons', 24);
+    b.section('Authorised persons');
     b.table(['Name', 'Designation', 'Organisation'], sop.authorizedPersons.map((a) => [a.name, a.designation || '—', a.organisation === 'ikpm' ? profile.legalName : sop.clientName]));
   }
   if (sop.contacts.length) {
-    b.section('Contacts', 24);
+    b.section('Contacts');
     b.table(['Name', 'Role', 'Phone', 'Email'], sop.contacts.map((c) => [c.name, c.role || '—', c.phone || '—', c.email || '—']));
   }
   b.signatures([
@@ -1956,9 +2192,9 @@ export const pdfGenerator = {
   async generateStatementPDF(statement: ClientStatement) {
     (await buildStatement(statement)).save(safe(`${prefix()}_Statement_${statement.statementNumber}_${statement.customerName}.pdf`));
   },
-  // HR letters (offer letter, employment contract, confirmation letter)
+  // HR letters (offer letter, employment contract, probation letter, confirmation letter)
   employeeLetterFileName(letter: EmployeeLetter) {
-    const kind = { offer_letter: 'Offer_Letter', employment_contract: 'Employment_Contract', confirmation_letter: 'Confirmation_Letter' }[letter.kind];
+    const kind = { offer_letter: 'Offer_Letter', employment_contract: 'Employment_Contract', probation_letter: 'Probation_Letter', confirmation_letter: 'Confirmation_Letter' }[letter.kind];
     return safe(`${prefix()}_${kind}_${letter.employeeId}_${letter.employeeName}.pdf`);
   },
   async generateEmployeeLetterPDF(letter: EmployeeLetter) {

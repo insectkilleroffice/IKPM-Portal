@@ -67,6 +67,9 @@ service cloud.firestore {
           'challans':'edit','attendance':'edit','search':'edit','calendar':'edit','company_files':'view'}
         : r == 'technician'
         ? {'dashboard':'view','jobs':'view','pco':'edit','attendance':'view'}
+        : r == 'entomologist'
+        ? {'dashboard':'edit','customers':'edit','crm':'edit','proposals':'edit','contracts':'edit',
+          'pco':'edit','files':'edit','complaints':'edit','audits':'edit','documents':'view','company_files':'view','approvals':'view'}
         : r == 'finance'
         ? {'dashboard':'view','invoices':'edit','tax':'view','payroll':'edit',
           'challans':'view','search':'edit','documents':'view','contracts':'view','customers':'view','complaints':'view','jobs':'view'}

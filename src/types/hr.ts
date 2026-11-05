@@ -10,6 +10,7 @@ export type EmployeeRole =
   | 'team_leader'
   | 'operations'
   | 'cro'
+  | 'entomologist'
   | 'accounts'
   | 'hr'
   | 'admin'
@@ -26,7 +27,7 @@ export interface Employee {
   reportingCoordinatorId?: string;
   joiningDate: string; // YYYY-MM-DD
   status: EmployeeStatus;
-  probationEndDate?: string; // joiningDate + Settings months (default 3)
+  probationEndDate?: string; // joiningDate + probation months (default 2)
   uid?: string; // portal login uid if created (optional, PCOs default to none)
   photoUrl?: string;
   emergencyContact?: string;
@@ -145,9 +146,25 @@ export interface SalaryCycle {
   updatedAt: string;
 }
 
-// ---------- Employee letters: offer → employment contract → probation confirmation ----------
+// ---------- Employee letters: offer → employment contract + probation letter → confirmation ----------
 
-export type EmployeeLetterKind = 'offer_letter' | 'employment_contract' | 'confirmation_letter';
+export type EmployeeLetterKind = 'offer_letter' | 'employment_contract' | 'probation_letter' | 'confirmation_letter';
+
+/** Which role-specific terms a letter carries, on top of the general terms every employee gets. */
+export type EmployeeTermsProfile = 'cro' | 'entomologist' | 'supervisor' | 'pco' | 'general';
+
+export interface LetterClause {
+  /** Bold lead-in, e.g. "Working Hours". Older letters have none. */
+  title?: string;
+  body: string;
+}
+
+export interface LetterClauseSection {
+  heading: string;
+  /** Short introduction printed under the heading. */
+  intro?: string;
+  clauses: LetterClause[];
+}
 
 /** issued = printed / handed over; signed = the employee signed it (signed copy may be attached). */
 export type EmployeeLetterStatus = 'issued' | 'signed' | 'withdrawn';
@@ -155,6 +172,7 @@ export type EmployeeLetterStatus = 'issued' | 'signed' | 'withdrawn';
 export const EMPLOYEE_LETTER_LABELS: Record<EmployeeLetterKind, string> = {
   offer_letter: 'Offer Letter',
   employment_contract: 'Employment Contract',
+  probation_letter: 'Probation Letter',
   confirmation_letter: 'Confirmation Letter',
 };
 
@@ -162,6 +180,7 @@ export const EMPLOYEE_LETTER_LABELS: Record<EmployeeLetterKind, string> = {
 export const EMPLOYEE_LETTER_STAGE: Record<EmployeeLetterKind, string> = {
   offer_letter: 'At hiring',
   employment_contract: 'On joining',
+  probation_letter: 'On joining',
   confirmation_letter: 'End of probation',
 };
 
@@ -188,6 +207,14 @@ export interface EmployeeLetterTerms {
   revisedGrossSalary?: number;
   /** Extra clauses HR adds for this employee (one per line). */
   extraTerms?: string;
+  /** Role-specific terms chosen when the letter was issued. */
+  termsProfile?: EmployeeTermsProfile;
+  /**
+   * The exact clause wording, saved when the letter is issued: a signed letter must keep printing what
+   * the employee signed, even after the standard wording changes. Letters issued before this existed
+   * have none and print their original wording.
+   */
+  clauseSections?: LetterClauseSection[];
 }
 
 export interface EmployeeLetter {

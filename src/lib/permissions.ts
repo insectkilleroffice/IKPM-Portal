@@ -97,6 +97,9 @@ const all = (level: AccessLevel, keys: ModuleKey[]) => Object.fromEntries(keys.m
 // Supervisor            : Field team. Submits meeting reports and job reports.
 //   (team_leader)          Leads PCO technicians on site.
 // Technician (PCO)       : Sees and completes only their own assigned jobs.
+// Entomologist           : Everything a CRO does (client calls, leads, meetings, proposals), plus technical
+//   (based on sales)       detailing with clients and the site audits assigned to them, which the super
+//                          admin schedules and verifies.
 // ────────────────────────────────────────────────────────────────────────────
 
 export const DEFAULT_ROLES: RoleDefinition[] = [
@@ -188,6 +191,22 @@ export const DEFAULT_ROLES: RoleDefinition[] = [
     modules: { dashboard: 'view', jobs: 'view', pco: 'edit', attendance: 'view' },
   },
   {
+    id: 'entomologist',
+    name: 'Entomologist',
+    // Based on the CRO role, so every CRO screen and workflow treats them as a CRO
+    basedOn: 'sales',
+    isSystem: true,
+    defaultScope: 'company',
+    color: '#4D7C0F',
+    description: 'Takes client calls for technical detailing, does all CRO work (leads, meetings, proposals), and visits and audits the sites assigned to them.',
+    modules: {
+      ...all('edit', ['dashboard', 'customers', 'crm', 'proposals', 'contracts', 'pco', 'files', 'complaints', 'audits']),
+      documents: 'view',
+      company_files: 'view',
+      approvals: 'view',
+    },
+  },
+  {
     id: 'finance',
     name: 'Finance',
     basedOn: 'finance',
@@ -252,7 +271,9 @@ export function setRoleDefinitions(fromCloud: RoleDefinition[]) {
     // Built-in roles always show their standard name (CRO, Operations Manager, Supervisor, Finance,
     // HR…), whatever name an older saved copy carries, so the same role never appears under two names
     const name = base?.isSystem ? base.name : r.name;
-    next.set(r.id, { ...base, ...r, name, modules: mergedModules });
+    // A built-in role's template comes from the code, even if an older saved copy says otherwise
+    const basedOn = base?.isSystem ? base.basedOn : r.basedOn;
+    next.set(r.id, { ...base, ...r, name, basedOn, modules: mergedModules });
   });
   registry = next;
 }
@@ -304,6 +325,10 @@ export const resolveRoleKey = (id: UserRole | null | undefined): UserRole | unde
   if (id === 'operations_coordinator') return 'team_leader';
   return id;
 };
+
+/** The Entomologist role, or one person's customised copy of it. */
+export const isEntomologistRole = (id: UserRole | null | undefined): boolean =>
+  id === 'entomologist' || getRole(id)?.templateRoleId === 'entomologist';
 
 export const baseRoleOf = (id: UserRole | null | undefined): SystemRole | undefined => {
   const key = resolveRoleKey(id);
