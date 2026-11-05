@@ -10,9 +10,9 @@ vi.mock('../services/dataService', () => ({
   },
 }));
 vi.mock('../services/companyProfile', () => ({
-  DEFAULT_BRAND_COLOR: '#0A0A0A',
+  DEFAULT_BRAND_COLOR: '#4A4A4A',
   DEFAULT_ACCENT_COLOR: '#C8102E',
-  companyProfile: { get: () => ({ legalName: 'Test Pest Management', shortName: 'TPM', tagline: 'Pest control', address: 'Plot 1', city: 'Karachi', siteOffices: 'Islamabad and Lahore', phone: '021-111', mobile: '0300-222', email: 'a@b.pk', website: 'b.pk', ntn: '123', strn: '456', serviceAreas: ['Faisalabad Hub', ' Lahore ', ''] }) },
+  companyProfile: { get: () => ({ legalName: 'Test Pest Management', shortName: 'TPM', tagline: 'Pest control', address: 'Plot 1', city: 'Karachi', phone: '021-111', mobile: '0300-222', email: 'a@b.pk', website: 'b.pk', ntn: '123', strn: '456', serviceAreas: ['Faisalabad Hub', ' Lahore ', ''] }) },
 }));
 const tableHeads = vi.hoisted(() => [] as string[][]);
 vi.mock('jspdf-autotable', async (original) => {
@@ -28,7 +28,7 @@ vi.mock('jspdf-autotable', async (original) => {
 vi.mock('../services/documentTemplates', () => ({ documentTemplates: {} }));
 vi.mock('../lib/firebase', () => ({ auth: {}, db: {}, storage: {} }));
 
-const { pdfGenerator, pdfKit } = await import('../lib/pdfGenerator');
+const { pdfGenerator, pdfKit, phoneLink } = await import('../lib/pdfGenerator');
 const { letterClauseSections } = await import('../features/hr/employmentTerms');
 const { companyProfile } = await import('../services/companyProfile');
 
@@ -78,23 +78,67 @@ describe('letter particulars', () => {
 describe('header and footer', () => {
   const printed = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.map((c) => String(c[0]));
 
-  it('the letterhead prints the company, head office and site offices, and nothing else', async () => {
+  it('the letterhead prints the company, tagline and contacts only, in order', async () => {
     const { b } = await pdfKit.builder('Test', 'REF-1');
     const text = vi.spyOn(b.doc, 'text');
     b.letterhead();
-    expect(printed(text)).toEqual(['Test Pest Management', 'Pest control', 'Head Office: Plot 1, Karachi', 'Site Offices: Islamabad and Lahore']);
+    expect(printed(text)).toEqual(['Test Pest Management', 'Pest control', 'a@b.pk', 'b.pk', '0300-222', '  |  ', '021-111']);
   });
 
-  it('a long head office address wraps to two lines and stays on the right of the page', async () => {
+  it('the right side of the header sits well to the right, inside the page', async () => {
+    const legalName = 'Insect Killer Pest Management';
+    const { b } = await pdfKit.builder('Test', 'REF-1', undefined, { ...companyProfile.get(), legalName });
+    b.font(11.5, 'bold');
+    const left = 203 - b.doc.getTextWidth(legalName);
+    expect(left).toBeGreaterThan(144); // the name started at 130 mm
+    expect(203).toBeLessThan(210);
+  });
+
+  it('the tagline stays on one line and nothing runs wider than the company name', async () => {
+    const tagline = 'A very long tagline that would otherwise run well past the width of the company name above it';
+    const email = 'accounts.department@insectkiller.example.com';
+    const { b } = await pdfKit.builder('Test', 'REF-1', undefined, { ...companyProfile.get(), tagline, email });
+    const text = vi.spyOn(b.doc, 'text');
+    b.letterhead();
+    expect(printed(text)).toContain(tagline);
+    expect(printed(text)).toContain(email);
+    b.font(11.5, 'bold');
+    const nameLeft = 203 - b.doc.getTextWidth('Test Pest Management');
+    const emailX = text.mock.calls.find((c) => c[0] === email)?.[1] as number;
+    expect(emailX).toBeGreaterThanOrEqual(nameLeft - 0.5);
+  });
+
+  it('email, website and phone numbers are clickable links', async () => {
+    const { b } = await pdfKit.builder('Test', 'REF-1', undefined, { ...companyProfile.get(), email: 'info@insectkiller.pk', website: 'www.insectkiller.pk', phone: '+92 3042316127', mobile: '+92 3452794074' });
+    const link = vi.spyOn(b.doc, 'link');
+    b.letterhead();
+    expect(link.mock.calls.map((c) => (c[4] as { url: string }).url)).toEqual([
+      'mailto:info@insectkiller.pk', 'https://www.insectkiller.pk', 'https://wa.me/923452794074', 'https://wa.me/923042316127',
+    ]);
+  });
+
+  it('mobile numbers open WhatsApp in any common format; other numbers open the dialler', () => {
+    ['+92 304 2316127', '0304-2316127', '923042316127', '3042316127'].forEach((n) => expect(phoneLink(n)).toBe('https://wa.me/923042316127'));
+    expect(phoneLink('021-111-000-000')).toBe('tel:021111000000');
+    expect(phoneLink('+92 21 34567890')).toBe('tel:+922134567890');
+  });
+
+  it('the head quarter address prints in the footer in two even lines, not in the letterhead', async () => {
     const address = 'Suite 407, 4th Floor, Dr. Inn Plaza, Block 3, Nazimabad, Karachi 74600';
     const { b } = await pdfKit.builder('Test', 'REF-1', undefined, { ...companyProfile.get(), address, city: 'Karachi, Pakistan' });
     const text = vi.spyOn(b.doc, 'text');
     b.letterhead();
-    const lines = text.mock.calls.filter((c) => /Head Office|Pakistan/.test(String(c[0])));
+    expect(printed(text).join('|')).not.toMatch(/Suite 407|Head/);
+    text.mockClear();
+    b.finish();
+    const lines = text.mock.calls.filter((c) => /Suite 407|Pakistan/.test(String(c[0])));
     expect(lines).toHaveLength(2);
-    expect(String(lines[0][0])).toMatch(/^Head Office: Suite 407/);
-    lines.forEach((c) => expect(c[1]).toBeGreaterThan(100));
-    expect(lines[0][1]).toBe(lines[1][1]);
+    expect(printed({ mock: { calls: text.mock.calls.filter((c) => c[0] === 'Head Quarter:') } })).toHaveLength(1);
+    // Same left edge as the heading, and nearly the same length as each other
+    lines.forEach((c) => expect(c[1]).toBe(14));
+    b.font(6.9);
+    const [first, second] = lines.map((c) => b.doc.getTextWidth(String(c[0])));
+    expect(Math.abs(first - second)).toBeLessThan(8);
   });
 
   it('the underline runs the full length of the document title', async () => {
@@ -111,15 +155,25 @@ describe('header and footer', () => {
     expect(longW).toBeGreaterThan(shortW);
   });
 
-  it('the footer has two parts: company and service areas, then contacts', async () => {
+  it('the footer has two parts: head quarter on the left, company and service areas on the right', async () => {
     const { b } = await pdfKit.builder('Test', 'REF-1');
     const text = vi.spyOn(b.doc, 'text');
     b.finish();
-    expect(printed(text)).toEqual(expect.arrayContaining(['Test Pest Management', 'Service Areas:', 'Faisalabad Hub | Lahore & nearby cities', '021-111', '0300-222', 'a@b.pk', 'b.pk']));
+    expect(printed(text)).toEqual(expect.arrayContaining(['Test Pest Management', 'Service Areas:', 'Faisalabad Hub | Lahore & nearby cities', 'Head Quarter:', 'Plot 1, Karachi']));
+    expect(printed(text).join('|')).not.toMatch(/021-111|a@b\.pk/);
     const xOf = (t: string) => text.mock.calls.find((c) => c[0] === t)?.[1] as number;
-    expect(xOf('Service Areas:')).toBe(14);
-    expect(xOf('021-111')).toBeGreaterThan(100);
-    expect(xOf('021-111')).toBe(xOf('a@b.pk'));
+    expect(xOf('Head Quarter:')).toBe(14);
+    ['Test Pest Management', 'Service Areas:', 'Faisalabad Hub | Lahore & nearby cities'].forEach((t) => expect(xOf(t)).toBe(203));
+  });
+
+  it('the footer rule is as wide as the letterhead rule', async () => {
+    const { b } = await pdfKit.builder('Test', 'REF-1');
+    const line = vi.spyOn(b.doc, 'line');
+    b.letterhead();
+    b.finish();
+    const [head, foot] = line.mock.calls;
+    expect(foot[0]).toBe(head[0]);
+    expect(foot[2]).toBe(head[2]);
   });
 
   it('commercial documents can add the registration numbers; letters do not get them', async () => {

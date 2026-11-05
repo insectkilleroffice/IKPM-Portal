@@ -170,7 +170,7 @@ export const CompanyProfileForm: React.FC = () => {
       <div className="card">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1rem' }}>
           <Building2 size={20} color="var(--ikpm-navy-700)" />
-          <div className="card-title">Letterhead & Head Office</div>
+          <div className="card-title">Letterhead & Head Quarter</div>
           <span className="cell-sub" style={{ marginLeft: 'auto' }}>Printed on proposals, invoices, receipts and reports</span>
         </div>
 
@@ -263,9 +263,8 @@ export const CompanyProfileForm: React.FC = () => {
           <Field label="Legal company name *">{input('legalName', 'Insect Killer Pest Management')}</Field>
           <Field label="Short name">{input('shortName', 'IKPM')}</Field>
           <Field label="Tagline" span>{input('tagline', 'Integrated Pest Management & Fumigation Services')}</Field>
-          <Field label="Head office address">{input('address', 'Office 12, Main Boulevard')}</Field>
+          <Field label="Head quarter address">{input('address', 'Office 12, Main Boulevard')}</Field>
           <Field label="City / country">{input('city', 'Karachi, Pakistan')}</Field>
-          <Field label="Site offices" hint="Printed in the letterhead" span>{input('siteOffices', 'Karachi, Islamabad and Lahore')}</Field>
           <Field label="Phone / UAN">{input('phone', '021-111-000-000')}</Field>
           <Field label="Mobile / WhatsApp">{input('mobile', '0300 0000000')}</Field>
           <Field label="Email">{input('email', 'info@insectkiller.pk')}</Field>

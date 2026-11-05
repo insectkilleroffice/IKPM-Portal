@@ -28,8 +28,8 @@ import { days, monthsInWords } from '../features/hr/employmentTerms';
 // ---------------------------------------------------------------------------
 // The primary and accent colours come from the company profile (Settings → Company)
 type RGB = [number, number, number];
-// Everything else is neutral grey, so the documents read as black and red only
-const INK: RGB = [26, 26, 26];
+// Everything else is neutral grey, so the documents read as charcoal and red only
+const INK: RGB = [51, 51, 51];
 const MUTED: RGB = [102, 102, 102];
 const RULE: RGB = [224, 224, 224];
 const TINT: RGB = [246, 246, 246];
@@ -43,6 +43,15 @@ const hexToRgb = (hex: string | undefined, fallback: string): RGB => {
   const n = parseInt(m[1], 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 };
+/** Mobile numbers open WhatsApp; any other number (landline, UAN) opens the phone dialler. */
+export function phoneLink(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  const mobile = /^(?:92|0)?(3\d{9})$/.exec(digits);
+  return mobile ? `https://wa.me/92${mobile[1]}` : `tel:${phone.startsWith('+') ? '+' : ''}${digits}`;
+}
+
+const websiteLink = (site: string) => (/^https?:\/\//i.test(site) ? site : `https://${site}`);
+
 const serviceAreasOf = (p: CompanyProfile) => (p.serviceAreas ?? []).map((a) => a.trim()).filter(Boolean);
 
 const lighten = (c: RGB, amount: number): RGB => c.map((v) => Math.round(v + (255 - v) * amount)) as RGB;
@@ -57,7 +66,11 @@ const SIGN_LINE_W = 60; // a signature line is this long at most, however few bl
 const PAGE_TOP = 20;
 const PAGE_LIMIT = PAGE_H - FOOTER_H - 6;
 const PAGE_ROOM = PAGE_LIMIT - PAGE_TOP;
-const LETTERHEAD_TEXT_W = 92;
+const FOOTER_ADDRESS_W = 66;
+const LETTERHEAD_NAME_SIZE = 11.5;
+const LETTERHEAD_TAGLINE_SIZE = 7;
+const LETTERHEAD_CONTACT_SIZE = 7.8;
+const HEADER_RIGHT = PAGE_W - 7; // the letterhead reaches closer to the page edge than the body text
 const LIST_GUTTER = 8;
 const AREAS_PER_LINE = 4; // footer: more than twice this many areas widens the lines
 const MIN_TABLE_START = 28; // a table too long for one page starts only with room for its head and first rows
@@ -214,14 +227,27 @@ class DocBuilder {
     this.color(c);
   }
 
+  /** Right-aligned line made of pieces; a piece with a url is a clickable link in the PDF. */
+  private linkedLine(pieces: { text: string; url?: string }[], right: number, y: number) {
+    // Letter by letter: the PDF prints without the pair tightening that measuring a whole word assumes
+    const widthOf = (t: string) => [...t].reduce((w, ch) => w + this.doc.getTextWidth(ch), 0);
+    let x = right - pieces.reduce((w, piece) => w + widthOf(piece.text), 0);
+    pieces.forEach(({ text, url }) => {
+      const w = widthOf(text);
+      this.doc.text(text, x, y);
+      if (url) this.doc.link(x, y - 3, w, 4, { url });
+      x += w;
+    });
+  }
+
   /**
-   * Letterhead on the first page: logo on the left; company name, tagline, head office and site
-   * offices in one column on the right; a full-width rule underneath.
+   * Letterhead on the first page: logo on the left; company name, a one-line tagline and clickable
+   * contacts aligned to the right corner, none wider than the name; a full-width rule underneath.
    */
   letterhead() {
     const p = this.profile;
     const top = 11;
-    const right = PAGE_W - M;
+    const right = HEADER_RIGHT;
     let logoW = 0;
     if (this.logo) {
       const scale = Math.min(52 / this.logo.w, 19 / this.logo.h);
@@ -229,32 +255,43 @@ class DocBuilder {
       this.doc.addImage(this.logo.data, 'PNG', M, top, logoW, this.logo.h * scale, 'company-logo', 'FAST');
     }
 
-    // Kept to the right side of the page: a long address wraps instead of stretching towards the logo
-    const room = Math.min(LETTERHEAD_TEXT_W, CONTENT_W - logoW - 6);
-    const headOffice = [p.address, p.city].filter(Boolean).join(', ');
-    this.font(7.8, 'normal', MUTED);
-    const details = [
-      headOffice && `Head Office: ${headOffice}`,
-      p.siteOffices?.trim() && `Site Offices: ${p.siteOffices.trim()}`,
-    ].filter(Boolean).flatMap((l) => this.doc.splitTextToSize(l as string, room) as string[]);
-    const detailsW = Math.max(0, ...details.map((l) => this.doc.getTextWidth(l)));
-    this.font(7.2, 'normal', this.brand);
-    const taglineW = this.doc.getTextWidth(p.tagline);
-    this.font(13, 'bold', this.navy);
-    const nameW = this.doc.getTextWidth(p.legalName);
+    this.font(LETTERHEAD_NAME_SIZE, 'bold', this.navy);
+    const nameW = Math.min(this.doc.getTextWidth(p.legalName), right - M - logoW - 6);
+    this.doc.text(p.legalName, right, top + 3.5, { align: 'right', maxWidth: nameW });
 
-    // Lines start together, and the longest one ends at the right margin
-    const x = right - Math.min(room, Math.max(nameW, taglineW, detailsW));
-    this.doc.text(p.legalName, x, top + 3.5);
-    this.font(7.2, 'normal', this.brand);
-    this.doc.text(p.tagline, x, top + 7.5);
-    this.font(7.8, 'normal', MUTED);
-    details.forEach((l, i) => this.doc.text(l, x, top + 11.7 + i * 3.6));
+    /** The largest font size (up to `size`) that keeps a line within the name's width. */
+    const fit = (text: string, size: number) => {
+      let fitted = size;
+      this.doc.setFontSize(fitted);
+      while (fitted > 4.5 && this.doc.getTextWidth(text) > nameW) {
+        fitted -= 0.1;
+        this.doc.setFontSize(fitted);
+      }
+    };
 
-    const ruleY = Math.max(top + 21, top + 11.7 + details.length * 3.6);
+    // The tagline stays on one line, printed smaller to fit under the name
+    this.font(LETTERHEAD_TAGLINE_SIZE, 'normal', this.brand);
+    fit(p.tagline, LETTERHEAD_TAGLINE_SIZE);
+    this.doc.text(p.tagline, right, top + 7, { align: 'right' });
+
+    const numbers = [p.mobile, p.phone].filter(Boolean) as string[];
+    const contactLines: { text: string; url?: string }[][] = [
+      p.email ? [{ text: p.email, url: `mailto:${p.email}` }] : [],
+      p.website ? [{ text: p.website, url: websiteLink(p.website) }] : [],
+      numbers.flatMap((n, i) => [...(i ? [{ text: '  |  ' }] : []), { text: n, url: phoneLink(n) }]),
+    ].filter((line) => line.length);
+    let y = top + 11.6;
+    contactLines.forEach((pieces) => {
+      this.font(LETTERHEAD_CONTACT_SIZE, 'normal', INK);
+      fit(pieces.map((piece) => piece.text).join(''), LETTERHEAD_CONTACT_SIZE);
+      this.linkedLine(pieces, right, y);
+      y += 4.3;
+    });
+
+    const ruleY = Math.max(top + 21, y - 2.2);
     this.color(this.brand, 'draw');
     this.doc.setLineWidth(0.4);
-    this.doc.line(M, ruleY, right, ruleY);
+    this.doc.line(PAGE_W - right, ruleY, right, ruleY);
     this.y = ruleY + 8;
   }
 
@@ -816,54 +853,78 @@ class DocBuilder {
     this.doc.line(M, 13, PAGE_W - M, 13);
   }
 
-  /** Two parts under a thin rule: company and service areas on the left, contacts on the right. */
+  /** Wraps text so its lines come out as even as possible, using no more lines than `maxW` needs. */
+  private evenLines(text: string, maxW: number): string[] {
+    const lines = this.doc.splitTextToSize(text, maxW) as string[];
+    let best = lines;
+    for (let w = maxW - 1; w > 10; w -= 1) {
+      const tighter = this.doc.splitTextToSize(text, w) as string[];
+      if (tighter.length > lines.length) break;
+      best = tighter;
+    }
+    return best;
+  }
+
+  /**
+   * Two parts under a thin rule as wide as the letterhead's: head quarter on the left, company and
+   * service areas aligned to the right corner, with the verification QR between them.
+   */
   private footer() {
     const p = this.profile;
     const fy = PAGE_H - FOOTER_H + 2.5;
     const LH = 3.5;
     const firstRow = fy + 4;
-    const right = PAGE_W - M;
+    const right = HEADER_RIGHT;
     this.color(RULE, 'draw');
     this.doc.setLineWidth(0.3);
-    this.doc.line(M, fy, right, fy);
+    this.doc.line(PAGE_W - right, fy, right, fy);
 
-    // Right part: phones, email and website, starting together and ending at the margin
-    const contacts = [p.phone, p.mobile, p.email, p.website].filter(Boolean) as string[];
+    // Left part: head quarter, every line starting at the same edge
+    const headQuarter = [p.address, p.city].filter(Boolean).join(', ');
     this.font(6.9, 'normal', MUTED);
-    const contactsW = Math.max(0, ...contacts.map((c) => this.doc.getTextWidth(c)));
-    const contactsX = right - contactsW;
-    contacts.forEach((c, i) => this.doc.text(c, contactsX, firstRow + i * LH));
-
-    // The verification QR sits between the two parts
-    let leftEnd = contactsX - 5;
-    if (this.qr) {
-      const size = 12.5;
-      const qx = contactsX - 5 - size;
-      this.doc.addImage(this.qr.data, 'PNG', qx, fy + 2, size, size, 'verify-qr', 'FAST');
-      this.font(6, 'bold', this.navy);
-      this.doc.text('Scan to', qx - 1.5, fy + 7.5, { align: 'right' });
-      this.doc.text('verify', qx - 1.5, fy + 10.3, { align: 'right' });
-      leftEnd = qx - 11;
+    const addressLines = headQuarter ? this.evenLines(headQuarter, FOOTER_ADDRESS_W) : [];
+    const addressW = Math.max(0, ...addressLines.map((l) => this.doc.getTextWidth(l)));
+    if (addressLines.length) {
+      this.font(6.8, 'bold', this.brand);
+      this.doc.text('Head Quarter:', M, firstRow);
+      this.font(6.9, 'normal', MUTED);
+      addressLines.forEach((l, i) => this.doc.text(l, M, firstRow + (i + 1) * LH));
     }
 
-    // Left part: company, then service areas on two lines at most
+    const QR_SIZE = 12.5;
+    const QR_ROOM = this.qr ? QR_SIZE + 16 : 0; // the code, its "Scan to verify" label and a gap
+
+    // Right part: company, then service areas on two lines at most
     this.font(7.5, 'bold', this.navy);
-    this.doc.text(p.legalName, M, firstRow);
+    const nameW = this.doc.getTextWidth(p.legalName);
+    this.doc.text(p.legalName, right, firstRow, { align: 'right' });
+    let rightW = nameW;
     const areas = serviceAreasOf(p);
     if (areas.length) {
       this.font(6.8, 'bold', this.brand);
-      this.doc.text('Service Areas:', M, firstRow + LH);
+      this.doc.text('Service Areas:', right, firstRow + LH, { align: 'right' });
       const perLine = Math.max(AREAS_PER_LINE, Math.ceil(areas.length / 2));
       const lines = [areas.slice(0, perLine), areas.slice(perLine)].filter((l) => l.length).map((l) => l.join(' | '));
       lines[lines.length - 1] += ' & nearby cities';
-      // A long list prints smaller rather than being cut off or running into the right part
+      // A long list prints smaller rather than running into the left part
+      const room = right - (M + addressW + 5 + QR_ROOM);
       let size = 6.9;
       this.font(size, 'normal', INK);
-      while (size > 5 && Math.max(...lines.map((l) => this.doc.getTextWidth(l))) > leftEnd - M) {
+      const widest = () => Math.max(...lines.map((l) => this.doc.getTextWidth(l)));
+      while (size > 5 && widest() > room) {
         size -= 0.1;
         this.doc.setFontSize(size);
       }
-      lines.forEach((l, i) => this.doc.text(l, M, firstRow + (i + 2) * LH));
+      lines.forEach((l, i) => this.doc.text(l, right, firstRow + (i + 2) * LH, { align: 'right' }));
+      rightW = Math.max(rightW, widest());
+    }
+
+    if (this.qr) {
+      const qx = right - rightW - 5 - QR_SIZE;
+      this.doc.addImage(this.qr.data, 'PNG', qx, fy + 2, QR_SIZE, QR_SIZE, 'verify-qr', 'FAST');
+      this.font(6, 'bold', this.navy);
+      this.doc.text('Scan to', qx - 1.5, fy + 7.5, { align: 'right' });
+      this.doc.text('verify', qx - 1.5, fy + 10.3, { align: 'right' });
     }
   }
 
@@ -1204,15 +1265,15 @@ async function buildProposal(proposal: Proposal): Promise<jsPDF> {
     clientParty(proposal.customerType, proposal.customerId, proposal.customerName, proposal.branchId, 'Prepared for'),
     branches.length > 1
       ? {
-          heading: 'Service sites',
-          name: `${branches.length} branches`,
-          lines: [...branches.slice(0, 5).map((br) => `•  ${br.branchName}`), branches.length > 5 ? `…and ${branches.length - 5} more (see table)` : false],
-        }
+        heading: 'Service sites',
+        name: `${branches.length} branches`,
+        lines: [...branches.slice(0, 5).map((br) => `•  ${br.branchName}`), branches.length > 5 ? `…and ${branches.length - 5} more (see table)` : false],
+      }
       : {
-          heading: 'Service site',
-          name: branches[0]?.branchName || proposal.branchName || 'Main premises',
-          lines: [branches[0]?.address || proposal.siteAddress, proposal.warrantyPeriodMonths ? `Warranty: ${proposal.warrantyPeriodMonths} months` : false, `Payment terms: ${proposal.paymentTerms}`],
-        }
+        heading: 'Service site',
+        name: branches[0]?.branchName || proposal.branchName || 'Main premises',
+        lines: [branches[0]?.address || proposal.siteAddress, proposal.warrantyPeriodMonths ? `Warranty: ${proposal.warrantyPeriodMonths} months` : false, `Payment terms: ${proposal.paymentTerms}`],
+      }
   );
 
   b.section('Scope of work');

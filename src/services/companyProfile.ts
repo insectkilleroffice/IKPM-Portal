@@ -19,11 +19,9 @@ export interface CompanyProfile {
   legalName: string;
   shortName: string;
   tagline: string;
-  /** Head-office address line (street, plot, building). */
+  /** Head quarter address line (street, plot, building), printed in the PDF footer. */
   address: string;
   city: string;
-  /** Site offices, printed in the letterhead, e.g. "Karachi, Islamabad and Lahore". */
-  siteOffices?: string;
   phone: string;
   mobile?: string;
   email: string;
@@ -76,7 +74,7 @@ export interface CompanyProfile {
   watermarkUrl?: string;
   /** How strongly it prints, as a percentage (default 8). */
   watermarkOpacity?: number;
-  /** Document colours as hex (#0A0A0A): headings, tables and totals use the primary, accents use the second. */
+  /** Document colours as hex (#4A4A4A): headings, tables and totals use the primary, accents use the second. */
   brandColor?: string;
   accentColor?: string;
   /** @deprecated Use stampUrl instead. Kept so older Firestore documents still load without errors. */
@@ -103,8 +101,8 @@ export interface CompanyProfile {
   updatedBy?: string;
 }
 
-/** House colours used when the profile has none (black headings, red accents). */
-export const DEFAULT_BRAND_COLOR = '#0A0A0A';
+/** House colours used when the profile has none (charcoal grey headings and tables, red accents). */
+export const DEFAULT_BRAND_COLOR = '#4A4A4A';
 export const DEFAULT_ACCENT_COLOR = '#C8102E';
 
 export const DEFAULT_PROPOSAL_TERMS = [
@@ -130,7 +128,6 @@ const defaults = (): CompanyProfile => ({
   strn: (import.meta.env.VITE_COMPANY_STRN as string | undefined) || '',
   proposalTerms: DEFAULT_PROPOSAL_TERMS,
   invoiceNotes: DEFAULT_INVOICE_NOTES,
-  siteOffices: 'Karachi, Islamabad and Lahore',
   serviceAreas: ['Faisalabad Hub', 'Lahore'],
   // signatoryTitle kept for backwards-compat reads of old Firestore data
   signatoryTitle: 'Authorised Signatory',
