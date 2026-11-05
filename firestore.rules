@@ -763,7 +763,7 @@ service cloud.firestore {
     // Lets the portal check which rules are live (dataService.rulesAreCurrent). Change this id
     // together with RULES_VERSION in src/services/dataService.ts whenever the rules change.
     match /rules_probe/{version} {
-      allow get: if version == '2026-11-04-a';
+      allow get: if version == '2026-11-05-a';
     }
 
     match /audit_logs/{id} {

@@ -12,7 +12,7 @@ vi.mock('../services/dataService', () => ({
 vi.mock('../services/companyProfile', () => ({
   DEFAULT_BRAND_COLOR: '#0A0A0A',
   DEFAULT_ACCENT_COLOR: '#C8102E',
-  companyProfile: { get: () => ({ legalName: 'Test Pest Management', shortName: 'TPM', tagline: 'Pest control', address: 'Karachi', serviceAreas: ['Faisalabad Hub', ' Lahore ', ''] }) },
+  companyProfile: { get: () => ({ legalName: 'Test Pest Management', shortName: 'TPM', tagline: 'Pest control', address: 'Plot 1', city: 'Karachi', siteOffices: 'Islamabad and Lahore', phone: '021-111', mobile: '0300-222', email: 'a@b.pk', website: 'b.pk', ntn: '123', strn: '456', serviceAreas: ['Faisalabad Hub', ' Lahore ', ''] }) },
 }));
 const tableHeads = vi.hoisted(() => [] as string[][]);
 vi.mock('jspdf-autotable', async (original) => {
@@ -78,14 +78,56 @@ describe('letter particulars', () => {
 describe('header and footer', () => {
   const printed = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.map((c) => String(c[0]));
 
-  it('service areas print in the footer, trimmed, without blanks, and not in the letterhead', async () => {
+  it('the letterhead prints the company, head office and site offices, and nothing else', async () => {
     const { b } = await pdfKit.builder('Test', 'REF-1');
     const text = vi.spyOn(b.doc, 'text');
     b.letterhead();
-    expect(printed(text).join('|')).not.toMatch(/service areas/i);
+    expect(printed(text)).toEqual(['Test Pest Management', 'Pest control', 'Head Office: Plot 1, Karachi', 'Site Offices: Islamabad and Lahore']);
+  });
+
+  it('a long head office address wraps to two lines and stays on the right of the page', async () => {
+    const address = 'Suite 407, 4th Floor, Dr. Inn Plaza, Block 3, Nazimabad, Karachi 74600';
+    const { b } = await pdfKit.builder('Test', 'REF-1', undefined, { ...companyProfile.get(), address, city: 'Karachi, Pakistan' });
+    const text = vi.spyOn(b.doc, 'text');
+    b.letterhead();
+    const lines = text.mock.calls.filter((c) => /Head Office|Pakistan/.test(String(c[0])));
+    expect(lines).toHaveLength(2);
+    expect(String(lines[0][0])).toMatch(/^Head Office: Suite 407/);
+    lines.forEach((c) => expect(c[1]).toBeGreaterThan(100));
+    expect(lines[0][1]).toBe(lines[1][1]);
+  });
+
+  it('the underline runs the full length of the document title', async () => {
+    const short = await pdfKit.builder('Test', 'REF-1');
+    const long = await pdfKit.builder('A Much Longer Title', 'REF-1');
+    const underlineW = (b: typeof short.b) => {
+      const rect = vi.spyOn(b.doc, 'rect');
+      b.titleBand([{ label: 'No.', value: '1' }]);
+      return rect.mock.calls[0][2];
+    };
+    const shortW = underlineW(short.b);
+    const longW = underlineW(long.b);
+    expect(shortW).toBeGreaterThan(16);
+    expect(longW).toBeGreaterThan(shortW);
+  });
+
+  it('the footer has two parts: company and service areas, then contacts', async () => {
+    const { b } = await pdfKit.builder('Test', 'REF-1');
+    const text = vi.spyOn(b.doc, 'text');
     b.finish();
-    expect(printed(text)).toContain('SERVICE AREAS');
-    expect(printed(text)).toContain('Faisalabad Hub  ·  Lahore');
+    expect(printed(text)).toEqual(expect.arrayContaining(['Test Pest Management', 'Service Areas:', 'Faisalabad Hub | Lahore & nearby cities', '021-111', '0300-222', 'a@b.pk', 'b.pk']));
+    const xOf = (t: string) => text.mock.calls.find((c) => c[0] === t)?.[1] as number;
+    expect(xOf('Service Areas:')).toBe(14);
+    expect(xOf('021-111')).toBeGreaterThan(100);
+    expect(xOf('021-111')).toBe(xOf('a@b.pk'));
+  });
+
+  it('commercial documents can add the registration numbers; letters do not get them', async () => {
+    const { b } = await pdfKit.builder('Test', 'REF-1');
+    const text = vi.spyOn(b.doc, 'text');
+    b.registrationLine();
+    expect(printed(text)[0]).toContain('NTN: 123');
+    expect(printed(text)[0]).toContain('STRN: 456');
   });
 
   it('the footer no longer prints the document reference, page number or generated date', async () => {
@@ -110,7 +152,14 @@ describe('header and footer', () => {
       b.doc.addPage();
       const addImage = vi.spyOn(b.doc, 'addImage');
       b.finish();
-      return (addImage.mock.calls as unknown[][]).filter((c) => c[6] === 'page-background').length;
+      const drawn = (addImage.mock.calls as unknown[][]).filter((c) => c[6] === 'page-background');
+      // Centred on the A4 page, at the smaller background size
+      drawn.forEach(([, , x, y, w, h]) => {
+        expect(w).toBeLessThanOrEqual(110);
+        expect((x as number) + (w as number) / 2).toBeCloseTo(105);
+        expect((y as number) + (h as number) / 2).toBeCloseTo(148.5);
+      });
+      return drawn.length;
     };
     try {
       expect(await backgrounds('https://example.test/bg.png')).toBe(2);

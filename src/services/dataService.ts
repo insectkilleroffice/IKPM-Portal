@@ -328,7 +328,7 @@ const PROTECTED_FIELDS = ['ownerUid', 'teamId', 'customerId', 'contractId', 'lin
   'taxTotal', 'invoiceNumber', 'role', 'dataScope', 'isActive', 'contacts', 'existingCustomerId'];
 
 /** Matches the rules_probe id in firestore.rules; tells whether the published rules are current. */
-export const RULES_VERSION = '2026-11-04-a';
+export const RULES_VERSION = '2026-11-05-a';
 
 class DataService {
   /**

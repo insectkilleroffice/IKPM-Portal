@@ -34,8 +34,8 @@ const MUTED: RGB = [102, 102, 102];
 const RULE: RGB = [224, 224, 224];
 const TINT: RGB = [246, 246, 246];
 const SIGN_LINE: RGB = [140, 140, 140];
-const BACKGROUND_MAX_W = 150; // mm, centred on every page
-const BACKGROUND_MAX_H = 190;
+const BACKGROUND_MAX_W = 110; // mm, centred on every page
+const BACKGROUND_MAX_H = 140;
 const DEFAULT_BACKGROUND_OPACITY = 8; // percent
 
 const hexToRgb = (hex: string | undefined, fallback: string): RGB => {
@@ -51,13 +51,15 @@ const PAGE_W = 210;
 const PAGE_H = 297;
 const M = 14; // side margin
 const CONTENT_W = PAGE_W - M * 2;
-const FOOTER_H = 18;
+const FOOTER_H = 21;
 const SIGN_LINE_W = 60; // a signature line is this long at most, however few blocks share the row
 // Pagination: the area content may use on a page
 const PAGE_TOP = 20;
 const PAGE_LIMIT = PAGE_H - FOOTER_H - 6;
 const PAGE_ROOM = PAGE_LIMIT - PAGE_TOP;
+const LETTERHEAD_TEXT_W = 92;
 const LIST_GUTTER = 8;
+const AREAS_PER_LINE = 4; // footer: more than twice this many areas widens the lines
 const MIN_TABLE_START = 28; // a table too long for one page starts only with room for its head and first rows
 
 const money = (n: number | undefined) =>
@@ -212,7 +214,10 @@ class DocBuilder {
     this.color(c);
   }
 
-  /** Letterhead on the first page: logo left, company identity right, a single thin red rule under it. */
+  /**
+   * Letterhead on the first page: logo on the left; company name, tagline, head office and site
+   * offices in one column on the right; a full-width rule underneath.
+   */
   letterhead() {
     const p = this.profile;
     const top = 11;
@@ -224,24 +229,44 @@ class DocBuilder {
       this.doc.addImage(this.logo.data, 'PNG', M, top, logoW, this.logo.h * scale, 'company-logo', 'FAST');
     }
 
-    this.font(13, 'bold', this.navy);
-    this.doc.text(p.legalName, right, top + 3.5, { align: 'right' });
+    // Kept to the right side of the page: a long address wraps instead of stretching towards the logo
+    const room = Math.min(LETTERHEAD_TEXT_W, CONTENT_W - logoW - 6);
+    const headOffice = [p.address, p.city].filter(Boolean).join(', ');
+    this.font(7.8, 'normal', MUTED);
+    const details = [
+      headOffice && `Head Office: ${headOffice}`,
+      p.siteOffices?.trim() && `Site Offices: ${p.siteOffices.trim()}`,
+    ].filter(Boolean).flatMap((l) => this.doc.splitTextToSize(l as string, room) as string[]);
+    const detailsW = Math.max(0, ...details.map((l) => this.doc.getTextWidth(l)));
     this.font(7.2, 'normal', this.brand);
-    this.doc.text(p.tagline, right, top + 7.5, { align: 'right' });
-    this.font(7.5, 'normal', MUTED);
-    const lines = [
-      [p.address, p.city].filter(Boolean).join(', '),
-      [p.phone && `Tel: ${p.phone}`, p.mobile && `Mob: ${p.mobile}`, p.email].filter(Boolean).join('   ·   '),
-      [p.website, p.ntn && `NTN: ${p.ntn}`, p.strn && `STRN: ${p.strn}`].filter(Boolean).join('   ·   '),
-      [p.provincialTaxNo, p.pcoLicense && `PCO Licence: ${p.pcoLicense}`].filter(Boolean).join('   ·   '),
-    ].filter(Boolean).flatMap((l) => this.doc.splitTextToSize(l, CONTENT_W - logoW - 6) as string[]);
-    lines.forEach((l, i) => this.doc.text(l, right, top + 11.5 + i * 3.5, { align: 'right' }));
+    const taglineW = this.doc.getTextWidth(p.tagline);
+    this.font(13, 'bold', this.navy);
+    const nameW = this.doc.getTextWidth(p.legalName);
 
-    const ruleY = Math.max(top + 22, top + 11.5 + lines.length * 3.5);
+    // Lines start together, and the longest one ends at the right margin
+    const x = right - Math.min(room, Math.max(nameW, taglineW, detailsW));
+    this.doc.text(p.legalName, x, top + 3.5);
+    this.font(7.2, 'normal', this.brand);
+    this.doc.text(p.tagline, x, top + 7.5);
+    this.font(7.8, 'normal', MUTED);
+    details.forEach((l, i) => this.doc.text(l, x, top + 11.7 + i * 3.6));
+
+    const ruleY = Math.max(top + 21, top + 11.7 + details.length * 3.6);
     this.color(this.brand, 'draw');
     this.doc.setLineWidth(0.4);
     this.doc.line(M, ruleY, right, ruleY);
     this.y = ruleY + 8;
+  }
+
+  /** NTN, STRN and licence numbers in one small line under the letterhead, for commercial documents. */
+  registrationLine() {
+    const p = this.profile;
+    const line = [p.ntn && `NTN: ${p.ntn}`, p.strn && `STRN: ${p.strn}`, p.provincialTaxNo, p.pcoLicense && `PCO Licence: ${p.pcoLicense}`]
+      .filter(Boolean).join('   ·   ');
+    if (!line) return;
+    this.font(7, 'normal', MUTED);
+    this.doc.text(line, PAGE_W - M, this.y - 4.4, { align: 'right', maxWidth: CONTENT_W });
+    this.y += 1.5;
   }
 
   /** Large document title with a reference box on the right. */
@@ -255,8 +280,11 @@ class DocBuilder {
       this.font(titleSize, 'bold', this.navy);
     }
     this.doc.text(heading, M, startY + 6, { charSpace: 0.4 });
+    // The underline runs the full length of the title. Letters are measured one by one because the
+    // PDF prints them without the pair tightening that measuring the whole word assumes.
+    const titleW = [...heading].reduce((w, ch) => w + this.doc.getTextWidth(ch), 0) + (heading.length - 1) * 0.4;
     this.color(this.brand, 'fill');
-    this.doc.rect(M, startY + 8.4, 16, 0.9, 'F');
+    this.doc.rect(M, startY + 8.4, titleW, 0.9, 'F');
     if (subtitle) {
       this.font(8.5, 'normal', MUTED);
       this.doc.text(subtitle, M, startY + 13, { maxWidth: 100 });
@@ -788,46 +816,54 @@ class DocBuilder {
     this.doc.line(M, 13, PAGE_W - M, 13);
   }
 
-  /** Company, contacts and service areas under a thin rule, with the verification QR on the right. */
+  /** Two parts under a thin rule: company and service areas on the left, contacts on the right. */
   private footer() {
     const p = this.profile;
-    const fy = PAGE_H - FOOTER_H + 3;
+    const fy = PAGE_H - FOOTER_H + 2.5;
+    const LH = 3.5;
+    const firstRow = fy + 4;
+    const right = PAGE_W - M;
     this.color(RULE, 'draw');
     this.doc.setLineWidth(0.3);
-    this.doc.line(M, fy, PAGE_W - M, fy);
+    this.doc.line(M, fy, right, fy);
 
-    this.font(7.5, 'bold', this.navy);
-    this.doc.text(p.legalName, M, fy + 4.3);
+    // Right part: phones, email and website, starting together and ending at the margin
+    const contacts = [p.phone, p.mobile, p.email, p.website].filter(Boolean) as string[];
     this.font(6.9, 'normal', MUTED);
-    this.doc.text([p.phone, p.mobile, p.email, p.website].filter(Boolean).join('   ·   '), M, fy + 7.9);
+    const contactsW = Math.max(0, ...contacts.map((c) => this.doc.getTextWidth(c)));
+    const contactsX = right - contactsW;
+    contacts.forEach((c, i) => this.doc.text(c, contactsX, firstRow + i * LH));
 
-    let room = CONTENT_W;
+    // The verification QR sits between the two parts
+    let leftEnd = contactsX - 5;
     if (this.qr) {
-      const size = 11.5;
-      const qx = PAGE_W - M - size;
-      this.doc.addImage(this.qr.data, 'PNG', qx, fy + 1.2, size, size, 'verify-qr', 'FAST');
+      const size = 12.5;
+      const qx = contactsX - 5 - size;
+      this.doc.addImage(this.qr.data, 'PNG', qx, fy + 2, size, size, 'verify-qr', 'FAST');
       this.font(6, 'bold', this.navy);
-      this.doc.text('Scan to', qx - 1.5, fy + 6, { align: 'right' });
-      this.doc.text('verify', qx - 1.5, fy + 8.8, { align: 'right' });
-      room -= size + 10;
+      this.doc.text('Scan to', qx - 1.5, fy + 7.5, { align: 'right' });
+      this.doc.text('verify', qx - 1.5, fy + 10.3, { align: 'right' });
+      leftEnd = qx - 11;
     }
 
+    // Left part: company, then service areas on two lines at most
+    this.font(7.5, 'bold', this.navy);
+    this.doc.text(p.legalName, M, firstRow);
     const areas = serviceAreasOf(p);
     if (areas.length) {
-      const label = 'SERVICE AREAS';
-      const y = fy + 11.5;
-      this.font(6.4, 'bold', this.brand);
-      this.doc.text(label, M, y);
-      const labelW = this.doc.getTextWidth(label) + 2;
-      const list = areas.join('  ·  ');
-      // Stays on one line: a long list prints smaller rather than being cut off
+      this.font(6.8, 'bold', this.brand);
+      this.doc.text('Service Areas:', M, firstRow + LH);
+      const perLine = Math.max(AREAS_PER_LINE, Math.ceil(areas.length / 2));
+      const lines = [areas.slice(0, perLine), areas.slice(perLine)].filter((l) => l.length).map((l) => l.join(' | '));
+      lines[lines.length - 1] += ' & nearby cities';
+      // A long list prints smaller rather than being cut off or running into the right part
       let size = 6.9;
       this.font(size, 'normal', INK);
-      while (size > 5 && this.doc.getTextWidth(list) > room - labelW) {
+      while (size > 5 && Math.max(...lines.map((l) => this.doc.getTextWidth(l))) > leftEnd - M) {
         size -= 0.1;
         this.doc.setFontSize(size);
       }
-      this.doc.text(list, M + labelW, y);
+      lines.forEach((l, i) => this.doc.text(l, M, firstRow + (i + 2) * LH));
     }
   }
 
@@ -1036,6 +1072,7 @@ async function buildPlanProposal(proposal: Proposal): Promise<jsPDF> {
     });
 
   // The date is always the day the proposal was created
+  b.registrationLine();
   b.titleBand(
     [
       { label: 'Ref. No.', value: ref },
@@ -1151,6 +1188,7 @@ async function buildProposal(proposal: Proposal): Promise<jsPDF> {
   });
   const validUntil = new Date(new Date(proposal.createdAt).getTime() + (proposal.validityDays || 30) * 86400000).toISOString();
 
+  b.registrationLine();
   b.titleBand(
     [
       { label: 'Proposal No.', value: ref },
@@ -1241,6 +1279,7 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
     type: 'invoice', issued: invoice.issueDate, client: invoice.customerName, clientIsPerson: invoice.customerType !== 'company', amount: invoice.grossPayable, status: invoice.status,
   }, isCash);
 
+  b.registrationLine();
   b.titleBand(
     [
       { label: isCash ? 'Memo No.' : 'Invoice No.', value: invoice.invoiceNumber },
@@ -1276,7 +1315,6 @@ async function buildInvoice(invoice: Invoice): Promise<jsPDF> {
       job && `Service job: ${job.id} (${formatDate(job.scheduledDate)})`,
       job?.siteAddress,
       invoice.contractId && `Contract: ${invoice.contractId}`,
-      !isCash && [profile.ntn && `Our NTN: ${profile.ntn}`, profile.strn && `Our STRN: ${profile.strn}`].filter(Boolean).join('  ·  '),
     ],
   });
 
@@ -1333,6 +1371,7 @@ async function buildReceipt(receipt: PaymentReceipt): Promise<jsPDF> {
     type: 'receipt', issued: receipt.paymentDate, client: receipt.customerName, clientIsPerson: invoice ? invoice.customerType !== 'company' : true,
     amount: receipt.totalCreditApplied || receipt.cashAmountReceived, status: receipt.isReversed ? 'reversed' : 'received',
   });
+  b.registrationLine();
   b.titleBand([
     { label: 'Receipt No.', value: receipt.receiptNumber },
     { label: 'Date', value: formatDate(receipt.paymentDate) },
@@ -1785,6 +1824,7 @@ async function buildStatement(st: ClientStatement): Promise<jsPDF> {
   const invoices = st.invoiceIds.map((id) => dataService.getInvoiceById(id)).filter((i): i is Invoice => Boolean(i) && i!.status !== 'void_reversed');
   const previous = st.previousInvoiceIds.map((id) => dataService.getInvoiceById(id)).filter((i): i is Invoice => Boolean(i) && i!.balanceDue > 0);
   const cycle = !st.billingCycleDays ? 'Monthly' : st.billingCycleDays === 90 ? 'Quarterly' : `Every ${st.billingCycleDays} days`;
+  b.registrationLine();
   b.titleBand([
     { label: 'Invoice No.', value: st.statementNumber },
     ...(st.poNumber ? [{ label: 'Your PO No.', value: st.poNumber }] : []),

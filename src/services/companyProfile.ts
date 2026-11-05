@@ -22,6 +22,8 @@ export interface CompanyProfile {
   /** Head-office address line (street, plot, building). */
   address: string;
   city: string;
+  /** Site offices, printed in the letterhead, e.g. "Karachi, Islamabad and Lahore". */
+  siteOffices?: string;
   phone: string;
   mobile?: string;
   email: string;
@@ -128,6 +130,7 @@ const defaults = (): CompanyProfile => ({
   strn: (import.meta.env.VITE_COMPANY_STRN as string | undefined) || '',
   proposalTerms: DEFAULT_PROPOSAL_TERMS,
   invoiceNotes: DEFAULT_INVOICE_NOTES,
+  siteOffices: 'Karachi, Islamabad and Lahore',
   serviceAreas: ['Faisalabad Hub', 'Lahore'],
   // signatoryTitle kept for backwards-compat reads of old Firestore data
   signatoryTitle: 'Authorised Signatory',

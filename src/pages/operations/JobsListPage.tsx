@@ -23,6 +23,7 @@ import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { StatusBadge } from '../../components/common/StatusBadge';
 import { Modal } from '../../components/common/Modal';
 import { formatDate, generatePermanentId } from '../../lib/formatters';
+import { inDateRange } from '../../lib/dateRange';
 import { PcoTicks } from '../../features/schedule/PcoTicks';
 import { pcoEmployeeConflicts } from '../../lib/visitSchedule';
 import { pdfGenerator } from '../../lib/pdfGenerator';
@@ -109,6 +110,7 @@ export const JobsListPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'tomorrow' | 'week' | 'custom'>('all');
   const [customDate, setCustomDate] = useState(todayStr);
+  const [customEndDate, setCustomEndDate] = useState('');
   const [selectedJob, setSelectedJob] = useState<ServiceJob | null>(null);
   const [showNewJobModal, setShowNewJobModal] = useState(
     (searchParams.get('action') === 'new_job' || Boolean(searchParams.get('fromProposal')))
@@ -357,6 +359,7 @@ export const JobsListPage: React.FC = () => {
     }
   }, [linkedProposal, paramCustomerId, paramCustomerType]);
 
+  const pickedDates = dateFilter === 'custom';
   const filteredJobs = jobs.filter((j) => {
     const q = searchQuery.toLowerCase();
     const matchSearch =
@@ -370,19 +373,23 @@ export const JobsListPage: React.FC = () => {
     const matchStatus = statusFilter === 'all' || j.status === statusFilter;
 
     // Completed & cancelled jobs are historical — always show regardless of date filter
-    // so staff can find past records without clearing the date picker.
+    // so staff can find past records without clearing the date picker. Dates picked by hand
+    // apply to every job, so a past period can be pulled up on its own.
     const isHistorical = j.status === 'completed' || j.status === 'cancelled';
     let matchDate = true;
-    if (!isHistorical) {
+    if (pickedDates) {
+      matchDate = inDateRange(j.scheduledDate, customDate, customEndDate);
+    } else if (!isHistorical) {
       if (dateFilter === 'today') matchDate = j.scheduledDate === todayStr;
       else if (dateFilter === 'tomorrow') matchDate = j.scheduledDate === tomorrowStr;
       else if (dateFilter === 'week') matchDate = j.scheduledDate >= todayStr && j.scheduledDate <= weekEndStr;
-      else if (dateFilter === 'custom') matchDate = j.scheduledDate === customDate;
   
     }
 
     return matchSearch && matchStatus && matchDate;
   });
+  // Picked dates read in date order, earliest first
+  if (pickedDates) filteredJobs.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate));
 
   const handleCreateJob = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -923,7 +930,7 @@ export const JobsListPage: React.FC = () => {
               { id: 'tomorrow', label: 'Tomorrow' },
               { id: 'week', label: 'This Week' },
               { id: 'all', label: 'All' },
-              { id: 'custom', label: 'Pick Date' },
+              { id: 'custom', label: 'Pick Dates' },
             ] as const).map((f) => (
               <button
                 key={f.id}
@@ -945,13 +952,33 @@ export const JobsListPage: React.FC = () => {
             ))}
           </div>
           {dateFilter === 'custom' && (
-            <input
-              type="date"
-              className="form-input"
-              style={{ height: '32px', width: '150px', fontSize: '0.8rem' }}
-              value={customDate}
-              onChange={(e) => setCustomDate(e.target.value)}
-            />
+            <>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                From
+                <input
+                  type="date"
+                  className="form-input"
+                  style={{ height: '32px', width: '150px', fontSize: '0.8rem' }}
+                  value={customDate}
+                  onChange={(e) => setCustomDate(e.target.value)}
+                />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                To
+                <input
+                  type="date"
+                  className="form-input"
+                  style={{ height: '32px', width: '150px', fontSize: '0.8rem' }}
+                  value={customEndDate}
+                  min={customDate || undefined}
+                  title="Leave empty to see the From date only"
+                  onChange={(e) => setCustomEndDate(e.target.value)}
+                />
+              </label>
+              {customEndDate && (
+                <button type="button" className="btn btn-sm btn-ghost" onClick={() => setCustomEndDate('')}>Clear end date</button>
+              )}
+            </>
           )}
           {dateFilter !== 'all' && (
             <span style={{ fontSize: '0.75rem', color: 'var(--ikpm-emerald-700)', fontWeight: 600 }}>

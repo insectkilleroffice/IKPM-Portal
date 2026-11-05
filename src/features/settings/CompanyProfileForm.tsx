@@ -265,6 +265,7 @@ export const CompanyProfileForm: React.FC = () => {
           <Field label="Tagline" span>{input('tagline', 'Integrated Pest Management & Fumigation Services')}</Field>
           <Field label="Head office address">{input('address', 'Office 12, Main Boulevard')}</Field>
           <Field label="City / country">{input('city', 'Karachi, Pakistan')}</Field>
+          <Field label="Site offices" hint="Printed in the letterhead" span>{input('siteOffices', 'Karachi, Islamabad and Lahore')}</Field>
           <Field label="Phone / UAN">{input('phone', '021-111-000-000')}</Field>
           <Field label="Mobile / WhatsApp">{input('mobile', '0300 0000000')}</Field>
           <Field label="Email">{input('email', 'info@insectkiller.pk')}</Field>
@@ -279,7 +280,7 @@ export const CompanyProfileForm: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
           <div>
             <div className="card-title">Service areas</div>
-            <div className="cell-sub">Cities and hubs where we provide services. Printed in the footer of every PDF.</div>
+            <div className="cell-sub">Cities and hubs where we provide services. Printed in the footer of every PDF, followed by "& nearby cities".</div>
           </div>
           {isSuperAdmin && (
             <button type="button" className="btn btn-sm btn-secondary" onClick={() => set('serviceAreas', [...serviceAreas, ''])}>
