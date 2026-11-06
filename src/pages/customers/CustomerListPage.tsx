@@ -11,7 +11,7 @@ import {
   History,
 } from 'lucide-react';
 import { dataService } from '../../services/dataService';
-import { formatPKR, formatNTN, formatCNIC } from '../../lib/formatters';
+import { formatPKR, formatNTN, formatCNIC, maskCNIC } from '../../lib/formatters';
 import { Breadcrumbs } from '../../components/common/Breadcrumbs';
 import { Modal } from '../../components/common/Modal';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -713,10 +713,11 @@ export const CustomerListPage: React.FC = () => {
               <label className="form-label">CNIC Identity Number</label>
               <input
                 type="text"
+                inputMode="numeric"
                 className="form-input"
                 placeholder="42101-1234567-1"
                 value={newIndividual.cnic}
-                onChange={(e) => setNewIndividual({ ...newIndividual, cnic: e.target.value })}
+                onChange={(e) => setNewIndividual({ ...newIndividual, cnic: maskCNIC(e.target.value) })}
               />
               <FieldError message={individualErrors.cnic} />
             </div>

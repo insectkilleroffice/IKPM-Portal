@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { maskCNIC } from '../lib/formatters';
 import { cnicProblem, emailProblem, mobileProblem, ntnProblem, phoneProblem, strnProblem } from '../lib/validation';
 
 describe('form validation', () => {
@@ -18,6 +19,17 @@ describe('form validation', () => {
     expect(phoneProblem('021-1234567')).toBeUndefined();
     expect(phoneProblem('042 12345678')).toBeUndefined();
     expect(phoneProblem('abc')).toBeDefined();
+  });
+
+  it('adds the CNIC dashes while typing', () => {
+    expect(maskCNIC('42401')).toBe('42401');
+    expect(maskCNIC('424011')).toBe('42401-1');
+    expect(maskCNIC('424011223123')).toBe('42401-1223123');
+    expect(maskCNIC('4240112231230')).toBe('42401-1223123-0');
+    expect(maskCNIC('42401-1223123-0999')).toBe('42401-1223123-0'); // no more than 13 digits
+    expect(maskCNIC('42401-')).toBe('42401'); // backspacing past a dash works
+    expect(maskCNIC('abc')).toBe('');
+    expect(maskCNIC(undefined)).toBe('');
   });
 
   it('checks CNIC, NTN and STRN formats', () => {

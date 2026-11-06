@@ -854,7 +854,7 @@ class DataService {
 
   /** Active PCOs (HR employees; PCOs have no portal login). */
   public getActivePcos(): Employee[] {
-    return this.getEmployees().filter((e) => e.role === 'pco' && e.status !== 'inactive');
+    return this.getEmployees().filter((e) => e.role === 'pco' && e.status !== 'inactive' && !e.id.startsWith('CAND-'));
   }
 
   /**
@@ -2520,7 +2520,8 @@ class DataService {
 
   // ---------- Employees (Change 42, 48) ----------
   public getEmployees(filter?: { role?: string; status?: string }): Employee[] {
-    let list = (this.s.employees || []) as Employee[];
+    // A candidate's old record is kept once they become an employee, but is no longer listed
+    let list = ((this.s.employees || []) as Employee[]).filter((e) => !e.mergedIntoId);
     if (filter?.role) list = list.filter((e) => e.role === filter.role);
     if (filter?.status) list = list.filter((e) => e.status === filter.status);
     return list;

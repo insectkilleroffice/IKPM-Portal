@@ -1,5 +1,6 @@
 // Employee letters build as real PDFs for every kind, including letters issued before clause wording
 // was saved on the letter. Particulars print as paragraphs; service areas print in the footer, and an uploaded background on every page.
+import { inflateSync } from 'node:zlib';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { EmployeeLetter, EmployeeLetterKind } from '../types/hr';
 
@@ -15,13 +16,17 @@ vi.mock('../services/companyProfile', () => ({
   companyProfile: { get: () => ({ legalName: 'Test Pest Management', shortName: 'TPM', tagline: 'Pest control', address: 'Plot 1', city: 'Karachi', phone: '021-111', mobile: '0300-222', email: 'a@b.pk', website: 'b.pk', ntn: '123', strn: '456', serviceAreas: ['Faisalabad Hub', ' Lahore ', ''] }) },
 }));
 const tableHeads = vi.hoisted(() => [] as string[][]);
+const tableFinish = vi.hoisted(() => [] as { head: string; left: number; right: number; thirdColumnAlign?: string }[]);
 vi.mock('jspdf-autotable', async (original) => {
   const actual = await original<typeof import('jspdf-autotable')>();
   return {
     ...actual,
     autoTable: (doc: Parameters<typeof actual.autoTable>[0], options: Parameters<typeof actual.autoTable>[1]) => {
       tableHeads.push((options.head?.[0] ?? []) as string[]);
-      return actual.autoTable(doc, options);
+      const result = actual.autoTable(doc, options);
+      const table = (doc as unknown as { lastAutoTable?: { columns: { width: number }[]; settings: { margin: { left: number } } } }).lastAutoTable;
+      if (table) tableFinish.push({ head: String((options.head?.[0] as string[] | undefined)?.[1]), left: table.settings.margin.left, right: table.settings.margin.left + table.columns.reduce((w, c) => w + c.width, 0), thirdColumnAlign: (options.columnStyles as Record<number, { halign?: string }> | undefined)?.[2]?.halign });
+      return result;
     },
   };
 });
@@ -33,14 +38,14 @@ const { letterClauseSections } = await import('../features/hr/employmentTerms');
 const { companyProfile } = await import('../services/companyProfile');
 
 const terms = {
-  designation: 'Entomologist', department: 'Quality Assurance', reportingTo: 'CEO', joiningDate: '2026-11-01',
+  designation: 'Entomologist', department: 'Operations', reportingTo: 'CEO', joiningDate: '2026-11-01',
   probationMonths: 2, probationEndDate: '2027-01-01', basicSalary: 60000,
   allowances: [{ label: 'Mobile package', amount: 2000 }], grossSalary: 62000,
   workingHours: '9:00 am to 6:00 pm, Monday to Saturday', noticeDaysProbation: 7, noticeDaysPermanent: 30, confirmationDate: '2027-01-02',
 };
 const letter = (kind: EmployeeLetterKind, frozen = true): EmployeeLetter => ({
   id: `EMP-0007_${kind}_1`, employeeId: 'EMP-0007', employeeName: 'Ali Raza', kind, refNo: 'IKPM/HR/XX/2026/0001', status: 'issued',
-  terms: { ...terms, ...(frozen ? { clauseSections: letterClauseSections(kind, terms, 'entomologist') } : {}) },
+  terms: { ...terms, ...(frozen ? { clauseSections: letterClauseSections(kind, terms, ['site_audits']) } : {}) },
   issuedAt: '2026-11-01T09:00:00.000Z', issuedBy: 'hr@test', issuedByName: 'HR Officer', createdAt: '', updatedAt: '',
 });
 
@@ -64,13 +69,59 @@ describe('employee letter PDFs', () => {
   });
 });
 
+describe('employment agreement layout', () => {
+  /** The PDF's page content, which jsPDF stores compressed. */
+  const printedText = async (kind: EmployeeLetterKind) => {
+    const bytes = Buffer.from(await (await pdfGenerator.employeeLetterPDFBlob(letter(kind))).arrayBuffer());
+    const raw = bytes.toString('latin1');
+    return [...raw.matchAll(/stream\r?\n([\s\S]*?)endstream/g)]
+      .map((m) => inflateSync(bytes.subarray(m.index + m[0].indexOf(m[1]), m.index + m[0].indexOf(m[1]) + m[1].length), { finishFlush: 1 }).toString('latin1'))
+      .join('\n');
+  };
+
+  it('is titled Employment Agreement and has no witness section', async () => {
+    const pdf = await printedText('employment_contract');
+    expect(pdf).toContain('EMPLOYMENT AGREEMENT');
+    expect(pdf).toContain('This Employment Agreement is made on');
+    expect(pdf).not.toMatch(/witness/i);
+    expect(pdf).not.toContain('EMPLOYMENT CONTRACT');
+  });
+
+  it('prints the title centred and sub-headings on the left with a full-width underline', async () => {
+    const { b } = await pdfKit.builder('Employment Agreement', 'REF-1');
+    const text = vi.spyOn(b.doc, 'text');
+    const line = vi.spyOn(b.doc, 'line');
+    const rect = vi.spyOn(b.doc, 'rect');
+    b.centeredTitle('Employment Agreement');
+    const titleX = text.mock.calls[0][1] as number;
+    expect(titleX + (rect.mock.calls[0][2] as number) / 2).toBeCloseTo(105);
+    text.mockClear();
+    b.section('Employment Particulars');
+    b.paragraph('Some text.');
+    const heading = text.mock.calls.find((c) => c[0] === 'EMPLOYMENT PARTICULARS');
+    expect(heading?.[1]).toBe(14);
+    expect(line.mock.calls[0][0]).toBe(14);
+    expect(line.mock.calls[0][2]).toBeCloseTo(196);
+  });
+
+  it.each(['employment_contract', 'probation_letter'] as EmployeeLetterKind[])('the compensation table fills the page width on the %s', async (kind) => {
+    tableFinish.length = 0;
+    await pdfGenerator.employeeLetterPDFBlob(letter(kind));
+    const salary = tableFinish.find((t) => t.head === 'Salary Component');
+    expect(salary?.left).toBe(14);
+    expect(salary?.right).toBeCloseTo(196);
+    expect(salary?.thirdColumnAlign).toBe('center'); // amounts centred, like the serial numbers
+  });
+});
+
 describe('letter particulars', () => {
   (['offer_letter', 'employment_contract', 'probation_letter', 'confirmation_letter'] as EmployeeLetterKind[]).forEach((kind) => {
     it(`the ${kind.replace(/_/g, ' ')} has no particulars table`, async () => {
       tableHeads.length = 0;
       await pdfGenerator.employeeLetterPDFBlob(letter(kind));
       expect(tableHeads.flat()).not.toContain('Particulars');
-      expect(tableHeads.flat().includes('Salary Component')).toBe(kind !== 'confirmation_letter');
+      // The offer letter lists pay in its Job Details; the contract and probation letter use a table
+      expect(tableHeads.flat().includes('Salary Component')).toBe(kind === 'employment_contract' || kind === 'probation_letter');
     });
   });
 });
@@ -250,7 +301,7 @@ describe('pagination', () => {
 
   it('a table that fits on a page moves whole, with its heading, and leaves nothing on the old page', async () => {
     const { b, pageFor } = await start(240);
-    b.centeredHeading('Salary');
+    b.section('Salary');
     b.table(['#', 'Item'], rows(8));
     expect(pageFor('SALARY')).toBe(2);
     expect(b.doc.getNumberOfPages()).toBe(2);

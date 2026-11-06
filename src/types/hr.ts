@@ -16,8 +16,26 @@ export type EmployeeRole =
   | 'admin'
   | 'management';
 
+/** The company's departments. */
+export const EMPLOYEE_DEPARTMENTS = ['Operations', 'Finance', 'Sales'] as const;
+
+/** What a person actually does at work; decides the job-specific terms on their letters. */
+export type EmployeeDuty = 'field_service' | 'field_supervision' | 'site_audits' | 'client_detailing' | 'sales' | 'finance_accounts';
+
+export const EMPLOYEE_DUTY_LABELS: Record<EmployeeDuty, string> = {
+  field_service: 'Field Service (Pest Control Visits)',
+  field_supervision: 'Field Team Supervision',
+  site_audits: 'Site Visits & Quality Audits',
+  client_detailing: 'Client Calls & Technical Detailing',
+  sales: 'Sales & Client Relations (CRO)',
+  finance_accounts: 'Finance & Accounts',
+};
+
+/** Before the hire is confirmed a person is a candidate: a CAND- record with no Employee ID. */
+export const isCandidate = (e: { id: string }) => e.id.startsWith('CAND-');
+
 export interface Employee {
-  id: string; // e.g. EMP-0007
+  id: string; // e.g. EMP-0007 (CAND-0003 until the hire is confirmed)
   name: string;
   phone: string;
   email?: string;
@@ -31,6 +49,12 @@ export interface Employee {
   uid?: string; // portal login uid if created (optional, PCOs default to none)
   photoUrl?: string;
   emergencyContact?: string;
+  /** Set when the hire is confirmed: what they do, which decides their job-specific terms. */
+  duties?: EmployeeDuty[];
+  jobDescription?: string;
+  /** The candidate record this employee came from, and on that old record the employee it became. */
+  candidateId?: string;
+  mergedIntoId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -63,6 +87,8 @@ export interface EmployeePay {
   mobilePackage: number;
   bikeMaintenance: number;
   otherAllowance?: number;
+  /** What the other allowance is for, e.g. "Transportation". */
+  otherAllowanceLabel?: string;
   overtimeHourlyRate?: number;
   bankName?: string;
   bankAccountNumber?: string;
@@ -146,12 +172,9 @@ export interface SalaryCycle {
   updatedAt: string;
 }
 
-// ---------- Employee letters: offer → employment contract + probation letter → confirmation ----------
+// ---------- Employee letters: offer → employment agreement + probation letter → confirmation ----------
 
 export type EmployeeLetterKind = 'offer_letter' | 'employment_contract' | 'probation_letter' | 'confirmation_letter';
-
-/** Which role-specific terms a letter carries, on top of the general terms every employee gets. */
-export type EmployeeTermsProfile = 'cro' | 'entomologist' | 'supervisor' | 'pco' | 'general';
 
 export interface LetterClause {
   /** Bold lead-in, e.g. "Working Hours". Older letters have none. */
@@ -171,7 +194,7 @@ export type EmployeeLetterStatus = 'issued' | 'signed' | 'withdrawn';
 
 export const EMPLOYEE_LETTER_LABELS: Record<EmployeeLetterKind, string> = {
   offer_letter: 'Offer Letter',
-  employment_contract: 'Employment Contract',
+  employment_contract: 'Employment Agreement',
   probation_letter: 'Probation Letter',
   confirmation_letter: 'Confirmation Letter',
 };
@@ -199,7 +222,7 @@ export interface EmployeeLetterTerms {
   workingHours: string;
   /** Offer letter: last day to accept. */
   offerValidUntil?: string;
-  /** Notice either side may give: during probation / after confirmation (days). */
+  /** Notice either side may give: during probation / once permanent (days). */
   noticeDaysProbation: number;
   noticeDaysPermanent: number;
   /** Confirmation letter: date the employee becomes permanent, and any revised gross pay. */
@@ -207,8 +230,10 @@ export interface EmployeeLetterTerms {
   revisedGrossSalary?: number;
   /** Extra clauses HR adds for this employee (one per line). */
   extraTerms?: string;
-  /** Role-specific terms chosen when the letter was issued. */
-  termsProfile?: EmployeeTermsProfile;
+  /** Duties chosen when the letter was issued; each adds its job-specific terms. */
+  duties?: EmployeeDuty[];
+  /** In HR's own words, what this person will do. */
+  jobDescription?: string;
   /**
    * The exact clause wording, saved when the letter is issued: a signed letter must keep printing what
    * the employee signed, even after the standard wording changes. Letters issued before this existed

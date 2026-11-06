@@ -14,7 +14,8 @@ import { useNotification } from '../../contexts/NotificationContext';
 import { baseRoleOf, canEditModule, roleLabel } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
-import type { Employee, EmployeeStatus, EmployeeRole, EmployeePay } from '../../types/hr';
+import { EMPLOYEE_DEPARTMENTS, EMPLOYEE_DUTY_LABELS, isCandidate, type Employee, type EmployeeStatus, type EmployeeRole, type EmployeePay } from '../../types/hr';
+import { defaultDepartmentForRole } from '../../features/hr/employmentTerms';
 import { EmployeeLettersPanel } from '../../features/hr/EmployeeLettersPanel';
 import { nextLetterStep } from '../../features/hr/employeeLetters';
 
@@ -62,7 +63,6 @@ const ASSIGNABLE_ROLES: { role: EmployeeRole; label: string }[] = [
   { role: 'management', label: 'Management' },
 ];
 
-const DEPARTMENTS = ['Operations', 'Quality Assurance', 'Sales & CRM', 'Accounts', 'HR', 'Administration', 'Management'];
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -76,7 +76,7 @@ function blankEmployee(): Omit<Employee, 'id' | 'createdAt' | 'updatedAt'> {
     role: 'pco',
     department: 'Operations',
     joiningDate: todayStr(),
-    // New people start at Hiring: offer letter → employment contract (probation) → confirmation
+    // New people start at Hiring: offer letter → employment agreement (probation) → confirmation
     status: 'hiring',
     reportingToRole: '',
     reportingCoordinatorId: '',
@@ -111,6 +111,7 @@ export const EmployeesPage: React.FC = () => {
     mobilePackage: 0,
     bikeMaintenance: 0,
     otherAllowance: 0,
+    otherAllowanceLabel: '',
     overtimeHourlyRate: 0,
     bankName: '',
     bankAccountNumber: '',
@@ -183,6 +184,7 @@ export const EmployeesPage: React.FC = () => {
       mobilePackage: existing?.mobilePackage || 0,
       bikeMaintenance: existing?.bikeMaintenance || 0,
       otherAllowance: existing?.otherAllowance || 0,
+      otherAllowanceLabel: existing?.otherAllowanceLabel || '',
       overtimeHourlyRate: existing?.overtimeHourlyRate || 0,
       bankName: existing?.bankName || '',
       bankAccountNumber: existing?.bankAccountNumber || '',
@@ -212,6 +214,7 @@ export const EmployeesPage: React.FC = () => {
         mobilePackage: Number(salaryForm.mobilePackage || 0),
         bikeMaintenance: Number(salaryForm.bikeMaintenance || 0),
         otherAllowance: Number(salaryForm.otherAllowance || 0),
+        otherAllowanceLabel: salaryForm.otherAllowanceLabel.trim() || undefined,
         overtimeHourlyRate: Number(salaryForm.overtimeHourlyRate || 0),
         bankName: salaryForm.bankName.trim() || undefined,
         bankAccountNumber: salaryForm.bankAccountNumber.trim() || undefined,
@@ -228,6 +231,8 @@ export const EmployeesPage: React.FC = () => {
     }
   };
 
+  const formIsCandidate = editingId ? editingId.startsWith('CAND-') : form.status === 'hiring';
+
   const handleSave = async () => {
     if (!form.name.trim()) { error('Validation error', 'Name is required.'); return; }
     const phoneErr = mobileProblem(form.phone, { required: true, label: 'Phone' });
@@ -235,7 +240,7 @@ export const EmployeesPage: React.FC = () => {
     const emailErr = emailProblem(form.email, { label: 'Email' });
     if (emailErr) { error('Validation error', emailErr); return; }
     if (!form.joiningDate) { error('Validation error', 'Joining date is required.'); return; }
-    if (form.role === 'pco' && !form.reportingCoordinatorId) {
+    if (form.role === 'pco' && !form.reportingCoordinatorId && !formIsCandidate) {
       error('Supervisor required', 'Choose this PCO’s Supervisor. PCOs have no login, so their Supervisor assigns them to jobs and records their work.');
       return;
     }
@@ -245,8 +250,9 @@ export const EmployeesPage: React.FC = () => {
       const now = new Date().toISOString();
       let empId = editingId;
       if (!empId) {
-        const seq = await dataService.nextSequence('employee');
-        empId = 'EMP-' + String(seq).padStart(4, '0');
+        // A new hire is a candidate until they accept the offer; existing staff get their ID straight away
+        const seq = await dataService.nextSequence(formIsCandidate ? 'candidate' : 'employee');
+        empId = (formIsCandidate ? 'CAND-' : 'EMP-') + String(seq).padStart(4, '0');
       }
       const emp: Employee = {
         id: empId,
@@ -256,7 +262,7 @@ export const EmployeesPage: React.FC = () => {
         role: form.role,
         department: form.department,
         joiningDate: form.joiningDate,
-        status: form.status,
+        status: formIsCandidate ? 'hiring' : form.status,
         probationEndDate: form.probationEndDate || undefined,
         reportingToRole: form.reportingToRole || undefined,
         reportingCoordinatorId: form.reportingCoordinatorId || undefined,
@@ -267,9 +273,9 @@ export const EmployeesPage: React.FC = () => {
         updatedAt: now,
       };
       await dataService.saveEmployee(emp);
-      success('Saved', editingId ? 'Employee record updated.' : `Employee enrolled.${canLetters ? ' Next: issue the employment letters below.' : ''}`);
+      success('Saved', editingId ? 'Record updated.' : formIsCandidate ? `Candidate added.${canLetters ? ' Next: issue the offer letter below.' : ''}` : `Employee enrolled.${canLetters ? ' Next: issue the employment letters below.' : ''}`);
       setShowForm(false);
-      // A new employee opens on their record, where the offer letter / contract is issued
+      // A new employee opens on their record, where the offer letter / agreement is issued
       if (!editingId && canLetters) setSelected(emp);
     } catch (err: unknown) {
       error('Save failed', (err instanceof Error ? err.message : String(err)));
@@ -386,7 +392,7 @@ export const EmployeesPage: React.FC = () => {
                 const pay = store.getEmployeePay ? store.getEmployeePay(emp.id) : undefined;
                 return (
                   <tr key={emp.id}>
-                    <td><span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{emp.id}</span></td>
+                    <td>{isCandidate(emp) ? <span className="badge badge-amber">Candidate</span> : <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{emp.id}</span>}</td>
                     <td>
                       <div style={{ fontWeight: 600 }}>{emp.name}</div>
                       {emp.email && <div className="cell-sub">{emp.email}</div>}
@@ -457,7 +463,7 @@ export const EmployeesPage: React.FC = () => {
       {salaryEmployee && (
         <Modal
           isOpen={Boolean(salaryEmployee)}
-          title={`Salary Structure: ${salaryEmployee.name} (${salaryEmployee.id})`}
+          title={`Salary Structure: ${salaryEmployee.name}${isCandidate(salaryEmployee) ? '' : ` (${salaryEmployee.id})`}`}
           onClose={() => setSalaryEmployee(null)}
           footer={
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
@@ -534,7 +540,18 @@ export const EmployeesPage: React.FC = () => {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Other Allowance (PKR)</label>
+              <label className="form-label">Other Allowance Name</label>
+              <input
+                type="text"
+                className="form-input"
+                value={salaryForm.otherAllowanceLabel}
+                onChange={(e) => setSalaryForm({ ...salaryForm, otherAllowanceLabel: e.target.value })}
+                placeholder="e.g. Transportation"
+              />
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">{salaryForm.otherAllowanceLabel.trim() || 'Other Allowance'} (PKR)</label>
               <input
                 type="number"
                 min="0"
@@ -616,7 +633,7 @@ export const EmployeesPage: React.FC = () => {
               <label className="form-label">Role *</label>
               <select className="form-select" value={form.role} onChange={(e) => {
                 const role = e.target.value as EmployeeRole;
-                setForm({ ...form, role, ...(role === 'entomologist' ? { department: 'Quality Assurance' } : {}) });
+                setForm({ ...form, role, department: defaultDepartmentForRole(role) });
               }}>
                 {ASSIGNABLE_ROLES.map(({ role, label }) => (
                   <option key={role} value={role}>{label}</option>
@@ -624,7 +641,7 @@ export const EmployeesPage: React.FC = () => {
               </select>
             </div>
             <div className="form-group">
-              <label className="form-label">{form.role === 'pco' ? 'Supervisor' : 'Reports to'}{form.role === 'pco' && <span style={{ color: '#B45309' }}> *</span>}</label>
+              <label className="form-label">{form.role === 'pco' ? 'Supervisor' : 'Reports to'}{form.role === 'pco' && !formIsCandidate && <span style={{ color: '#B45309' }}> *</span>}</label>
               <select
                 className="form-select"
                 value={form.reportingCoordinatorId || ''}
@@ -654,12 +671,14 @@ export const EmployeesPage: React.FC = () => {
                   : 'Reporting manager'}
               </span>
             </div>
-            <div className="form-group">
-              <label className="form-label">Department *</label>
-              <select className="form-select" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })}>
-                {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
-            </div>
+            {!formIsCandidate && (
+              <div className="form-group">
+                <label className="form-label">Department *</label>
+                <select className="form-select" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })}>
+                  {[...new Set<string>([...EMPLOYEE_DEPARTMENTS, form.department])].map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+            )}
             <div className="form-group">
               <label className="form-label">Joining Date *</label>
               <input type="date" className="form-input" value={form.joiningDate} onChange={(e) => setForm({ ...form, joiningDate: e.target.value })} />
@@ -686,7 +705,7 @@ export const EmployeesPage: React.FC = () => {
       {selected && selectedLive && (
         <Modal
           isOpen={Boolean(selected)}
-          title={'Employee: ' + selectedLive.name}
+          title={(isCandidate(selectedLive) ? 'Candidate: ' : 'Employee: ') + selectedLive.name}
           onClose={() => setSelected(null)}
           footer={
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
@@ -718,11 +737,12 @@ export const EmployeesPage: React.FC = () => {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                   {[
-                    ['Employee ID', selectedLive.id],
+                    ['Employee ID', isCandidate(selectedLive) ? 'Given when the hire is confirmed' : selectedLive.id],
                     ['Status', STATUS_LABELS[selectedLive.status]],
                     ['Role', ROLE_LABELS[selectedLive.role] || selectedLive.role],
                     ['Supervisor', getLeaderName(selectedLive.reportingCoordinatorId) || 'None assigned'],
-                    ['Department', selectedLive.department],
+                    ['Department', isCandidate(selectedLive) ? 'Chosen when the hire is confirmed' : selectedLive.department],
+                    ['Job duties', selectedLive.duties?.length ? selectedLive.duties.map((d) => EMPLOYEE_DUTY_LABELS[d]).join(', ') : '—'],
                     ['Phone', selectedLive.phone],
                     ['Email', selectedLive.email ?? '—'],
                     ['Joining Date', formatDate(selectedLive.joiningDate)],
@@ -741,6 +761,9 @@ export const EmployeesPage: React.FC = () => {
                     employee={selectedLive}
                     designation={ROLE_LABELS[selectedLive.role] || selectedLive.role}
                     reportingTo={getLeaderName(selectedLive.reportingCoordinatorId) || undefined}
+                    roleOptions={ASSIGNABLE_ROLES}
+                    leaders={availableTeamLeaders}
+                    onHireConfirmed={setSelected}
                   />
                 )}
 
@@ -754,7 +777,7 @@ export const EmployeesPage: React.FC = () => {
                       <div><span className="cell-sub">Attendance Allowance:</span> <strong>PKR {pay.attendanceAllowance.toLocaleString()}</strong></div>
                       <div><span className="cell-sub">Mobile Package:</span> <strong>PKR {pay.mobilePackage.toLocaleString()}</strong></div>
                       <div><span className="cell-sub">Bike Maintenance:</span> <strong>PKR {pay.bikeMaintenance.toLocaleString()}</strong></div>
-                      <div><span className="cell-sub">Other Allowance:</span> <strong>PKR {(pay.otherAllowance || 0).toLocaleString()}</strong></div>
+                      <div><span className="cell-sub">{pay.otherAllowanceLabel || 'Other Allowance'}:</span> <strong>PKR {(pay.otherAllowance || 0).toLocaleString()}</strong></div>
                       <div><span className="cell-sub">Overtime Rate:</span> <strong>PKR {(pay.overtimeHourlyRate || 0).toLocaleString()}/hr</strong></div>
                       <div style={{ gridColumn: '1 / -1', background: 'var(--bg-subtle, #f1f5f9)', padding: '0.5rem 0.75rem', borderRadius: 4, display: 'flex', justifyContent: 'space-between' }}>
                         <span><strong>Total Gross Monthly Pay:</strong></span>

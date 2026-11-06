@@ -1,8 +1,9 @@
-// HR letters of one employee: Offer Letter (at hiring) → Employment Contract and Probation Letter
+// HR letters of one employee: Offer Letter (at hiring) → Confirm hire (Employee ID, department, duties)
+// → Employment Agreement and Probation Letter
 // (on joining) → Confirmation Letter (end of probation). Issue, print for signature, record the signed copy, withdraw.
 
 import React, { useState } from 'react';
-import { CheckCircle2, FileSignature, Paperclip, Printer, XCircle } from 'lucide-react';
+import { CheckCircle2, FileSignature, Paperclip, Printer, UserCheck, XCircle } from 'lucide-react';
 import { Modal } from '../../components/common/Modal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -12,18 +13,41 @@ import { dataService } from '../../services/dataService';
 import { pdfGenerator } from '../../lib/pdfGenerator';
 import { uploadFile } from '../../lib/cloudinary';
 import { integrations } from '../../config/env';
-import { formatDate, formatPKR } from '../../lib/formatters';
+import { formatDate, formatPKR, maskCNIC } from '../../lib/formatters';
 import {
-  EMPLOYEE_LETTER_LABELS, EMPLOYEE_LETTER_STAGE,
-  type Employee, type EmployeeLetter, type EmployeeLetterKind, type EmployeeLetterTerms, type EmployeeTermsProfile,
+  EMPLOYEE_DEPARTMENTS, EMPLOYEE_DUTY_LABELS, EMPLOYEE_LETTER_LABELS, EMPLOYEE_LETTER_STAGE, isCandidate,
+  type Employee, type EmployeeDuty, type EmployeeLetter, type EmployeeLetterKind, type EmployeeLetterTerms, type EmployeeRole,
 } from '../../types/hr';
-import { activeLetter, addMonths, defaultTerms, issueLetter, LETTER_ORDER, markLetterSigned, needsEmployeeDetails, stageWarning, termsProblems, withdrawLetter } from './employeeLetters';
-import { TERMS_PROFILE_LABELS } from './employmentTerms';
+import { activeLetter, addMonths, confirmHire, confirmHireProblems, defaultTerms, issueLetter, LETTER_ORDER, markLetterSigned, needsEmployeeDetails, OTHER_ALLOWANCE_INDEX, OTHER_ALLOWANCE_LABEL, stageWarning, termsProblems, withdrawLetter } from './employeeLetters';
+import { defaultDepartmentForRole, defaultDutiesForRole } from './employmentTerms';
 
 const STATUS_BADGE: Record<EmployeeLetter['status'], string> = { issued: 'badge-amber', signed: 'badge-teal', withdrawn: 'badge-slate' };
 const STATUS_TEXT: Record<EmployeeLetter['status'], string> = { issued: 'Issued — awaiting signature', signed: 'Signed', withdrawn: 'Withdrawn' };
 
-export const EmployeeLettersPanel: React.FC<{ employee: Employee; designation: string; reportingTo?: string }> = ({ employee, designation, reportingTo }) => {
+const ALL_DUTIES = Object.keys(EMPLOYEE_DUTY_LABELS) as EmployeeDuty[];
+
+/** Tick the duties a person performs; each adds its job-specific terms to their letters. */
+const DutyPicker: React.FC<{ value: EmployeeDuty[]; onChange: (duties: EmployeeDuty[]) => void }> = ({ value, onChange }) => (
+  <div className="chip-row" style={{ flexWrap: 'wrap' }}>
+    {ALL_DUTIES.map((d) => {
+      const on = value.includes(d);
+      return (
+        <button key={d} type="button" className={`chip ${on ? 'chip-on' : ''}`} onClick={() => onChange(on ? value.filter((x) => x !== d) : [...value, d])}>
+          {EMPLOYEE_DUTY_LABELS[d]}
+        </button>
+      );
+    })}
+  </div>
+);
+
+export const EmployeeLettersPanel: React.FC<{
+  employee: Employee;
+  designation: string;
+  reportingTo?: string;
+  roleOptions: { role: EmployeeRole; label: string }[];
+  leaders: { id: string; name: string; title: string }[];
+  onHireConfirmed: (employee: Employee) => void;
+}> = ({ employee, designation, reportingTo, roleOptions, leaders, onHireConfirmed }) => {
   useDataStore();
   const { userProfile } = useAuth();
   const { success, error } = useNotification();
@@ -33,6 +57,9 @@ export const EmployeeLettersPanel: React.FC<{ employee: Employee; designation: s
   const [signing, setSigning] = useState<EmployeeLetter | null>(null);
   const [withdrawing, setWithdrawing] = useState<EmployeeLetter | null>(null);
   const [reason, setReason] = useState('');
+  const [confirming, setConfirming] = useState(false);
+  const candidate = isCandidate(employee);
+  const offerAccepted = activeLetter(letters, 'offer_letter')?.status === 'signed';
   const user = { email: userProfile?.email || 'admin', name: userProfile?.displayName || 'HR' };
 
   return (
@@ -40,6 +67,18 @@ export const EmployeeLettersPanel: React.FC<{ employee: Employee; designation: s
       <h4 style={{ margin: '0 0 0.6rem 0', display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.9rem' }}>
         <FileSignature size={16} /> Employment letters
       </h4>
+      {candidate && (
+        <div className="info-hint" style={{ marginBottom: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <span style={{ flex: 1, minWidth: 220 }}>
+            {offerAccepted
+              ? 'Offer accepted. Confirm the hire to give this person an Employee ID, department and duties.'
+              : 'This person is a candidate. They get an Employee ID once they sign the offer letter and you confirm the hire.'}
+          </span>
+          {offerAccepted && (
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => setConfirming(true)}><UserCheck size={13} /> Confirm hire</button>
+          )}
+        </div>
+      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         {LETTER_ORDER.map((kind) => {
           const cur = activeLetter(letters, kind);
@@ -81,7 +120,8 @@ export const EmployeeLettersPanel: React.FC<{ employee: Employee; designation: s
                       <XCircle size={13} />
                     </button>
                   )}
-                  {!cur && (
+                  {!cur && candidate && kind !== 'offer_letter' && <span className="cell-sub">After the hire is confirmed</span>}
+                  {!cur && (!candidate || kind === 'offer_letter') && (
                     <button type="button" className="btn btn-sm btn-primary" onClick={() => setIssuing(kind)}>Issue {EMPLOYEE_LETTER_LABELS[kind].toLowerCase()}</button>
                   )}
                 </div>
@@ -102,6 +142,10 @@ export const EmployeeLettersPanel: React.FC<{ employee: Employee; designation: s
           onIssued={(l) => { setIssuing(null); pdf.run(l.id, () => pdfGenerator.generateEmployeeLetterPDF(l)); }} />
       )}
       {signing && <SignLetterModal letter={signing} onClose={() => setSigning(null)} />}
+      {confirming && (
+        <ConfirmHireModal employee={employee} roleOptions={roleOptions} leaders={leaders} onClose={() => setConfirming(false)}
+          onConfirmed={(e) => { setConfirming(false); onHireConfirmed(e); }} />
+      )}
       {withdrawing && (
         <Modal isOpen onClose={() => setWithdrawing(null)} title={`Withdraw ${EMPLOYEE_LETTER_LABELS[withdrawing.kind]}`} subtitle={withdrawing.refNo} maxWidth="440px"
           footer={
@@ -129,6 +173,87 @@ export const EmployeeLettersPanel: React.FC<{ employee: Employee; designation: s
   );
 };
 
+/** Confirm hire: the candidate becomes an employee, with an Employee ID, department and duties. */
+const ConfirmHireModal: React.FC<{
+  employee: Employee;
+  roleOptions: { role: EmployeeRole; label: string }[];
+  leaders: { id: string; name: string; title: string }[];
+  onClose: () => void;
+  onConfirmed: (e: Employee) => void;
+}> = ({ employee, roleOptions, leaders, onClose, onConfirmed }) => {
+  const { userProfile } = useAuth();
+  const { success, error } = useNotification();
+  const [role, setRole] = useState<EmployeeRole>(employee.role);
+  const [department, setDepartment] = useState<string>(
+    (EMPLOYEE_DEPARTMENTS as readonly string[]).includes(employee.department) ? employee.department : defaultDepartmentForRole(employee.role),
+  );
+  const [duties, setDuties] = useState<EmployeeDuty[]>(employee.duties?.length ? employee.duties : defaultDutiesForRole(employee.role));
+  const [jobDescription, setJobDescription] = useState(employee.jobDescription || '');
+  const [reporting, setReporting] = useState(employee.reportingCoordinatorId || '');
+  const [busy, setBusy] = useState(false);
+  const leader = leaders.find((l) => l.id === reporting);
+  const details = {
+    role, department, duties, jobDescription,
+    reportingCoordinatorId: reporting || undefined,
+    reportingToRole: leader?.title || employee.reportingToRole,
+  };
+  const problems = confirmHireProblems(employee, dataService.getEmployeeLetters(employee.id), details);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const confirmed = await confirmHire(employee, details, { email: userProfile?.email || 'admin' });
+      success('Hire confirmed', `${confirmed.name} is now ${confirmed.id}. Next: issue the employment agreement and probation letter.`);
+      onConfirmed(confirmed);
+    } catch (err) {
+      error('Could not confirm the hire', err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal isOpen onClose={onClose} title={`Confirm hire: ${employee.name}`} subtitle="They get an Employee ID now. Their duties decide the terms on their agreement and probation letter." maxWidth="680px"
+      footer={
+        <>
+          <button className="btn btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary" onClick={save} disabled={busy || problems.length > 0} title={problems.join('\n')}>
+            <UserCheck size={14} /> {busy ? 'Confirming…' : 'Confirm hire & create ID'}
+          </button>
+        </>
+      }>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+        <div className="form-group"><label className="form-label">Job *</label>
+          <select className="form-select" value={role} onChange={(e) => {
+            const next = e.target.value as EmployeeRole;
+            setRole(next);
+            setDepartment(defaultDepartmentForRole(next));
+            setDuties(defaultDutiesForRole(next));
+          }}>
+            {roleOptions.map((r) => <option key={r.role} value={r.role}>{r.label}</option>)}
+          </select></div>
+        <div className="form-group"><label className="form-label">Department *</label>
+          <select className="form-select" value={department} onChange={(e) => setDepartment(e.target.value)}>
+            {EMPLOYEE_DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select></div>
+        <div className="form-group" style={{ gridColumn: '1 / -1' }}><label className="form-label">Reports to{role === 'pco' ? ' *' : ''}</label>
+          <select className="form-select" value={reporting} onChange={(e) => setReporting(e.target.value)}>
+            <option value="">-- Nobody --</option>
+            {leaders.map((l) => <option key={l.id} value={l.id}>{l.name} — {l.title}</option>)}
+          </select></div>
+      </div>
+      <div className="form-group"><label className="form-label">What will they do? *</label>
+        <DutyPicker value={duties} onChange={setDuties} />
+        <div className="cell-sub" style={{ marginTop: 4 }}>Each duty adds its own terms to their agreement and probation letter.</div>
+      </div>
+      <div className="form-group" style={{ marginBottom: 0 }}><label className="form-label">In your own words (optional, printed on their letters)</label>
+        <textarea className="form-textarea" rows={2} value={jobDescription} placeholder="e.g. Connects with clients to explain treatments and findings." onChange={(e) => setJobDescription(e.target.value)} />
+      </div>
+      {problems.length > 0 && <div className="cell-sub" style={{ color: '#B45309', marginTop: 6 }}>{problems.join(' ')}</div>}
+    </Modal>
+  );
+};
+
 /** Issue form: terms prefilled from the profile, salary structure and earlier letters; editable before issuing. */
 const IssueLetterModal: React.FC<{
   employee: Employee; kind: EmployeeLetterKind; designation: string; reportingTo?: string;
@@ -139,7 +264,7 @@ const IssueLetterModal: React.FC<{
   const [t, setT] = useState<EmployeeLetterTerms>(() => defaultTerms(employee, kind, designation, reportingTo));
   const existingPriv = dataService.getEmployeePrivate(employee.id);
   const [priv, setPriv] = useState({
-    cnic: existingPriv?.cnic || '',
+    cnic: maskCNIC(existingPriv?.cnic),
     fatherName: existingPriv?.fatherName || '',
     residentialAddress: existingPriv?.residentialAddress || '',
   });
@@ -147,7 +272,11 @@ const IssueLetterModal: React.FC<{
   const [busy, setBusy] = useState(false);
   const warning = stageWarning(employee, kind, dataService.getEmployeeLetters(employee.id));
   const gross = t.basicSalary + t.allowances.reduce((s, a) => s + (Number(a.amount) || 0), 0);
-  const terms: EmployeeLetterTerms = { ...t, grossSalary: gross };
+  const terms: EmployeeLetterTerms = {
+    ...t,
+    grossSalary: gross,
+    allowances: t.allowances.map((a) => ({ ...a, label: a.label.trim() || OTHER_ALLOWANCE_LABEL })),
+  };
   const problems = termsProblems(kind, terms, priv);
   const set = (patch: Partial<EmployeeLetterTerms>) => setT((cur) => ({ ...cur, ...patch }));
   const num = (v: string) => Math.max(0, Number(v) || 0);
@@ -211,31 +340,36 @@ const IssueLetterModal: React.FC<{
           <div className="form-group"><label className="form-label">Permanent from *</label>
             <input type="date" className="form-input" value={t.confirmationDate || ''} onChange={(e) => set({ confirmationDate: e.target.value })} /></div>
         ) : <div />}
-        {kind !== 'confirmation_letter' && (
-          <div className="form-group"><label className="form-label">Role-specific terms</label>
-            <select className="form-select" value={t.termsProfile || 'general'} onChange={(e) => set({ termsProfile: e.target.value as EmployeeTermsProfile })}>
-              {(Object.keys(TERMS_PROFILE_LABELS) as EmployeeTermsProfile[]).map((p) => <option key={p} value={p}>{TERMS_PROFILE_LABELS[p]}</option>)}
-            </select></div>
-        )}
         <div className="form-group"><label className="form-label">Notice in probation (days)</label>
           <input type="number" min={0} className="form-input" value={t.noticeDaysProbation} onChange={(e) => set({ noticeDaysProbation: num(e.target.value) })} /></div>
         <div className="form-group"><label className="form-label">Notice when permanent (days)</label>
           <input type="number" min={0} className="form-input" value={t.noticeDaysPermanent} onChange={(e) => set({ noticeDaysPermanent: num(e.target.value) })} /></div>
       </div>
 
+      {needsEmployeeDetails(kind) && (
+        <div className="form-group"><label className="form-label">What will they do? (each duty adds its own terms)</label>
+          <DutyPicker value={t.duties ?? []} onChange={(duties) => set({ duties })} />
+          <input className="form-input" style={{ marginTop: 6 }} value={t.jobDescription || ''} placeholder="In your own words (optional, printed on the letter)" onChange={(e) => set({ jobDescription: e.target.value })} />
+        </div>
+      )}
+
       <div className="section-title">Monthly salary</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '0.5rem' }}>
         <div className="form-group"><label className="form-label">Basic</label>
           <input type="number" min={0} className="form-input" value={t.basicSalary} onChange={(e) => set({ basicSalary: num(e.target.value) })} /></div>
         {t.allowances.map((a, i) => (
-          <div key={a.label} className="form-group"><label className="form-label">{a.label}</label>
-            <input type="number" min={0} className="form-input" value={a.amount}
+          <div key={i} className="form-group">
+            {i === OTHER_ALLOWANCE_INDEX ? (
+              <input className="form-input" aria-label="Allowance name" style={{ marginBottom: 4 }} value={a.label} placeholder="e.g. Transportation"
+                onChange={(e) => set({ allowances: t.allowances.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)) })} />
+            ) : <label className="form-label">{a.label}</label>}
+            <input type="number" min={0} className="form-input" value={a.amount} aria-label={`${a.label} amount`}
               onChange={(e) => set({ allowances: t.allowances.map((x, j) => (j === i ? { ...x, amount: num(e.target.value) } : x)) })} /></div>
         ))}
       </div>
       {!t.allowances.length && (
         <button type="button" className="btn btn-sm btn-secondary" onClick={() => set({ allowances: [
-          { label: 'Attendance allowance', amount: 0 }, { label: 'Mobile package', amount: 0 }, { label: 'Bike maintenance', amount: 0 }, { label: 'Other allowance', amount: 0 },
+          { label: 'Attendance allowance', amount: 0 }, { label: 'Mobile package', amount: 0 }, { label: 'Bike maintenance', amount: 0 }, { label: OTHER_ALLOWANCE_LABEL, amount: 0 },
         ] })}>Add allowances</button>
       )}
       <div style={{ textAlign: 'right', fontWeight: 800, margin: '0.4rem 0 0.75rem' }}>Gross: {formatPKR(gross)} / month</div>
@@ -252,7 +386,7 @@ const IssueLetterModal: React.FC<{
           <div className="section-title">Employee details (printed on the letter, HR only)</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
             <div className="form-group"><label className="form-label">CNIC *</label>
-              <input className="form-input" value={priv.cnic} placeholder="xxxxx-xxxxxxx-x" onChange={(e) => setPriv({ ...priv, cnic: e.target.value })} /></div>
+              <input className="form-input" inputMode="numeric" value={priv.cnic} placeholder="42401-1223123-0" onChange={(e) => setPriv({ ...priv, cnic: maskCNIC(e.target.value) })} /></div>
             <div className="form-group"><label className="form-label">Father's / husband's name</label>
               <input className="form-input" value={priv.fatherName} onChange={(e) => setPriv({ ...priv, fatherName: e.target.value })} /></div>
             <div className="form-group" style={{ gridColumn: '1 / -1' }}><label className="form-label">Residential address *</label>

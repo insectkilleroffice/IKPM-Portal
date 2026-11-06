@@ -15,6 +15,7 @@ import { dataService } from '../../services/dataService';
 import { calculateSalaryLine, payrollRulesFrom } from '../../lib/payroll';
 import { companyProfile } from '../../services/companyProfile';
 import type { SalaryCycle, SalaryCycleStatus, SalaryLine, Employee, EmployeePay, AttendanceRecord } from '../../types/hr';
+import { isCandidate } from '../../types/hr';
 
 const STATUS_BADGE: Record<SalaryCycleStatus, string> = {
   draft: 'badge-amber',
@@ -75,7 +76,7 @@ export const PayrollPage: React.FC = () => {
         : [];
 
       // Calculate line for each active employee
-      const activeEmployees = employees.filter((e) => e.status !== 'inactive');
+      const activeEmployees = employees.filter((e) => e.status !== 'inactive' && !isCandidate(e));
       // Only this cycle's visits count (job incentive and fuel)
       const cycleJobs = jobs.filter((j) => {
         const d = (j.scheduledDate || '').slice(0, 10);

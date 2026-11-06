@@ -21,7 +21,7 @@ import { documentTemplates } from '../services/documentTemplates';
 import type { SopInput } from '../types/document';
 import type { EmployeeLetter, LetterClauseSection } from '../types/hr';
 import type { QualityAudit } from '../types/audits';
-import { days, monthsInWords } from '../features/hr/employmentTerms';
+import { days, dutiesSentence, longDate, monthsInWords, offerKeepsPrintedTerms, offerLetterParagraphs } from '../features/hr/employmentTerms';
 
 // ---------------------------------------------------------------------------
 // Palette & layout (mm, A4 portrait)
@@ -67,7 +67,8 @@ const PAGE_TOP = 20;
 const PAGE_LIMIT = PAGE_H - FOOTER_H - 6;
 const PAGE_ROOM = PAGE_LIMIT - PAGE_TOP;
 const FOOTER_ADDRESS_W = 66;
-const LETTERHEAD_NAME_SIZE = 11.5;
+const OFFER_TEXT_SIZE = 10;
+const LETTERHEAD_NAME_SIZE = 11;
 const LETTERHEAD_TAGLINE_SIZE = 7;
 const LETTERHEAD_CONTACT_SIZE = 7.8;
 const HEADER_RIGHT = PAGE_W - 7; // the letterhead reaches closer to the page edge than the body text
@@ -306,6 +307,78 @@ class DocBuilder {
     this.y += 1.5;
   }
 
+  /** Width of text as printed: letter by letter, with the given letter spacing. */
+  private printedWidth(text: string, charSpace = 0) {
+    return [...text].reduce((w, ch) => w + this.doc.getTextWidth(ch), 0) + (text.length - 1) * charSpace;
+  }
+
+  /** Large centred title, underlined for its full length (formal letters). */
+  centeredTitle(text: string) {
+    const heading = text.toUpperCase();
+    this.font(18, 'bold', this.navy);
+    const w = this.printedWidth(heading, 0.4);
+    const x = (PAGE_W - w) / 2;
+    this.doc.text(heading, x, this.y + 3, { charSpace: 0.4 });
+    this.color(this.brand, 'fill');
+    this.doc.rect(x, this.y + 5.6, w, 0.7, 'F');
+    this.y += 15;
+  }
+
+  /** Addressee card, matching the cards on invoices: who it is to on the left, the date on the right. */
+  letterCard(name: string, detail: string | undefined, date: string) {
+    const h = detail ? 19 : 14.5;
+    const dateW = 42;
+    const x = M + 4.5;
+    this.color(RULE, 'draw');
+    this.color(TINT, 'fill');
+    this.doc.roundedRect(M, this.y, CONTENT_W, h, 1.5, 1.5, 'FD');
+    this.color(this.brand, 'fill');
+    this.doc.rect(M, this.y + 2, 0.9, h - 4, 'F');
+
+    this.font(7.5, 'bold', this.brand);
+    this.doc.text('TO', x, this.y + 5, { charSpace: 0.3 });
+    this.doc.text('DATE', PAGE_W - M - 4.5, this.y + 5, { align: 'right' });
+    this.font(11, 'bold', this.navy);
+    this.doc.text(name, x, this.y + 10.5, { maxWidth: CONTENT_W - dateW - 12 });
+    if (detail) {
+      this.font(10, 'normal', INK);
+      this.doc.text(detail, x, this.y + 15.5, { maxWidth: CONTENT_W - dateW - 12 });
+    }
+    this.font(10.5, 'bold', this.navy);
+    this.doc.text(date, PAGE_W - M - 4.5, this.y + 10.5, { align: 'right' });
+    this.y += h + 8;
+  }
+
+  /** Bold subject line with a thin rule under it. */
+  letterSubject(text: string, size = 11) {
+    this.font(size, 'bold', this.navy);
+    this.doc.text(text, M, this.y);
+    this.color(RULE, 'draw');
+    this.doc.setLineWidth(0.3);
+    this.doc.line(M, this.y + 2, PAGE_W - M, this.y + 2);
+    this.y += 8;
+  }
+
+  /** Formal body text: justified to both margins with open line spacing. Stays whole when it fits on a page. */
+  letterParagraph(text: string, size = 11, withNext = false) {
+    const FACTOR = 1.5;
+    const lh = (size * FACTOR * 25.4) / 72;
+    const gap = 3.5;
+    this.font(size, 'normal', INK);
+    const lines = this.doc.splitTextToSize(text, CONTENT_W) as string[];
+    const h = lines.length * lh + gap;
+    const draw = () => {
+      this.font(size, 'normal', INK);
+      this.doc.setLineHeightFactor(FACTOR);
+      this.doc.text(lines, M, this.y, { align: 'justify', maxWidth: CONTENT_W });
+      this.doc.setLineHeightFactor(1.35);
+      this.y += h;
+    };
+    if (withNext) return this.keepWithNext(h, draw);
+    this.ensureWhole(h);
+    draw();
+  }
+
   /** Large document title with a reference box on the right. */
   titleBand(meta: MetaRow[], subtitle?: string) {
     const startY = this.y;
@@ -317,9 +390,8 @@ class DocBuilder {
       this.font(titleSize, 'bold', this.navy);
     }
     this.doc.text(heading, M, startY + 6, { charSpace: 0.4 });
-    // The underline runs the full length of the title. Letters are measured one by one because the
-    // PDF prints them without the pair tightening that measuring the whole word assumes.
-    const titleW = [...heading].reduce((w, ch) => w + this.doc.getTextWidth(ch), 0) + (heading.length - 1) * 0.4;
+    // The underline runs the full length of the title
+    const titleW = this.printedWidth(heading, 0.4);
     this.color(this.brand, 'fill');
     this.doc.rect(M, startY + 8.4, titleW, 0.9, 'F');
     if (subtitle) {
@@ -407,18 +479,6 @@ class DocBuilder {
     });
   }
 
-  /** Centred section heading with a short accent rule, for letters and contracts. */
-  centeredHeading(title: string) {
-    this.keepWithNext(9.5, () => {
-      this.y += 2;
-      this.font(10, 'bold', this.navy);
-      this.doc.text(title.toUpperCase(), PAGE_W / 2, this.y, { align: 'center', charSpace: 0.3 });
-      this.color(this.brand, 'fill');
-      this.doc.rect(PAGE_W / 2 - 9, this.y + 1.9, 18, 0.7, 'F');
-      this.y += 7.5;
-    });
-  }
-
   /** A paragraph stays whole when it fits on a page. `withNext` keeps it with the content that follows. */
   paragraph(text: string, size = 8.6, c: RGB = INK, withNext = false) {
     if (!text) return;
@@ -453,13 +513,13 @@ class DocBuilder {
   }
 
   /**
-   * Numbered clauses under centred headings. Numbering runs on through the sections, so a clause
+   * Numbered clauses under section headings. Numbering runs on through the sections, so a clause
    * can be cited by its number alone. A section that fits on one page is never split.
    */
   clauses(sections: LetterClauseSection[], size = 8.6) {
     let n = 0;
     sections.forEach((sec) => {
-      this.centeredHeading(sec.heading);
+      this.section(sec.heading);
       if (sec.intro) this.paragraph(sec.intro, size, INK, true);
       this.list(sec.clauses.map((c) => {
         n += 1;
@@ -514,11 +574,12 @@ class DocBuilder {
   }
 
   /** Small bold heading inside a section (e.g. "A. Rodent control"). */
-  subheading(text: string) {
-    this.keepWithNext(4.6, () => {
-      this.font(8.8, 'bold', this.navy);
+  subheading(text: string, size = 8.8) {
+    const h = size * 0.52;
+    this.keepWithNext(h, () => {
+      this.font(size, 'bold', this.navy);
       this.doc.text(text, M, this.y);
-      this.y += 4.6;
+      this.y += h;
     });
   }
 
@@ -609,19 +670,6 @@ class DocBuilder {
     this.y = ((this.doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? this.y) + 6;
   }
 
-  /** Table centred on the page at the given width, every column centred (letters and contracts). */
-  centeredTable(head: string[], body: (string | number)[][], width: number, opts: Partial<UserOptions> = {}) {
-    const side = (PAGE_W - width) / 2;
-    const given = (opts.columnStyles ?? {}) as Record<number, object>;
-    this.table(head, body, {
-      styles: { font: 'helvetica', fontSize: 8.8, cellPadding: { top: 2.1, bottom: 2.1, left: 2.5, right: 2.5 }, textColor: INK, lineColor: RULE, lineWidth: 0.2, valign: 'middle', overflow: 'linebreak' },
-      ...opts,
-      tableWidth: width,
-      margin: { left: side, right: side, top: 20, bottom: FOOTER_H + 6 },
-      columnStyles: Object.fromEntries(head.map((_, i) => [i, { halign: 'center', ...given[i] }])),
-    });
-  }
-
   /** Right-aligned totals box with the amount in words on the left. */
   totals(rows: [string, string][], grand: [string, number], words = true) {
     const boxW = 82;
@@ -681,27 +729,27 @@ class DocBuilder {
   }
 
   /** Line, label, name and note of one signature. Returns the height used below the line. */
-  private signatureBlock(x: number, lineY: number, w: number, b: { label: string; name?: string; sub?: string }, draw = true): number {
+  private signatureBlock(x: number, lineY: number, w: number, b: { label: string; name?: string; sub?: string }, scale: number, draw = true): number {
     if (draw) {
       this.color(SIGN_LINE, 'draw');
       this.doc.setLineWidth(0.3);
       this.doc.line(x, lineY, x + w, lineY);
-      this.font(7.2, 'bold', MUTED);
-      this.doc.text(b.label.toUpperCase(), x, lineY + 4, { charSpace: 0.2 });
+      this.font(7.2 * scale, 'bold', MUTED);
+      this.doc.text(b.label.toUpperCase(), x, lineY + 4 * scale, { charSpace: 0.2 });
     }
-    let y = lineY + 8.3;
+    let y = lineY + 8.3 * scale;
     if (b.name?.trim()) {
-      this.font(8.6, 'bold', INK);
+      this.font(8.6 * scale, 'bold', INK);
       (this.doc.splitTextToSize(b.name, w) as string[]).forEach((l) => {
         if (draw) this.doc.text(l, x, y);
-        y += 3.9;
+        y += 3.9 * scale;
       });
     }
     if (b.sub) {
-      this.font(7.5, 'normal', MUTED);
+      this.font(7.5 * scale, 'normal', MUTED);
       (this.doc.splitTextToSize(b.sub, w) as string[]).forEach((l) => {
         if (draw) this.doc.text(l, x, y);
-        y += 3.4;
+        y += 3.4 * scale;
       });
     }
     return y - lineY;
@@ -710,12 +758,13 @@ class DocBuilder {
   /**
    * Signature blocks; an image (e.g. customer signature) can sit above a line. Lines stay a normal
    * signature length and are spread evenly from the left margin to the right margin.
+   * `scale` enlarges the text for documents set in larger type.
    */
-  signatures(blocks: { label: string; name?: string; sub?: string; image?: Img | null }[]) {
+  signatures(blocks: { label: string; name?: string; sub?: string; image?: Img | null }[], scale = 1) {
     const gap = 10;
     const w = Math.min(SIGN_LINE_W, (CONTENT_W - gap * (blocks.length - 1)) / blocks.length);
-    const above = 18;
-    const below = Math.max(...blocks.map((b) => this.signatureBlock(0, 0, w, b, false)));
+    const above = 18 * scale;
+    const below = Math.max(...blocks.map((b) => this.signatureBlock(0, 0, w, b, scale, false)));
     this.ensure(above + below + 4);
     const lineY = this.y + above;
     const step = blocks.length > 1 ? (CONTENT_W - w) / (blocks.length - 1) : 0;
@@ -726,7 +775,7 @@ class DocBuilder {
         const iw = Math.min(w - 4, (b.image.w / b.image.h) * ih);
         this.doc.addImage(b.image.data, 'PNG', x, lineY - ih - 1, iw, ih, undefined, 'FAST');
       }
-      this.signatureBlock(x, lineY, w, b);
+      this.signatureBlock(x, lineY, w, b, scale);
     });
     this.y += above + below + 4;
   }
@@ -1709,7 +1758,7 @@ async function buildJobSheet(job: ServiceJob): Promise<jsPDF> {
 }
 
 /**
- * HR letters on the company letterhead: offer letter (at hiring), employment contract and probation
+ * HR letters on the company letterhead: offer letter (at hiring), employment agreement and probation
  * letter (on joining) and confirmation letter (end of probation). Terms and clause wording come from
  * the letter, frozen when it was issued.
  */
@@ -1717,7 +1766,7 @@ async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
   const t = letter.terms;
   const emp = dataService.getEmployeeById(letter.employeeId);
   const priv = dataService.getEmployeePrivate(letter.employeeId);
-  const title = { offer_letter: 'Offer Letter', employment_contract: 'Employment Contract', probation_letter: 'Probation Letter', confirmation_letter: 'Confirmation Letter' }[letter.kind];
+  const title = { offer_letter: 'Offer Letter', employment_contract: 'Employment Agreement', probation_letter: 'Probation Letter', confirmation_letter: 'Confirmation Letter' }[letter.kind];
   const { b, profile } = await builder(title, letter.refNo, letter.status === 'withdrawn' ? 'WITHDRAWN' : undefined);
   const company = profile.legalName;
   const signatory = `For ${profile.shortName || company}`;
@@ -1726,22 +1775,21 @@ async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
   const probationEnd = t.probationEndDate ? formatDate(t.probationEndDate) : `${t.probationMonths} month(s) after joining`;
   const hasProbation = t.probationMonths > 0;
   const size = 9;
-  const subtitle = { offer_letter: 'Offer of employment', employment_contract: 'Contract of employment', probation_letter: 'Probation period terms', confirmation_letter: 'Confirmation of employment' }[letter.kind];
 
   // Letters issued before the wording was saved on them keep printing what they originally said
   const sections: LetterClauseSection[] = t.clauseSections ?? originalLetterClauses(letter);
 
   const compensation = (gross = t.grossSalary) => {
-    b.centeredHeading('Monthly Compensation');
+    b.section('Monthly Compensation');
     const rows = [
       ['Basic salary', t.basicSalary],
       ...t.allowances.filter((a) => a.amount > 0).map((a): [string, number] => [a.label, a.amount]),
     ] as [string, number][];
-    b.centeredTable(['S. No.', 'Salary Component', 'Amount (PKR)'], [
+    b.table(['S. No.', 'Salary Component', 'Amount (PKR)'], [
       ...rows.map(([label, amount], i) => [i + 1, label, money(amount)]),
       ['', 'Gross monthly salary', money(gross)],
-    ], 130, {
-      columnStyles: { 0: { cellWidth: 16 }, 2: { cellWidth: 40 } },
+    ], {
+      columnStyles: { 0: { cellWidth: 16 }, 2: { cellWidth: 40, halign: 'center' } },
       didParseCell: (data) => {
         if (data.section === 'body' && data.row.index === rows.length) {
           data.cell.styles.fontStyle = 'bold';
@@ -1752,14 +1800,14 @@ async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
   };
 
   const particulars = (heading: string, text: string) => {
-    b.centeredHeading(heading);
+    b.section(heading);
     b.paragraph(text, size);
   };
 
   /** Acknowledgment paragraph, filled in from the record, signed by the employee and management. */
-  const acknowledgment = async (closing: string, reserveBelow = 0) => {
-    b.ensure(66 + reserveBelow);
-    b.centeredHeading('Employee Acknowledgment');
+  const acknowledgment = async (closing: string) => {
+    b.ensure(66);
+    b.section('Employee Acknowledgment');
     b.paragraph(`I, ${name}${priv?.cnic ? `, holding CNIC No. ${priv.cnic}` : ''}, appointed as ${t.designation} with effect from ${formatDate(t.joiningDate)} at a monthly salary of ${pkr(t.grossSalary)}, hereby confirm that ${closing}`, size, INK, true);
     const stamp = profile.stampUrl ? await loadImage(profile.stampUrl, 400, 'image/png') : null;
     b.signatures([
@@ -1769,13 +1817,30 @@ async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
     ]);
   };
 
-  b.titleBand([
-    { label: 'Ref. No.', value: letter.refNo },
-    { label: 'Date', value: issued },
-    { label: 'Employee ID', value: letter.employeeId },
-  ], subtitle);
+  if (letter.kind === 'offer_letter') {
+    b.centeredTitle(' Offer Letter');
+    const text = OFFER_TEXT_SIZE;
+    b.letterCard(name, t.designation, longDate(letter.issuedAt));
+    b.letterSubject('Subject: Offer of Employment');
+    b.letterParagraph(`Dear ${name},`, text);
+    const [opening, probation, joining, acceptance] = offerLetterParagraphs(t, { name: company, shortName: profile.shortName || company }, pkr(t.grossSalary));
+    [opening, probation, joining].forEach((para) => b.letterParagraph(para, text));
+    // An offer already signed keeps the terms it was signed with; otherwise only what HR added for this person
+    if (offerKeepsPrintedTerms(letter, sections)) b.clauses(sections, text - 1);
+    else (t.extraTerms || '').split('\n').map((x) => x.trim()).filter(Boolean).forEach((x) => b.letterParagraph(x, text));
+    b.letterParagraph(acceptance, text, true);
+    b.letterParagraph('Yours sincerely,', text, true);
+    b.signatures([
+      { label: signatory, },
+      { label: 'Employee acceptance', name, sub: 'Signature & date' },
+    ], 1.25);
+    return b.finish();
+  }
+
+  b.centeredTitle(title);
+  b.keyValues([['Ref. No.', letter.refNo], ['Date', issued], ['Employee ID', letter.employeeId]], 3);
   b.parties({
-    heading: letter.kind === 'offer_letter' || letter.kind === 'confirmation_letter' ? 'To' : 'Employee',
+    heading: letter.kind === 'confirmation_letter' ? 'To' : 'Employee',
     name,
     lines: [
       priv?.fatherName && `S/O, D/O: ${priv.fatherName}`,
@@ -1785,42 +1850,21 @@ async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
     ],
   });
 
-  if (letter.kind === 'offer_letter') {
-    b.paragraph(`Dear ${name},`, size);
-    b.paragraph(`We are pleased to offer you the position of ${t.designation} in the ${t.department} department of ${company}, on the terms set out below.`, size);
-    particulars('Position Details', `Your joining date will be ${formatDate(t.joiningDate)}${t.reportingTo ? `, and you will report to ${t.reportingTo}` : ''}. ${hasProbation ? `Your appointment will begin with a probation period of ${monthsInWords(t.probationMonths)}, until ${probationEnd}. ` : ''}Your working hours will be ${t.workingHours}.`);
-    compensation();
-    b.clauses(sections);
-    b.paragraph(`To accept, please sign and return a copy of this letter${t.offerValidUntil ? ` by ${formatDate(t.offerValidUntil)}, after which this offer lapses` : ''}.`, size, INK, true);
-    b.signatures([
-      { label: signatory, name: letter.issuedByName, sub: 'Human Resources' },
-      { label: 'Accepted by', name, sub: 'Signature & date' },
-    ]);
-    return b.finish();
-  }
-
   if (letter.kind === 'employment_contract' || letter.kind === 'probation_letter') {
     const isContract = letter.kind === 'employment_contract';
     b.paragraph(isContract
-      ? `This Employment Contract is made on ${issued} between ${company}${profile.address ? `, ${profile.address}` : ''} ("the Company"), and ${name}${priv?.fatherName ? `, son / daughter of ${priv.fatherName}` : ''}${priv?.cnic ? `, CNIC ${priv.cnic}` : ''}${priv?.residentialAddress ? `, residing at ${priv.residentialAddress}` : ''} ("the Employee").`
+      ? `This Employment Agreement is made on ${issued} between ${company}${profile.address ? `, ${profile.address}` : ''} ("the Company"), and ${name}${priv?.fatherName ? `, son / daughter of ${priv.fatherName}` : ''}${priv?.cnic ? `, CNIC ${priv.cnic}` : ''}${priv?.residentialAddress ? `, residing at ${priv.residentialAddress}` : ''} ("the Employee").`
       : `Dear ${name}, with reference to your appointment as ${t.designation} in the ${t.department} department of ${company}, you will serve a probation period of ${monthsInWords(t.probationMonths)} from ${formatDate(t.joiningDate)} until ${probationEnd}. The terms below apply during this period.`, size);
     particulars('Employment Particulars', isContract
-      ? `The Employee is appointed as ${t.designation} in the ${t.department} department${t.reportingTo ? `, reporting to ${t.reportingTo}` : ''}, with effect from ${formatDate(t.joiningDate)}. ${hasProbation ? `The first ${monthsInWords(t.probationMonths)}, until ${probationEnd}, shall be a probation period. ` : ''}Working hours shall be ${t.workingHours}. The notice period shall be ${hasProbation ? `${days(t.noticeDaysProbation)} during probation and ${days(t.noticeDaysPermanent)} after confirmation` : days(t.noticeDaysPermanent)}.`
-      : `${t.reportingTo ? `You will report to ${t.reportingTo}. ` : ''}Your working hours will be ${t.workingHours}, and the notice period during probation will be ${days(t.noticeDaysProbation)}.`);
+      ? `The Employee is appointed as ${t.designation} in the ${t.department} department${t.reportingTo ? `, reporting to ${t.reportingTo}` : ''}, with effect from ${formatDate(t.joiningDate)}. ${hasProbation ? `The first ${monthsInWords(t.probationMonths)}, until ${probationEnd}, shall be a probation period. ` : ''}Working hours shall be ${t.workingHours}. The notice period shall be ${hasProbation ? `${days(t.noticeDaysProbation)} during probation and ${days(t.noticeDaysPermanent)} after becoming permanent` : days(t.noticeDaysPermanent)}. ${dutiesSentence(t, "The Employee's")}`.trim()
+      : `${t.reportingTo ? `You will report to ${t.reportingTo}. ` : ''}Your working hours will be ${t.workingHours}, and the notice period during probation will be ${days(t.noticeDaysProbation)}. ${dutiesSentence(t, 'Your')}`.trim());
     compensation();
     b.clauses(sections);
     await acknowledgment(
       isContract
         ? 'I have read, understood, and agreed to comply with all the above-mentioned terms and conditions of employment.'
         : 'I have read, understood, and agreed to comply with all the above-mentioned probation period terms and conditions. I understand that my performance and conduct will be evaluated during this period.',
-      isContract ? 34 : 0, // keeps the witness lines on the same page
     );
-    if (isContract) {
-      b.signatures([
-        { label: 'Witness 1', sub: 'Name, CNIC & signature' },
-        { label: 'Witness 2', sub: 'Name, CNIC & signature' },
-      ]);
-    }
     return b.finish();
   }
 
@@ -1832,7 +1876,7 @@ async function buildEmployeeLetter(letter: EmployeeLetter): Promise<jsPDF> {
   b.paragraph(`We are pleased to inform you that you have successfully completed your probation period (${formatDate(t.joiningDate)} to ${probationEnd}). Your employment as ${t.designation} in the ${t.department} department is confirmed with effect from ${confirmedFrom}.`, size);
   particulars('Confirmation Details', `From ${confirmedFrom}, your ${revised ? 'revised ' : ''}gross monthly salary will be ${pkr(gross)}, and the notice period will be ${days(t.noticeDaysPermanent)}.`);
   b.clauses(sections);
-  b.paragraph('All other terms of your Employment Contract remain unchanged. We thank you for your work so far and wish you continued success with us.', size, INK, true);
+  b.paragraph('All other terms of your Employment Agreement remain unchanged. We thank you for your work so far and wish you continued success with us.', size, INK, true);
   b.signatures([
     { label: signatory, name: letter.issuedByName, sub: 'Human Resources' },
     { label: 'Received by', name, sub: 'Signature & date' },
@@ -2293,7 +2337,7 @@ export const pdfGenerator = {
   async generateStatementPDF(statement: ClientStatement) {
     (await buildStatement(statement)).save(safe(`${prefix()}_Statement_${statement.statementNumber}_${statement.customerName}.pdf`));
   },
-  // HR letters (offer letter, employment contract, probation letter, confirmation letter)
+  // HR letters (offer letter, employment agreement, probation letter, confirmation letter)
   employeeLetterFileName(letter: EmployeeLetter) {
     const kind = { offer_letter: 'Offer_Letter', employment_contract: 'Employment_Contract', probation_letter: 'Probation_Letter', confirmation_letter: 'Confirmation_Letter' }[letter.kind];
     return safe(`${prefix()}_${kind}_${letter.employeeId}_${letter.employeeName}.pdf`);

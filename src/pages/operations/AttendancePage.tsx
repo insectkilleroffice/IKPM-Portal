@@ -12,6 +12,7 @@ import { baseRoleOf, canEditModule } from '../../lib/permissions';
 import { formatDate } from '../../lib/formatters';
 import { dataService } from '../../services/dataService';
 import type { AttendanceRecord, AttendanceStatus, Employee } from '../../types/hr';
+import { isCandidate } from '../../types/hr';
 import { companyProfile } from '../../services/companyProfile';
 
 const STATUS_OPTIONS: { value: AttendanceStatus; label: string; badgeClass: string }[] = [
@@ -72,7 +73,7 @@ export const AttendancePage: React.FC = () => {
   // Re-build rows whenever selectedDate, employees, or roleFilter changes
   useEffect(() => {
     const activeStaff = employees.filter((e) => {
-      if (e.status === 'inactive') return false;
+      if (e.status === 'inactive' || isCandidate(e)) return false;
       if (roleFilter === 'my_team' || isTeamLeader) return myTeamIds.has(e.id);
       if (roleFilter === 'pco') return e.role === 'pco';
       return true;

@@ -73,6 +73,14 @@ export function formatCNIC(cnic: string | undefined | null): string {
 }
 
 /**
+ * For CNIC inputs: keeps digits only (13 at most) and adds the dashes while typing: 42401-1223123-0
+ */
+export function maskCNIC(value: string | undefined | null): string {
+  const digits = String(value ?? '').replace(/\D/g, '').slice(0, 13);
+  return [digits.slice(0, 5), digits.slice(5, 12), digits.slice(12)].filter(Boolean).join('-');
+}
+
+/**
  * Formats Pakistani NTN to 1234567-8 format
  */
 export function formatNTN(ntn: string | undefined | null): string {
