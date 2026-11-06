@@ -350,3 +350,5 @@ npx cap open android
 ```
 
 In Android Studio, go to **Build → Generate Signed Bundle / APK**, pick **APK** and your release keystore, then build the **Release** variant.
+#   I K P M  
+ 
